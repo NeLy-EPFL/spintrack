@@ -134,18 +134,37 @@ class Tracker:
             self.path.reset()
             self.seq = 0
 
-        R_wc = self.R_wc
-        w_cam = R_wc @ step.w_win
-        R_cam = R_wc @ step.R_win @ R_wc.T
-        w_lab = self.cam_to_lab @ w_cam
-        R_lab = self.cam_to_lab @ R_cam @ self.cam_to_lab.T
-        p = self.path.step(w_lab)
         delta_ts = 0.0 if self._prev_ts is None else ts_ms - self._prev_ts
         self._prev_ts = ts_ms
+        wall = ms_since_midnight() if wall_ms is None else wall_ms
+        values, w_cam, w_lab, R_cam, R_lab = self._values(
+            frame,
+            self.seq,
+            ts_ms,
+            wall,
+            step.w_win,
+            step.R_win,
+            step.cost,
+            delta_ts,
+            self.path,
+        )
+        self.seq += 1
+        return FrameResult(
+            frame, int(values[22]), ts_ms, w_cam, w_lab, R_cam, R_lab, step, values
+        )
+
+    def _values(self, frame, seq, ts_ms, wall_ms, w_win, R_win, err, delta_ts, path):
+        """The 25 FicTrac columns for one tracked frame (also advances `path`)."""
+        R_wc = self.R_wc
+        w_cam = R_wc @ w_win
+        R_cam = R_wc @ R_win @ R_wc.T
+        w_lab = self.cam_to_lab @ w_cam
+        R_lab = self.cam_to_lab @ R_cam @ self.cam_to_lab.T
+        p = path.step(w_lab)
         values = np.empty(N_COLUMNS)
         values[0] = frame
         values[1:4] = w_cam
-        values[4] = step.cost if np.isfinite(step.cost) else 0.0
+        values[4] = err if np.isfinite(err) else 0.0
         values[5:8] = w_lab
         values[8:11] = matrix_to_rotvec(R_cam)
         values[11:14] = matrix_to_rotvec(R_lab)
@@ -153,10 +172,37 @@ class Tracker:
         values[17:19] = (p.step_dir, p.step_mag)
         values[19:21] = (p.int_x, p.int_y)
         values[21] = ts_ms
-        values[22] = self.seq
+        values[22] = seq
         values[23] = delta_ts
-        values[24] = ms_since_midnight() if wall_ms is None else wall_ms
-        self.seq += 1
-        return FrameResult(
-            frame, int(values[22]), ts_ms, w_cam, w_lab, R_cam, R_lab, step, values
-        )
+        values[24] = wall_ms
+        return values, w_cam, w_lab, R_cam, R_lab
+
+    def records_from_orientations(self, orientations, ts_list, wall_list, frames):
+        """Records for a whole sequence of window-frame orientations (offline refinement).
+
+        `orientations` may contain None for frames that stay untracked; the path integrator
+        and sequence counter start fresh, as they would for a run from the first frame.
+        """
+        path = PathIntegrator()
+        rows: list[np.ndarray] = []
+        prev_R = None
+        prev_ts = None
+        seq = 0
+        for frame, ts, wall, R_win in zip(
+            frames, ts_list, wall_list, orientations, strict=True
+        ):
+            if R_win is None:
+                seq += 1
+                prev_ts = ts
+                continue
+            w_win = (
+                np.zeros(3) if prev_R is None else matrix_to_rotvec(R_win @ prev_R.T)
+            )
+            delta_ts = 0.0 if prev_ts is None else ts - prev_ts
+            values, *_ = self._values(
+                frame, seq, ts, wall, w_win, R_win, 0.0, delta_ts, path
+            )
+            rows.append(values)
+            prev_R, prev_ts = R_win, ts
+            seq += 1
+        return rows

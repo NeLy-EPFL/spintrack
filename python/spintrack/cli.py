@@ -49,6 +49,27 @@ def _add_run(sub) -> None:
         "--frozen-map", action="store_true", help="never update the loaded map"
     )
     p.add_argument(
+        "--debug-video",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="PATH",
+        help="write an annotated debug video (default path: <out>-debug.mp4)",
+    )
+    p.add_argument(
+        "--refine",
+        type=int,
+        default=0,
+        metavar="SWEEPS",
+        help="after tracking, re-estimate all frames against the complete map",
+    )
+    p.add_argument(
+        "--refine-out",
+        default=None,
+        metavar="PATH",
+        help="refined .dat (default: <out>-refined.dat)",
+    )
+    p.add_argument(
         "--no-prefetch", action="store_true", help="decode in the tracking thread"
     )
     p.add_argument("-v", "--verbose", action="store_true")
@@ -134,6 +155,14 @@ def cmd_run(args) -> int:
         recorders.append(TerminalRecorder())
 
     params = TrackParams(max_pixels=None) if args.all_pixels else None
+    debug_video = args.debug_video
+    if debug_video is None and cfg.save_debug:
+        debug_video = "auto"
+    if debug_video == "auto":
+        debug_video = str(out_path.with_name(out_path.stem + "-debug.mp4"))
+    refined_out = args.refine_out
+    if args.refine > 0 and refined_out is None:
+        refined_out = str(out_path.with_name(out_path.stem + "-refined.dat"))
     log.info("spintrack %s: %s -> %s", __version__, src_spec, out_path)
 
     def progress(stats):
@@ -152,6 +181,9 @@ def cmd_run(args) -> int:
             prefetch=not args.no_prefetch,
             progress=progress,
             save_map=args.save_map,
+            debug_video=debug_video,
+            refine_sweeps=args.refine,
+            refined_out=refined_out,
         )
     finally:
         source.close()
@@ -162,6 +194,10 @@ def cmd_run(args) -> int:
         stats.frames, stats.tracked, stats.dropped, stats.wall_s, stats.fps,
         stats.tracking_ms_per_frame,
     )  # fmt: skip
+    if stats.refine:
+        log.info("refined: %s -> %s", stats.refine, refined_out)
+    if debug_video:
+        log.info("debug video: %s", debug_video)
     return 0
 
 

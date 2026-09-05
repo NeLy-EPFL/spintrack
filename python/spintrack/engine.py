@@ -109,6 +109,7 @@ class TrackEngine:
         self._have_map = False
         self._frozen = False
         self._needs_localisation = False
+        self.last_obs: np.ndarray | None = None  # normalized window of the last step
         self._cost_level: float | None = None  # running mean cost of accepted frames
 
     # ----- maps -----
@@ -256,6 +257,7 @@ class TrackEngine:
     def step(self, window: np.ndarray) -> StepResult:
         """Track one remapped grayscale window (uint8, window_size x window_size)."""
         obs = self.normalize(window)
+        self.last_obs = obs
         if self._needs_localisation:
             return self._localise(obs)
         if not self._have_map:

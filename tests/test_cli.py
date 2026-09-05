@@ -76,3 +76,44 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
     # Identity camera-to-lab: lab columns equal camera columns; heading integrates -dr_z.
     assert np.allclose(dat[:, 5:8], dat[:, 1:4])
     assert np.isclose(dat[-1, 16], (-dat[1:, 7].sum()) % (2 * np.pi), atol=1e-6)
+
+
+def test_cli_debug_video_and_refinement(tmp_path):
+    rng = np.random.default_rng(1)
+    texture = make_texture(rng, n_blobs=80)
+    writer = cv2.VideoWriter(
+        str(tmp_path / "ball.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 50, (W, H)
+    )
+    R = np.eye(3)
+    n = 30
+    for i in range(n):
+        if i > 0:
+            R = rotvec_to_matrix([0.01, 0.03, 0.0]) @ R
+        writer.write(cv2.cvtColor(render_frame(texture, R, rng), cv2.COLOR_GRAY2BGR))
+    writer.release()
+    cfg = Config(
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+    )
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    cfg.save(tmp_path / "config.txt")
+    out = tmp_path / "out.dat"
+    dbg = tmp_path / "dbg.mp4"
+    args = [
+        "run",
+        str(tmp_path / "config.txt"),
+        "--out",
+        str(out),
+        "--debug-video",
+        str(dbg),
+        "--refine",
+        "1",
+    ]
+    assert main(args) == 0
+    cap = cv2.VideoCapture(str(dbg))
+    assert cap.isOpened() and int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == n
+    cap.release()
+    refined = read_dat(tmp_path / "out-refined.dat")
+    assert refined.shape == (n, N_COLUMNS)
+    online = read_dat(out)
+    diff = np.degrees(np.linalg.norm(refined[1:, 1:4] - online[1:, 1:4], axis=1))
+    assert np.median(diff) < 0.3, diff
