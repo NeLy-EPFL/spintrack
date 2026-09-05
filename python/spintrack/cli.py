@@ -37,6 +37,18 @@ def _add_run(sub) -> None:
         "--all-pixels", action="store_true", help="solve on every window pixel"
     )
     p.add_argument(
+        "--save-map", default=None, metavar="PATH", help="write the final map (.npz)"
+    )
+    p.add_argument(
+        "--load-map",
+        default=None,
+        metavar="PATH",
+        help="start from a saved map (.npz or a FicTrac sphere-map .png)",
+    )
+    p.add_argument(
+        "--frozen-map", action="store_true", help="never update the loaded map"
+    )
+    p.add_argument(
         "--no-prefetch", action="store_true", help="decode in the tracking thread"
     )
     p.add_argument("-v", "--verbose", action="store_true")
@@ -82,6 +94,10 @@ def cmd_run(args) -> int:
     log = logging.getLogger("spintrack")
     config_path = Path(args.config)
     cfg = Config.load(config_path)
+    if args.load_map:
+        cfg.sphere_map_fn = args.load_map
+    if args.frozen_map:
+        cfg.map_frozen = True
     src_spec = args.src if args.src is not None else cfg.src_fn
     if not src_spec:
         log.error("no source: set src_fn in the config or pass --src")
@@ -135,6 +151,7 @@ def cmd_run(args) -> int:
             max_frames=args.max_frames,
             prefetch=not args.no_prefetch,
             progress=progress,
+            save_map=args.save_map,
         )
     finally:
         source.close()

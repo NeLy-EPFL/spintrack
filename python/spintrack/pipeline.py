@@ -55,6 +55,7 @@ def run(
     max_frames: int | None = None,
     prefetch: bool = True,
     progress: Callable[[RunStats], None] | None = None,
+    save_map: str | None = None,
 ) -> RunStats:
     """Track every frame of `source`; returns run statistics."""
     tracker = Tracker(cfg, source.width, source.height, params)
@@ -98,4 +99,6 @@ def run(
     finally:
         stop.set()
         stats.wall_s = time.perf_counter() - t0
+    if save_map:
+        tracker.save_map(save_map)
     return stats

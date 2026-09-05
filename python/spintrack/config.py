@@ -61,6 +61,7 @@ class Config:
     com_baud: int = 115200
     accumulate_map: bool = True
     output_fn: str = ""  # output base name; FicTrac defaults to the video name
+    map_frozen: bool = False  # spintrack: never update a loaded map (sphere_map_fn)
     extra: dict[str, Any] = field(default_factory=dict)
     comments: list[str] = field(default_factory=list)
 
@@ -193,6 +194,7 @@ _FIELD_TYPES: dict[str, str] = {
     "com_baud": "int",
     "accumulate_map": "bool",
     "output_fn": "str",
+    "map_frozen": "bool",
 }
 
 

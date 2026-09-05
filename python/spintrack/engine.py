@@ -107,7 +107,29 @@ class TrackEngine:
         self.frames_tracked = 0
         self.core.reset()
         self._have_map = False
+        self._frozen = False
+        self._needs_localisation = False
         self._cost_level: float | None = None  # running mean cost of accepted frames
+
+    # ----- maps -----
+    def load_map(
+        self, mean: np.ndarray, weight: np.ndarray, frozen: bool = False
+    ) -> None:
+        """Start from a saved map; the first frame is localised against it globally."""
+        if mean.shape != self.map_shape or weight.shape != self.map_shape:
+            raise ValueError(f"map arrays must have shape {self.map_shape}")
+        self.core.set_map(
+            np.ascontiguousarray(mean, dtype=np.float32),
+            np.ascontiguousarray(weight, dtype=np.float32),
+        )
+        self._have_map = True
+        self._frozen = frozen
+        self._needs_localisation = True
+        self.R = np.eye(3)
+        self.velocity = np.zeros(3)
+
+    def export_map(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.core.map_mean(), self.core.map_weight()
 
     # ----- normalization -----
     def normalize(self, window: np.ndarray) -> np.ndarray:
@@ -191,14 +213,51 @@ class TrackEngine:
             self.R,
             lambda_=p.map_lambda,
             w_max=p.map_w_max,
-            forget_outside=p.forget_outside_view,
+            forget_outside=p.forget_outside_view and not self._frozen,
             margin=p.forget_margin,
+            update_main=not self._frozen,
         )
         self._have_map = True
+
+    def _localise(self, obs: np.ndarray) -> StepResult:
+        """First frame against a loaded map: find the absolute orientation globally."""
+        p = self.params
+        try:
+            res = self.core.global_search(
+                obs,
+                n_candidates=p.global_candidates,
+                max_iter=p.max_iter,
+                tol=p.tol,
+                huber=p.huber,
+                tukey=p.tukey,
+                w_min=p.w_min,
+                w_sat=p.w_sat,
+                min_overlap=p.min_overlap,
+            )
+        except ValueError:
+            res = None
+        if res is None or not self._accept_global(res):
+            self.n_bad += 1
+            if p.max_bad_frames >= 0 and self.n_bad > p.max_bad_frames:
+                self.reset()
+            return StepResult(False, "lost", np.zeros(3), self.R.copy())
+        self.R = np.asarray(res.r, dtype=np.float64)
+        self.velocity = np.zeros(3)
+        self._needs_localisation = False
+        self._update_maps(obs)
+        self._note_cost(res.cost)
+        self.n_bad = 0
+        self.frames_tracked += 1
+        return StepResult(
+            True, "global", np.zeros(3), self.R.copy(), res.cost, res.rms, res.inlier_frac,
+            res.overlap, res.iters, res.converged, np.asarray(res.hessian),
+        )  # fmt: skip
 
     def step(self, window: np.ndarray) -> StepResult:
         """Track one remapped grayscale window (uint8, window_size x window_size)."""
         obs = self.normalize(window)
+        if self._needs_localisation:
+            return self._localise(obs)
         if not self._have_map:
             self.R = np.eye(3)
             self.velocity = np.zeros(3)

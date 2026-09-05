@@ -19,6 +19,7 @@ from spintrack.engine import StepResult, TrackEngine, TrackParams
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
 from spintrack.io.dat import N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
+from spintrack.maps import load_map, save_map
 from spintrack.path import PathIntegrator
 from spintrack.sphere import fit_ball, source_mask, window_geometry
 
@@ -78,7 +79,12 @@ class Tracker:
         self.R_wc = self.geometry.to_camera  # window -> camera
         self.cam_to_lab = self._camera_to_lab(cfg)
         self.params = params_from_config(cfg, params)
+        if cfg.sphere_map_fn:
+            self.params.global_search = True  # needed to localise against the template
         self.engine = TrackEngine(self.geometry, self.params)
+        if cfg.sphere_map_fn:
+            mean, weight = load_map(cfg.sphere_map_fn, self.engine.map_shape)
+            self.engine.load_map(mean, weight, frozen=cfg.map_frozen)
         self.path = PathIntegrator()
         self.frame = 0
         self.seq = 0
@@ -100,6 +106,18 @@ class Tracker:
         self.path.reset()
         self.seq = 0
 
+    def save_map(self, path) -> None:
+        """Write the current surface map as a spintrack `.npz` template."""
+        mean, weight = self.engine.export_map()
+        save_map(
+            path,
+            mean,
+            weight,
+            window_size=self.geometry.size,
+            centre=self.centre,
+            half_angle=self.half_angle,
+        )
+
     def process_frame(
         self, gray: np.ndarray, ts_ms: float = -1.0, wall_ms: float | None = None
     ) -> FrameResult | None:
@@ -112,7 +130,7 @@ class Tracker:
             self.seq += 1
             self._prev_ts = ts_ms
             return None
-        if step.source == "reset":
+        if step.source == "reset" or (step.source == "global" and self.seq == 0):
             self.path.reset()
             self.seq = 0
 
