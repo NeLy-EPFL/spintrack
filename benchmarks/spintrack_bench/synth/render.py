@@ -1,0 +1,227 @@
+"""Ray-cast renderer for a textured ball seen by a calibrated camera.
+
+Only the ball's bounding box is ray-cast (supersampled); the rest of the frame is a static
+background. Shading (Lambert + specular) depends on the surface normal, which is fixed per
+pixel, so only the albedo lookup changes with the ball orientation.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import cv2
+import numpy as np
+
+from spintrack.camera import Camera
+from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
+from spintrack.sphere import ball_outline
+from spintrack_bench.synth.texture import Texture
+
+
+@dataclass
+class LightingSpec:
+    light_dir: tuple[float, float, float] = (-0.3, -0.7, -0.65)  # toward the light
+    ambient: float = 0.35
+    diffuse: float = 0.65
+    specular: float = 0.15
+    shininess: float = 25.0
+    vignette: float = 0.25  # relative darkening at the image corners
+    flicker_amp: float = 0.0  # fractional gain modulation
+    flicker_hz: float = 100.0
+    drift_amp: float = 0.0  # slow fractional gain drift over the clip
+
+
+@dataclass
+class SensorSpec:
+    blur_sigma: float = 0.7  # px, defocus
+    read_noise: float = 2.0  # gray levels
+    shot_noise: float = 5.0  # gray levels at full scale
+    exposure: float = 0.0  # fraction of the frame period integrated (motion blur)
+    exposure_steps: int = 4
+    supersample: int = 3
+    background: float = 55.0  # gray level
+    background_noise: float = 3.0  # static pattern std, gray levels
+
+
+@dataclass
+class OccluderSpec:
+    legs: int = 0  # number of leg-like moving occluders (0 = none)
+    leg_thickness_px: float = 0.035  # relative to the ball's image radius
+    gait_hz: float = 12.0
+    body: bool = False  # static body silhouette above the ball (exported as roi_ignr)
+    dust: int = 0  # static translucent spots on the lens
+    extra: dict = field(default_factory=dict)
+
+
+class Renderer:
+    def __init__(
+        self,
+        camera: Camera,
+        centre,
+        half_angle: float,
+        texture: Texture,
+        lighting: LightingSpec,
+        sensor: SensorSpec,
+        occluders: OccluderSpec,
+        fps: float,
+        rng: np.random.Generator,
+    ):
+        self.camera = camera
+        self.centre = normalize(np.asarray(centre, dtype=np.float64))
+        self.half_angle = float(half_angle)
+        self.texture = texture
+        self.lighting = lighting
+        self.sensor = sensor
+        self.occluders = occluders
+        self.fps = fps
+        self.rng = rng
+        h, w = camera.height, camera.width
+
+        outline = ball_outline(camera, self.centre, self.half_angle, 90)
+        margin = int(np.ceil(4 * sensor.blur_sigma + 2))
+        x0 = max(0, int(np.floor(outline[:, 0].min())) - margin)
+        y0 = max(0, int(np.floor(outline[:, 1].min())) - margin)
+        x1 = min(w, int(np.ceil(outline[:, 0].max())) + margin)
+        y1 = min(h, int(np.ceil(outline[:, 1].max())) + margin)
+        self.bbox = (x0, y0, x1, y1)
+        cx, cy, _ = camera.project(self.centre)
+        self.centre_px = (float(cx), float(cy))
+        self.radius_px = float(np.max(np.hypot(outline[:, 0] - cx, outline[:, 1] - cy)))
+
+        ss = sensor.supersample
+        xs = x0 + (np.arange((x1 - x0) * ss) + 0.5) / ss
+        ys = y0 + (np.arange((y1 - y0) * ss) + 0.5) / ss
+        X, Y = np.meshgrid(xs, ys)
+        rays = camera.rays(X, Y)
+        radius = np.sin(self.half_angle)
+        b = rays @ self.centre
+        disc = b * b - (1.0 - radius * radius)
+        self.hit = disc >= 0.0
+        t = b - np.sqrt(np.where(self.hit, disc, 0.0))
+        points = t[..., None] * rays
+        normals = normalize(points - self.centre)
+        normals[~self.hit] = 0.0
+        self.normals = normals.astype(np.float32)
+
+        light = normalize(np.asarray(lighting.light_dir, dtype=np.float64))
+        ndotl = np.clip(normals @ light, 0.0, None)
+        view = -rays
+        reflect = 2.0 * ndotl[..., None] * normals - light
+        spec = np.clip(np.sum(reflect * view, axis=-1), 0.0, None) ** lighting.shininess
+        self.shade = (lighting.ambient + lighting.diffuse * ndotl) * self.hit
+        self.spec = (lighting.specular * spec * self.hit).astype(np.float32)
+
+        yy, xx = np.mgrid[0:h, 0:w]
+        r2 = ((xx - w / 2) ** 2 + (yy - h / 2) ** 2) / ((w / 2) ** 2 + (h / 2) ** 2)
+        self.vignette = (1.0 - lighting.vignette * r2).astype(np.float32)
+        bg_rng = np.random.default_rng(rng.integers(0, 2**31))
+        self.background = (
+            sensor.background + bg_rng.normal(0.0, sensor.background_noise, (h, w))
+        ).astype(np.float32)
+        self.dust_gain = np.ones((h, w), np.float32)
+        for _ in range(occluders.dust):
+            dx, dy, rad = (
+                bg_rng.uniform(x0, x1),
+                bg_rng.uniform(y0, y1),
+                bg_rng.uniform(4, 12),
+            )
+            spot = np.exp(-((xx - dx) ** 2 + (yy - dy) ** 2) / (2 * rad**2))
+            self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
+
+    # ----- ball appearance -----
+    def albedo(self, R: np.ndarray) -> np.ndarray:
+        """Albedo of every supersample for ball orientation `R` (body -> camera)."""
+        body_dirs = self.normals @ R.astype(np.float32)  # R^T applied row-wise
+        alb = self.texture.sample(body_dirs)
+        alb[~self.hit] = 0.0
+        return alb
+
+    def gain(self, t_s: float, duration_s: float) -> float:
+        lt = self.lighting
+        g = 1.0 + lt.flicker_amp * np.sin(2 * np.pi * lt.flicker_hz * t_s)
+        if duration_s > 0:
+            g += lt.drift_amp * np.sin(2 * np.pi * t_s / duration_s)
+        return float(g)
+
+    def render(
+        self, R_prev: np.ndarray, R: np.ndarray, index: int, n_frames: int
+    ) -> np.ndarray:
+        """uint8 frame for orientation `R`, with motion blur from `R_prev` if configured."""
+        sensor = self.sensor
+        if sensor.exposure > 0 and sensor.exposure_steps > 1:
+            w = matrix_to_rotvec(R @ R_prev.T)
+            taus = (
+                1.0
+                - sensor.exposure
+                * (np.arange(sensor.exposure_steps) + 0.5)
+                / sensor.exposure_steps
+            )
+            alb = np.mean(
+                [self.albedo(rotvec_to_matrix(tau * w) @ R_prev) for tau in taus], 0
+            )
+        else:
+            alb = self.albedo(R)
+        patch = alb * self.shade + self.spec
+        ss = sensor.supersample
+        hb, wb = patch.shape[0] // ss, patch.shape[1] // ss
+        patch = patch.reshape(hb, ss, wb, ss).mean(axis=(1, 3))
+        hit = self.hit.reshape(hb, ss, wb, ss).mean(axis=(1, 3))
+
+        img = self.background.copy()
+        x0, y0, x1, y1 = self.bbox
+        region = img[y0:y1, x0:x1]
+        img[y0:y1, x0:x1] = region * (1.0 - hit) + 255.0 * patch
+        t_s = index / self.fps
+        self._draw_occluders(img, t_s)
+        img *= self.vignette * self.gain(t_s, n_frames / self.fps)
+        if sensor.blur_sigma > 0:
+            img = cv2.GaussianBlur(img, (0, 0), sensor.blur_sigma)
+        noise_std = np.sqrt(
+            sensor.read_noise**2 + sensor.shot_noise**2 * np.clip(img, 0, 255) / 255
+        )
+        img += self.rng.normal(0.0, 1.0, img.shape).astype(np.float32) * noise_std
+        return np.clip(img, 0, 255).astype(np.uint8)
+
+    # ----- occluders -----
+    def body_polygon(self) -> list[int] | None:
+        """FicTrac-style flat polygon of the body silhouette, or None."""
+        if not self.occluders.body:
+            return None
+        cx, cy = self._body_centre()
+        axes = (int(0.38 * self.radius_px), int(0.22 * self.radius_px))
+        pts = cv2.ellipse2Poly((int(cx), int(cy)), axes, 0, 0, 360, 20)
+        return [int(v) for v in pts.ravel()]
+
+    def _body_centre(self) -> tuple[float, float]:
+        cx, cy = self.centre_px
+        return cx, cy - 0.78 * self.radius_px
+
+    def _draw_occluders(self, img: np.ndarray, t_s: float) -> None:
+        occ = self.occluders
+        cx, cy = self.centre_px
+        r = self.radius_px
+        if occ.body:
+            bx, by = self._body_centre()
+            axes = (int(0.38 * r), int(0.22 * r))
+            cv2.ellipse(img, (int(bx), int(by)), axes, 0, 0, 360, 28.0, -1, cv2.LINE_AA)
+        if occ.legs > 0:
+            bx, by = self._body_centre()
+            thick = max(1, round(occ.leg_thickness_px * r))
+            for k in range(occ.legs):
+                side = -1.0 if k % 2 == 0 else 1.0
+                rank = k // 2
+                phase = (
+                    np.pi * (k % 2) + 2 * np.pi * rank / 3.0
+                )  # alternating tripod-ish
+                swing = np.sin(2 * np.pi * occ.gait_hz * t_s + phase)
+                ang = np.radians(-90 + side * (35 + 25 * rank) + 8 * swing)
+                reach = r * (0.55 + 0.12 * rank + 0.06 * swing)
+                foot = (cx + reach * np.cos(ang), cy - reach * np.sin(ang) * -1.0)
+                knee = (
+                    0.5 * (bx + foot[0]) + side * 0.18 * r,
+                    0.5 * (by + foot[1]) - 0.12 * r,
+                )
+                pts = np.array([[bx, by], knee, foot], np.int32).reshape(-1, 1, 2)
+                cv2.polylines(img, [pts], False, 22.0, thick, cv2.LINE_AA)
+        if self.occluders.dust:
+            img *= self.dust_gain

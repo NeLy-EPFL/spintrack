@@ -1,0 +1,13 @@
+/target/
+/.venv/
+/dist/
+__pycache__/
+*.pyc
+*.so
+*.pyd
+.pytest_cache/
+.ruff_cache/
+/benchmarks/data/
+/benchmarks/results/*.npz
+/benchmarks/results/work/
+fictrac-*.log
