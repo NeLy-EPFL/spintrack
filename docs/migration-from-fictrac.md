@@ -19,7 +19,11 @@ Prebuilt wheels for Linux, macOS and Windows; no CMake, OpenCV, NLopt or Boost t
 | `fictrac config.txt -s vid` | `spintrack run config.txt --src vid`        |
 | socket output (`sock_port`) | honoured; also `--udp host:port`, `--tcp`   |
 | serial output (`com_port`)  | honoured; also `--serial PORT[:BAUD]`       |
-| `configGui config.txt`      | `spintrack calibrate config.txt` (planned)  |
+| `configGui config.txt`      | `spintrack calibrate config.txt`            |
+| `save_debug: y`             | honoured; also `--debug-video [PATH]`       |
+| `sphere_map_fn`             | honoured (.png template or spintrack .npz)  |
+| (no equivalent)             | `--refine N` offline re-estimation          |
+| (no equivalent)             | `--save-map`, `--load-map`, `--frozen-map`  |
 
 ## Configuration
 
@@ -27,7 +31,8 @@ All documented FicTrac keys are accepted (`vfov`, `fisheye`, `q_factor`, `roi_ci
 `roi_r`, `roi_ignr`, `c2a_*`, `sock_*`, `com_*`, `src_fps`, `max_bad_frames`, `opt_do_global`,
 `thr_win_pc`, ...), plus the lab fork's `accumulate_map`. YAML and TOML files with the same
 keys work too. Keys spintrack does not need (`thr_ratio`, `opt_max_evals`, `opt_tol`,
-`opt_max_err`, `q_factor` beyond the window size, `sphere_map_fn`) are accepted and ignored.
+`opt_max_err`, `q_factor` beyond the window size) are accepted and ignored. spintrack adds
+`map_frozen: y` (never update a map loaded through `sphere_map_fn`).
 
 How the keys map onto spintrack's solver:
 
@@ -40,6 +45,9 @@ How the keys map onto spintrack's solver:
 - `accumulate_map: n`: keep only the currently visible surface (plus a one-cell margin),
   reproducing the lab fork's behaviour; the default accumulates the whole surface.
 - `max_bad_frames`: reset tracking after this many consecutive untrackable frames.
+- `sphere_map_fn`: a FicTrac sphere-map PNG (converted on import) or a spintrack `.npz`
+  written by `--save-map`; the first frame is localised globally against it.
+- `save_debug`: write the annotated debug video next to the `.dat`.
 
 ## Output
 

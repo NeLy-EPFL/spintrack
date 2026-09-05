@@ -47,6 +47,17 @@ iterations and analytic derivatives.
    semantics. Unlike FicTrac, the camera-frame columns are in true camera coordinates rather
    than the window frame; the two coincide for a ball near the image centre.
 
+## Offline refinement
+
+Online tracking builds the map incrementally, so the first frames' errors are baked into
+it, and the frame-to-frame mode (`accumulate_map: n`) integrates a random walk. With
+`--refine N`, spintrack keeps every normalized window, and after the run rebuilds the map
+from all frames at their estimated orientations and re-aligns every frame against that
+complete map; each sweep repeats both steps. Frames that were dropped online are seeded from
+their neighbours and solved too. The refined orientations are integrated into a second
+`.dat` file (`<out>-refined.dat`). Memory: about `2 * n^2` bytes per frame (`n` the window
+size), i.e. ~170 MB per minute at 100 fps and `q_factor 12`.
+
 ## Why it is more precise
 
 With `q_factor 12` one window pixel spans about one degree of ball rotation and a walking fly

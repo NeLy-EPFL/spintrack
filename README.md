@@ -21,8 +21,15 @@ Boost to build.
 spintrack run config.txt                 # FicTrac config, writes <video>-<timestamp>.dat
 spintrack run config.txt --src ball.mp4  # override the source (video path or camera index)
 spintrack run config.txt --udp 127.0.0.1:1111 --print
+spintrack run config.txt --debug-video --refine 2 --save-map ball.npz
 spintrack calibrate config.txt           # click rim points, ignore regions, animal axes
 ```
+
+`--debug-video` writes an annotated video (ball orientation, tracking window, map, path).
+`--refine N` re-estimates every frame offline against the map built from the whole
+recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
+(also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
+fixed.
 
 ```python
 from spintrack import Config, Tracker
