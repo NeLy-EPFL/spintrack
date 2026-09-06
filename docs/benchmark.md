@@ -17,7 +17,7 @@ measured pinned to one core.
 
 | dataset          |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:-----------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop        |   nan     |        nan     |       0.069 |          nan     |
+| ball_drop        |   nan     |        nan     |       0.060 |          nan     |
 | clean_fly        |     0.243 |          0.243 |       0.041 |            0.041 |
 | constant_forward |     0.225 |          0.225 |       0.043 |            0.043 |
 | constant_side    |     0.264 |          0.264 |       0.041 |            0.041 |
@@ -40,7 +40,7 @@ measured pinned to one core.
 
 | dataset          |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:-----------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop        |   nan     |        nan     |       0.245 |          nan     |
+| ball_drop        |   nan     |        nan     |       0.163 |          nan     |
 | clean_fly        |     0.671 |          0.671 |       0.091 |            0.091 |
 | constant_forward |     0.577 |          0.577 |       0.090 |            0.090 |
 | constant_side    |     0.596 |          0.596 |       0.088 |            0.088 |
@@ -86,7 +86,7 @@ measured pinned to one core.
 
 | dataset          |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:-----------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop        |   nan     |        nan     |       9.839 |          nan     |
+| ball_drop        |   nan     |        nan     |       3.317 |          nan     |
 | clean_fly        |    -0.227 |         -0.227 |      -0.041 |           -0.041 |
 | constant_forward |    -0.017 |         -0.017 |       0.087 |            0.087 |
 | constant_side    |    -0.109 |         -0.109 |      -0.041 |           -0.041 |
@@ -109,7 +109,7 @@ measured pinned to one core.
 
 | dataset          |             fictrac |        fictrac-fork |           spintrack |      spintrack-full |
 |:-----------------|--------------------:|--------------------:|--------------------:|--------------------:|
-| ball_drop        |             nan     |             nan     |               1.002 |             nan     |
+| ball_drop        |             nan     |             nan     |               0.435 |             nan     |
 | clean_fly        |               0.085 |               0.085 |               0.040 |               0.040 |
 | constant_forward |               0.903 |               0.903 |               0.316 |               0.316 |
 | constant_side    |               0.906 |               0.906 |               0.131 |               0.131 |
@@ -132,7 +132,7 @@ measured pinned to one core.
 
 | dataset          |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:-----------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop        |   nan     |        nan     |       3.800 |          nan     |
+| ball_drop        |   nan     |        nan     |       2.440 |          nan     |
 | clean_fly        |     2.100 |          2.100 |       0.667 |            0.753 |
 | constant_forward |     2.000 |          2.000 |       0.587 |            0.666 |
 | constant_side    |     2.000 |          2.000 |       0.575 |            0.650 |

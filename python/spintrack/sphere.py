@@ -98,6 +98,31 @@ def pixel_circle(
     )
 
 
+def centre_from_pixel_circle(
+    camera: Camera, target_px, half_angle: float, seed, iterations: int = 3
+) -> np.ndarray:
+    """The ball direction whose `pixel_circle` sits at `target_px`; inverts that function.
+
+    The centre of the silhouette is not the projection of the ball's centre. It sits
+    farther from the principal point, and by more the farther off axis the ball is, so
+    reading a fitted circle's centre as a direction under-reports how far a ball has
+    moved: on `ball_drop` (11 degree ball, 71 px of movement) by 5% of the movement, and
+    on the real trials (1.2 degree ball) by 0.2 px over 284 px, which is nothing.
+
+    Two or three fixed-point steps are exact to well under a pixel, because the
+    correction moves with the projected direction almost one for one.
+    """
+    target = np.asarray(target_px, dtype=np.float64)
+    centre = normalize(np.asarray(seed, dtype=np.float64))
+    for _ in range(iterations):
+        cx, cy, _ = pixel_circle(camera, centre, half_angle)
+        px, py, _ = camera.project(centre)
+        centre = normalize(
+            camera.rays(float(px) + target[0] - cx, float(py) + target[1] - cy)
+        )
+    return centre
+
+
 def source_mask(
     camera: Camera, centre, half_angle: float, ignore_polygons=(), shrink: float = 0.975
 ) -> np.ndarray:

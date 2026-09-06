@@ -48,8 +48,18 @@ TUKEY_INSIDE = 1.0
 # cutting mere noise.
 RIM_TOL = 0.01
 RIM_TOL_RESIDUALS = 3.0
+# Inlier band of the coarse hull RANSAC, as a fraction of the candidate circle's radius
+# and as an absolute floor. A fixed two pixels is far too tight for a big ball: the hull
+# comes from a morphologically closed mask, so it stands a little off the rim, and on the
+# real trials' 518 px ball that left RANSAC agreeing with only a third of the outline and
+# refusing about half of all detections.
+HULL_TOL = 0.015
+HULL_TOL_PX = 2.0
 MIN_AREA_FRACTION = 0.002
 MAX_AREA_FRACTION = 0.85
+# Half-width of `relocate_ball`'s rim search, as a fraction of the known radius. It is
+# the capture range of the cheap look: the rim has to fall inside it.
+RELOCATE_BAND = 0.05
 
 
 def _theta_coverage(theta, bins: int = 72) -> float:
@@ -278,7 +288,7 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
         except (DetectionError, np.linalg.LinAlgError):
             continue
         d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
-        inliers = d < 2.0
+        inliers = d < max(HULL_TOL_PX, HULL_TOL * r)
         if best_inliers is None or inliers.sum() > best_inliers.sum():
             best_inliers = inliers
     if best_inliers is None or best_inliers.sum() < 3:
@@ -295,26 +305,44 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     return cx, cy, r, coverage
 
 
-def _radial_edges(image, cx, cy, r, polarity, step=0.25):
-    """Sub-pixel rim radius along `N_RAYS` rays, plus each ray's edge strength.
-
-    Along every ray the *outermost* radius whose radial gradient reaches half that ray's
-    maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands on
-    a search bound, or whose samples leave the image, are rejected.
-    """
-    h, w = image.shape
-    band = max(8.0, 0.05 * r)
+def _polar_grid(cx, cy, r, band, step=0.25):
+    """The sampling grid of the rim search: radii, ray angles and their pixel positions."""
     radii = np.arange(r - band, r + band + step, step)
     angles = np.linspace(0.0, 2.0 * np.pi, N_RAYS, endpoint=False)
     xs = cx + np.outer(np.cos(angles), radii)
     ys = cy + np.outer(np.sin(angles), radii)
-    profile = cv2.remap(
+    return radii, angles, xs, ys
+
+
+def _polar_sample(image, xs, ys) -> np.ndarray:
+    """The image resampled onto a polar grid (rays x radii)."""
+    return cv2.remap(
         image,
         (xs - 0.5).astype(np.float32),
         (ys - 0.5).astype(np.float32),
         cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REPLICATE,
     )
+
+
+def _radial_edges(image, cx, cy, r, polarity, step=0.25, band=None):
+    """Sub-pixel rim radius along `N_RAYS` rays, plus each ray's edge strength.
+
+    Along every ray the *outermost* radius whose radial gradient reaches half that ray's
+    maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands on
+    a search bound, or whose samples leave the image, are rejected.
+    """
+    band = max(8.0, 0.05 * r) if band is None else band
+    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, step)
+    profile = _polar_sample(image, xs, ys)
+    return _edges_from_profile(
+        profile, radii, angles, xs, ys, polarity, image.shape, step
+    )
+
+
+def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.25):
+    """The rim edge of each ray of an already-sampled polar profile."""
+    h, w = shape
     # Differentiate with a derivative-of-Gaussian one pixel wide rather than between
     # neighbouring samples: the profile is bilinearly interpolated every 0.25 px, so
     # consecutive samples share pixels and a plain difference divides noise by 0.25.
@@ -413,6 +441,153 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
     )
 
 
+@dataclass
+class BallRelocation:
+    """Where a ball of *known* radius sits now, measured from a short run of frames."""
+
+    cx: float
+    cy: float
+    rim_fraction: float  # accepted rays, over the rays that stay inside the image
+    arc_fraction: float  # directions about the centre that carry an accepted ray
+    residual_px: float
+    n_frames: int
+    polarity: float  # +1 when the ball is brighter than what surrounds it
+    ok: bool
+
+
+def relocate_ball(
+    frames,
+    cx: float,
+    cy: float,
+    r: float,
+    polarity: float | None = None,
+    *,
+    quantile: float = QUANTILE,
+    band: float | None = None,
+    min_rim_fraction: float = 0.4,
+    min_arc_fraction: float = 0.25,
+) -> BallRelocation:
+    """Re-measure the centre of a ball whose radius is already known.
+
+    This is `detect_ball`'s job stripped to what following a moving ball needs, and it is
+    two orders of magnitude cheaper: the temporal quantile is taken on the polar rim band
+    alone (360 rays x a few hundred samples) instead of over whole frames, and the
+    foreground mask and hull RANSAC are skipped, since `(cx, cy)` is already within a few
+    pixels and `r` is known. The trade is capture range: the rim has to fall inside
+    `band`, so a ball that has jumped needs `detect_ball`.
+
+    Holding the radius fixed is not only cheaper but better conditioned. On the real
+    trials the ball is cut off at the top and bottom of the frame, so the rim is two side
+    arcs; those pin a free circle's centre badly in y (4.3 px of scatter) and a
+    known-radius circle's well (1.4-2.5 px).
+
+    `polarity` may be left out, in which case it is read off the profile: the rim band
+    is centred on the silhouette, so its inner quarter is ball and its outer quarter is
+    whatever surrounds it.
+    """
+    band = max(8.0, RELOCATE_BAND * r) if band is None else band
+    radii, angles, xs, ys = _polar_grid(cx, cy, r, band)
+    stack = []
+    shape = None
+    for frame in frames:
+        image = np.asarray(frame)
+        if image.ndim != 2:
+            raise DetectionError(
+                f"frames must be 2-D grayscale, got shape {image.shape}"
+            )
+        shape = image.shape
+        stack.append(_polar_sample(image, xs, ys))
+    if not stack:
+        raise DetectionError("no frames to relocate the ball in")
+    k = round(quantile * (len(stack) - 1))
+    profile = np.partition(np.stack(stack), k, axis=0)[k].astype(np.float32)
+    if polarity is None:
+        polarity = _profile_polarity(profile, xs, ys, shape)
+    edge_r, strength, ok, usable, angles = _edges_from_profile(
+        profile, radii, angles, xs, ys, polarity, shape
+    )
+    if ok.any():
+        ok &= strength > 0.3 * np.median(strength[ok])
+    if ok.sum() < 8:
+        raise DetectionError("too few rim points survived the edge search")
+    keep_r, keep_a = edge_r[ok], angles[ok]
+    pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
+    centre, weights, d = _fit_centre(pts, np.array([cx, cy]), r)
+    residual = _weighted_rms(d, weights)
+    keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
+    if keep.sum() >= 8:
+        centre, weights, d = _fit_centre(pts[keep], centre, r)
+        pts = pts[keep]
+        residual = _weighted_rms(d, weights)
+    theta = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])
+    rim_fraction = len(pts) / max(usable.sum(), 1)
+    arc_fraction = _theta_coverage(theta)
+    return BallRelocation(
+        cx=float(centre[0]),
+        cy=float(centre[1]),
+        rim_fraction=float(rim_fraction),
+        arc_fraction=arc_fraction,
+        residual_px=residual,
+        n_frames=len(stack),
+        polarity=float(polarity),
+        ok=rim_fraction >= min_rim_fraction and arc_fraction >= min_arc_fraction,
+    )
+
+
+def _profile_polarity(profile, xs, ys, shape) -> float:
+    """Whether the ball is brighter (+1) or darker (-1) than what surrounds it.
+
+    Only rays that stay inside the image are asked: the rest are extended by border
+    replication, which says nothing about the background.
+    """
+    h, w = shape
+    inside = (xs >= 0) & (xs <= w) & (ys >= 0) & (ys <= h)
+    rays = inside.all(axis=1)
+    if not rays.any():
+        rays = np.ones(len(profile), bool)
+    quarter = max(1, profile.shape[1] // 4)
+    core = float(np.median(profile[rays, :quarter]))
+    around = float(np.median(profile[rays, -quarter:]))
+    return 1.0 if core >= around else -1.0
+
+
+def _weighted_rms(d, weights) -> float:
+    """RMS radial residual; the weights collapsing means no rim was found at all."""
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0:
+        raise DetectionError("no rim point is consistent with a circle of this radius")
+    return float(np.sqrt(float(np.sum(weights * d * d)) / total))
+
+
+def _fit_centre(pts, centre, r, rounds: int = 8):
+    """Robust least-squares centre of a circle of known radius `r` through `pts`.
+
+    Minimising `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
+    `c = mean_w(p_i - r u_i)` with `u_i` the unit vector from `c` to `p_i`, which is what
+    this iterates, re-weighting Tukey-style on the radial residual as `refine_rim` does.
+    """
+    weights = np.ones(len(pts))
+    d = np.zeros(len(pts))
+    for _ in range(rounds):
+        delta = pts - centre
+        dist = np.hypot(delta[:, 0], delta[:, 1])
+        d = dist - r
+        outer = np.abs(d[d >= 0.0])
+        scale = max(
+            1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
+            1.4826 * float(np.median(np.abs(d - np.median(d)))),
+            1e-3,
+        )
+        cut = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
+        weights = (1.0 - np.clip(d / cut, -1.0, 1.0) ** 2) ** 2
+        unit = delta / np.maximum(dist, 1e-9)[:, None]
+        total = float(weights.sum())
+        if total <= 0:
+            break
+        centre = (weights[:, None] * (pts - r * unit)).sum(0) / total
+    return centre, weights, d
+
+
 def _confidence(
     fit: RimFit, arc_fraction: float, hull_r: float, spread: float
 ) -> float:
@@ -481,7 +656,9 @@ def detect_ball(
             f"{100 * abs(fit.r / r0 - 1):.1f}% (circle would be {fit.cx:.1f}, "
             f"{fit.cy:.1f}, r {fit.r:.1f})"
         )
-    log.info(
+    # Debug, not info: `autofit.Prepared.line` reports this to the user once, while the
+    # moved-ball watch calls this every few tens of frames while it is following.
+    log.debug(
         "ball detected at (%.1f, %.1f) r %.1f px from %d frames "
         "(confidence %.2f, rim %.0f%%, residual %.2f px)",
         fit.cx, fit.cy, fit.r, n, confidence, 100 * fit.rim_fraction, fit.residual_px,

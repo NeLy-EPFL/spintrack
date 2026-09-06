@@ -21,7 +21,13 @@ from spintrack.io.dat import N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
 from spintrack.maps import load_map, save_map
 from spintrack.path import PathIntegrator
-from spintrack.sphere import fit_ball, pixel_circle, source_mask, window_geometry
+from spintrack.sphere import (
+    centre_from_pixel_circle,
+    fit_ball,
+    pixel_circle,
+    source_mask,
+    window_geometry,
+)
 
 log = logging.getLogger("spintrack")
 
@@ -233,9 +239,12 @@ class Tracker:
         if float(np.hypot(target[0] - cx, target[1] - cy)) < FOLLOW_TOL_PX:
             return
         # The radius is left alone: a ball only changes apparent size by moving along the
-        # optical axis, and translation on its own is much better conditioned.
-        self.refit_centre(self.camera.rays(target[0], target[1]))
-        self.watch.note_refit(self.frame)
+        # optical axis, and translation on its own is much better conditioned. The target
+        # is where the silhouette's circle should sit, which is not where the ball's
+        # centre projects, so it is inverted rather than read as a direction.
+        self.refit_centre(
+            centre_from_pixel_circle(self.camera, target, self.half_angle, self.centre)
+        )
         self._record_refit(target)
 
     def orientations_in_current_window(self, recorded) -> list:
@@ -262,11 +271,11 @@ class Tracker:
         origin = tuple(self.watch.origin_px)
         last = self.refits[-1] if self.refits else None
         if last is not None and self.frame - last.end <= self.params.centre_watch_gap:
-            last.extend(self.frame, (target[0], target[1]), self.watch.confidence)
+            last.extend(self.frame, (target[0], target[1]), self.watch.rim_fraction)
             return
         here = (float(target[0]), float(target[1]))
         event = RefitEvent(
-            self.frame, self.frame, origin, here, here, self.watch.confidence
+            self.frame, self.frame, origin, here, here, self.watch.rim_fraction
         )
         self.refits.append(event)
 

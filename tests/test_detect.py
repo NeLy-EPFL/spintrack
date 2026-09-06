@@ -120,3 +120,37 @@ def test_rim_points_are_a_fictrac_roi_circ():
     assert all(isinstance(v, int) for v in points)
     xy = np.asarray(points, dtype=float).reshape(-1, 2)
     assert np.allclose(np.hypot(xy[:, 0] - det.cx, xy[:, 1] - det.cy), det.r, atol=2.0)
+
+
+def test_relocate_finds_a_known_ball_from_a_seed_a_few_pixels_off():
+    """The cheap look the moved-ball watch follows with: centre only, radius given."""
+    from spintrack.detect import relocate_ball
+
+    size, centre, half = CASES[1]
+    frames = sequence(size, centre, half, n=4)
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    for dx, dy in ((0.0, 0.0), (4.0, -3.0), (-5.0, 5.0)):
+        found = relocate_ball(frames, cx + dx, cy + dy, r)
+        assert found.ok
+        assert np.hypot(found.cx - cx, found.cy - cy) < 1.0, (dx, dy, found)
+        assert found.residual_px < 0.02 * r
+        assert found.polarity == 1.0  # the ball is brighter than the background
+
+
+def test_relocate_says_so_when_the_rim_is_not_where_it_was_told():
+    """A look with no rim in its band must be refused, not answered with the seed.
+
+    The residual is what catches it: a fit that has latched onto the wrong edge still
+    covers most of the rim, and only its residual gives it away.
+    """
+    from spintrack.detect import relocate_ball
+
+    size, centre, half = CASES[1]
+    frames = sequence(size, centre, half, n=4)
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    good = relocate_ball(frames, cx, cy, r)
+    try:
+        bad = relocate_ball(frames, cx, cy, 0.75 * r)
+    except DetectionError:
+        return
+    assert bad.residual_px > 5.0 * good.residual_px, (good, bad)

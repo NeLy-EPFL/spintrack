@@ -90,8 +90,25 @@ absolute orientation stays referred to the first window frame so that the column
 
 The window has to move on *every* frame while the ball is moving, not just when a detection
 lands: a window left one frame behind turns the ball's own movement into a rotation of about
-`d / r` radians. Detection is too slow for that, so it runs every tenth frame and an
-alpha-beta filter carries the centre in between.
+`d / r` radians. Two different looks make that affordable.
+
+- **Has it moved?** `detect_ball`, which finds the ball wherever it is. It has to: by the
+  time the cost has risen the ball is already tens of pixels away, and a rim search seeded
+  at the old centre does not recover it - on a real trial it walks off onto a circle through
+  the animal's back instead. It runs on a downscaled, strided buffer, which is 12-15 ms
+  rather than 250 and no less reliable, because "has it moved by 5% of the radius" needs no
+  sub-pixel accuracy. While the cost is merely elevated it runs every tenth frame, doubling
+  the interval after each look that says the ball has not moved.
+- **Where is it now?** `relocate_ball`, seeded on the carried estimate with the radius
+  already known and a rim band a few percent of it wide. Only that band needs the temporal
+  quantile and the foreground mask and hull RANSAC can be skipped, which is 3-4 ms - cheap
+  enough to run on every frame while the window is following. An alpha-beta filter carries
+  the displacement between looks; a detection re-anchors it every 40 frames, and sooner
+  whenever a rim look does not fit the known radius well enough to be believed.
+
+Everything is measured as a displacement from a look taken early in the same run, never as
+an absolute position, so a systematic difference between an estimator and whatever fitted
+the config's circle cancels: while the ball is still, the window does not move at all.
 
 ## Offline refinement
 
