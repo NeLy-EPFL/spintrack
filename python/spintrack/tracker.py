@@ -105,6 +105,10 @@ class Tracker:
         self._prev_ts: float | None = None
         self._prev_obs: np.ndarray | None = None
         self.geometry_version = 0
+        # The window frame the frame now being reported was tracked in. A re-fit during
+        # `process_frame` steps `geometry_version` past it, so anything kept alongside a
+        # result - a normalized window, an orientation - must be tagged with this.
+        self.tracked_version = 0
         self.centre_initial = self.centre.copy()
         self.refits: list = []
         self._moves: list = []  # one Q per window move, for the offline refinement
@@ -160,6 +164,10 @@ class Tracker:
         self, gray: np.ndarray, ts_ms: float = -1.0, wall_ms: float | None = None
     ) -> FrameResult | None:
         """Track one grayscale frame (2-D uint8). Returns None if the frame was dropped."""
+        self.tracked_version = self.geometry_version
+        # The window this frame is tracked in; `_watch_centre` below may move it, and
+        # the increment and orientation the step returns belong to this one.
+        R_wc = self.R_wc
         window = self.geometry.remap(gray)
         # Captured before the step, which overwrites both.
         r_prev, velocity = self.engine.R, self.engine.velocity
@@ -189,6 +197,7 @@ class Tracker:
             step.cost,
             delta_ts,
             self.path,
+            R_wc,
         )
         self.seq += 1
         return FrameResult(
@@ -290,9 +299,17 @@ class Tracker:
             previous, self.engine.last_obs, r_prev, step.w_win, velocity
         )
 
-    def _values(self, frame, seq, ts_ms, wall_ms, w_win, R_win, err, delta_ts, path):
-        """The 25 FicTrac columns for one tracked frame (also advances `path`)."""
-        R_wc = self.R_wc
+    def _values(
+        self, frame, seq, ts_ms, wall_ms, w_win, R_win, err, delta_ts, path, R_wc=None
+    ):
+        """The 25 FicTrac columns for one tracked frame (also advances `path`).
+
+        `R_wc` is the window-to-camera transform that `w_win` and `R_win` are written
+        in. It is not `self.R_wc` on a frame whose own window has just been re-fitted:
+        pairing the new window with the old orientation rotates the reported camera-frame
+        orientation by the window move.
+        """
+        R_wc = self.R_wc if R_wc is None else R_wc
         w_cam = R_wc @ w_win
         R_cam = R_wc @ R_win @ self.R_wc0.T
         w_lab = self.cam_to_lab @ w_cam

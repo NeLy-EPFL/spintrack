@@ -150,6 +150,12 @@ class TrackEngine:
         new window only changes the coordinates the orientation is written in: `Q` maps
         the old window frame to the new one. The previous-frame map cannot be carried (the
         new core has never seen a frame), which costs one frame of the `prev` fallback.
+
+        `last_obs` is kept: the frame it came from was tracked, and it is a valid
+        observation in the old window frame, exactly like the orientation `Q` is applied
+        to. Its consumers pair it with the version the frame was tracked at
+        (`Tracker.tracked_version`); dropping it here instead cost the refine buffer and
+        the debug video every frame whose window moved.
         """
         mean, weight = self.export_map()
         n = geometry.size
@@ -173,7 +179,6 @@ class TrackEngine:
         self._mask = geometry.mask.astype(np.float32)
         self.R = Q @ self.R
         self.velocity = Q @ self.velocity
-        self.last_obs = None
 
     # ----- normalization -----
     def normalize(self, window: np.ndarray) -> np.ndarray:

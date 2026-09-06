@@ -98,3 +98,35 @@ def test_watch_follows_a_moving_ball():
             assert tracker.refits, "the watch should have noticed a 25 px move"
             assert tracker.refits[-1].max_shift_px > 10.0
     assert errors[True] < 0.5 * errors[False], errors
+
+
+def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
+    """The frame whose window moved is still an observation, in the frame it was tracked in.
+
+    Dropping it cost the offline refinement 562 of trial 004's 3013 rows and left the
+    debug video's window panel blank over the whole episode.
+    """
+    move, start, over = 25.0, 220, 150
+
+    def drift(i):
+        return shifted(move * float(np.clip((i - start) / over, 0.0, 1.0)))
+
+    images, _, _ = sequence(start + over + 20, drift=drift)
+    tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    kept = []  # (R_win, the version it was tracked in, the camera-frame orientation)
+    moved_frames = 0
+    for image, _ in images:
+        result = tracker.process_frame(image)
+        assert tracker.engine.last_obs is not None, "every tracked frame has a window"
+        moved_frames += tracker.geometry_version > tracker.tracked_version
+        if result is not None:
+            kept.append((result.step.R_win, tracker.tracked_version, result.R_cam))
+    assert tracker.refits and moved_frames > 1, (
+        "the watch should have followed the ball"
+    )
+
+    # Every kept orientation, brought into the final window frame, must still describe
+    # the camera-frame orientation that was reported at the time.
+    brought = tracker.orientations_in_current_window([(r, v) for r, v, _ in kept])
+    for R_now, (_, _, R_cam) in zip(brought, kept, strict=True):
+        assert np.allclose(tracker.R_wc @ R_now @ tracker.R_wc0.T, R_cam, atol=1e-9)

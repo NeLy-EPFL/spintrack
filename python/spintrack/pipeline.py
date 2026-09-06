@@ -156,10 +156,12 @@ def run(
                 R_win = result.step.R_win if result is not None else None
                 obs16 = tracker.engine.last_obs.astype(np.float16)
                 # Orientations recorded before a window move are in the old window frame;
-                # `geometry_version` says which frame each one belongs to, and they are
-                # brought forward together once the run is over.
+                # `tracked_version` says which frame each one belongs to, and they are
+                # brought forward together once the run is over. It is not
+                # `geometry_version`: a frame whose own window moved was tracked in the
+                # frame before the move.
                 keep.append((frame.index, frame.ts_ms, frame.wall_ms, obs16, R_win,
-                             tracker.geometry_version))  # fmt: skip
+                             tracker.tracked_version))  # fmt: skip
             if progress is not None and stats.frames % 500 == 0:
                 stats.wall_s = time.perf_counter() - t0
                 progress(stats)
