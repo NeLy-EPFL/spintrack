@@ -67,8 +67,6 @@ class Renderer:
         rng: np.random.Generator,
     ):
         self.camera = camera
-        self.centre = normalize(np.asarray(centre, dtype=np.float64))
-        self.half_angle = float(half_angle)
         self.texture = texture
         self.lighting = lighting
         self.sensor = sensor
@@ -76,6 +74,42 @@ class Renderer:
         self.fps = fps
         self.rng = rng
         h, w = camera.height, camera.width
+
+        self.set_centre(centre, half_angle)
+        # The animal is tethered above the ball, so it stays where it was even if the
+        # ball moves: its anchor and size are frozen at the first frame's geometry.
+        self.body_anchor_px = self.centre_px
+        self.body_radius_px = self.radius_px
+
+        yy, xx = np.mgrid[0:h, 0:w]
+        r2 = ((xx - w / 2) ** 2 + (yy - h / 2) ** 2) / ((w / 2) ** 2 + (h / 2) ** 2)
+        self.vignette = (1.0 - lighting.vignette * r2).astype(np.float32)
+        bg_rng = np.random.default_rng(rng.integers(0, 2**31))
+        self.background = (
+            sensor.background + bg_rng.normal(0.0, sensor.background_noise, (h, w))
+        ).astype(np.float32)
+        self.dust_gain = np.ones((h, w), np.float32)
+        x0, y0, x1, y1 = self.bbox
+        for _ in range(occluders.dust):
+            dx, dy, rad = (
+                bg_rng.uniform(x0, x1),
+                bg_rng.uniform(y0, y1),
+                bg_rng.uniform(4, 12),
+            )
+            spot = np.exp(-((xx - dx) ** 2 + (yy - dy) ** 2) / (2 * rad**2))
+            self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
+
+    def set_centre(self, centre, half_angle: float | None = None) -> None:
+        """Point the ball at `centre`, rebuilding everything that depends on where it is.
+
+        Costs about 0.1 s at 3x supersampling, so scenes call it only on the frames where
+        the ball has actually moved.
+        """
+        camera, sensor = self.camera, self.sensor
+        h, w = camera.height, camera.width
+        self.centre = normalize(np.asarray(centre, dtype=np.float64))
+        if half_angle is not None:
+            self.half_angle = float(half_angle)
 
         outline = ball_outline(camera, self.centre, self.half_angle, 90)
         margin = int(np.ceil(4 * sensor.blur_sigma + 2))
@@ -103,30 +137,16 @@ class Renderer:
         normals[~self.hit] = 0.0
         self.normals = normals.astype(np.float32)
 
-        light = normalize(np.asarray(lighting.light_dir, dtype=np.float64))
+        light = normalize(np.asarray(self.lighting.light_dir, dtype=np.float64))
         ndotl = np.clip(normals @ light, 0.0, None)
         view = -rays
         reflect = 2.0 * ndotl[..., None] * normals - light
-        spec = np.clip(np.sum(reflect * view, axis=-1), 0.0, None) ** lighting.shininess
-        self.shade = (lighting.ambient + lighting.diffuse * ndotl) * self.hit
-        self.spec = (lighting.specular * spec * self.hit).astype(np.float32)
-
-        yy, xx = np.mgrid[0:h, 0:w]
-        r2 = ((xx - w / 2) ** 2 + (yy - h / 2) ** 2) / ((w / 2) ** 2 + (h / 2) ** 2)
-        self.vignette = (1.0 - lighting.vignette * r2).astype(np.float32)
-        bg_rng = np.random.default_rng(rng.integers(0, 2**31))
-        self.background = (
-            sensor.background + bg_rng.normal(0.0, sensor.background_noise, (h, w))
-        ).astype(np.float32)
-        self.dust_gain = np.ones((h, w), np.float32)
-        for _ in range(occluders.dust):
-            dx, dy, rad = (
-                bg_rng.uniform(x0, x1),
-                bg_rng.uniform(y0, y1),
-                bg_rng.uniform(4, 12),
-            )
-            spot = np.exp(-((xx - dx) ** 2 + (yy - dy) ** 2) / (2 * rad**2))
-            self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
+        spec = (
+            np.clip(np.sum(reflect * view, axis=-1), 0.0, None)
+            ** self.lighting.shininess
+        )
+        self.shade = (self.lighting.ambient + self.lighting.diffuse * ndotl) * self.hit
+        self.spec = (self.lighting.specular * spec * self.hit).astype(np.float32)
 
     # ----- ball appearance -----
     def albedo(self, R: np.ndarray) -> np.ndarray:
@@ -188,18 +208,18 @@ class Renderer:
         if not self.occluders.body:
             return None
         cx, cy = self._body_centre()
-        axes = (int(0.38 * self.radius_px), int(0.22 * self.radius_px))
+        axes = (int(0.38 * self.body_radius_px), int(0.22 * self.body_radius_px))
         pts = cv2.ellipse2Poly((int(cx), int(cy)), axes, 0, 0, 360, 20)
         return [int(v) for v in pts.ravel()]
 
     def _body_centre(self) -> tuple[float, float]:
-        cx, cy = self.centre_px
-        return cx, cy - 0.78 * self.radius_px
+        cx, cy = self.body_anchor_px
+        return cx, cy - 0.78 * self.body_radius_px
 
     def _draw_occluders(self, img: np.ndarray, t_s: float) -> None:
         occ = self.occluders
-        cx, cy = self.centre_px
-        r = self.radius_px
+        cx, cy = self.body_anchor_px
+        r = self.body_radius_px
         if occ.body:
             bx, by = self._body_centre()
             axes = (int(0.38 * r), int(0.22 * r))

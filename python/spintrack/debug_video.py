@@ -69,13 +69,9 @@ class DebugCanvas:
         self.scale = scale
         self.main_w = round(tracker.width * scale)
         self.width = self.main_w + panel * 2
-        cam = tracker.camera
-        self.outline = np.round(
-            ball_outline(cam, tracker.centre, tracker.half_angle, 90) * scale
-        )
-        cx, cy, _ = cam.project(tracker.centre)
-        self.centre_px = (float(cx) * scale, float(cy) * scale)
         self.axis_len = 0.8 * np.sin(tracker.half_angle)
+        self._geometry_version = -1
+        self._update_outline()
         self._path = np.empty((1024, 2), np.float64)  # grown by doubling
         self._n_path = 0
         self.path_bbox = [-0.1, 0.1, -0.1, 0.1]
@@ -100,10 +96,22 @@ class DebugCanvas:
         x, y, _ = self.tracker.camera.project(tip)
         return int(x * self.scale), int(y * self.scale)
 
+    def _update_outline(self) -> None:
+        """Re-project the ball outline; the window may have been moved onto a moved ball."""
+        tracker, scale = self.tracker, self.scale
+        self._geometry_version = tracker.geometry_version
+        self.outline = np.round(
+            ball_outline(tracker.camera, tracker.centre, tracker.half_angle, 90) * scale
+        )
+        cx, cy, _ = tracker.camera.project(tracker.centre)
+        self.centre_px = (float(cx) * scale, float(cy) * scale)
+
     def render(
         self, gray: np.ndarray, result: FrameResult | None, fps: float | None = None
     ):
         tr = self.tracker
+        if tr.geometry_version != self._geometry_version:
+            self._update_outline()
         main = cv2.resize(
             gray, (self.main_w, self.height), interpolation=cv2.INTER_AREA
         )

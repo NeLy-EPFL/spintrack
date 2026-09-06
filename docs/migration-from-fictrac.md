@@ -34,6 +34,27 @@ keys work too. Keys spintrack does not need (`thr_ratio`, `opt_max_evals`, `opt_
 `opt_max_err`, `q_factor` beyond the window size) are accepted and ignored. spintrack adds
 `map_frozen: y` (never update a map loaded through `sphere_map_fn`).
 
+Three differences worth knowing before you copy a FicTrac config across:
+
+- **`vfov` may be `auto`**, or left out, and is then fitted from the recording. The fit is
+  only used when the photometric cost has a real minimum over 1-120 degrees; when it does
+  not, either the ball is small enough in the frame that the choice does not change the
+  rotation scale (the run reports the flat range it picked from) or the fit refuses and asks
+  for a number. FicTrac always required one.
+- **`roi_circ` / `roi_c` / `roi_r` may be left out**, and the ball is then found in the first
+  few hundred frames. A config that does describe a ball is never overridden; the detection
+  still runs as a check and the difference goes into the summary.
+- **`c2a_r` is required.** FicTrac silently used the identity when no camera-to-animal
+  transform was given, which makes the lab-frame columns look meaningful when they are just
+  the camera-frame ones. `spintrack run` refuses instead. `c2a_r : { 0, 0, 0 }` is a valid
+  answer - it is the identity, stated on purpose - and `spintrack calibrate CONFIG
+  --c2a-angles ELEV AZIM TWIST` writes one from where the camera sits.
+
+Each run also writes `<out>-summary.json` next to the `.dat` (disable with `--no-summary`).
+It holds the cost percentiles, the map coverage, the stretches where tracking was harder than
+usual, and the provenance of every geometric number the run used. Nothing about the `.dat`
+itself changes: it has no header and the 25 columns are unmoved.
+
 How the keys map onto spintrack's solver:
 
 - `q_factor`: tracking window side is `10 * q_factor` pixels, as in FicTrac. The solve runs

@@ -1,0 +1,100 @@
+"""Moving the tracking window onto a ball that has moved, without losing the map."""
+
+import sys
+
+import numpy as np
+
+from spintrack.camera import PinholeCamera
+from spintrack.config import Config
+from spintrack.engine import TrackParams
+from spintrack.geometry import normalize, rotvec_to_matrix
+from spintrack.sphere import pixel_circle
+from spintrack.tracker import Tracker
+
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+from test_detect import render
+from test_engine import make_texture
+
+SIZE = (240, 180)
+VFOV = 40.0
+HALF = 0.15
+CENTRE = normalize(np.array([0.0, 0.0, 1.0]))
+CAMERA = PinholeCamera(SIZE[0], SIZE[1], VFOV)
+STEP = (0.02, 0.05, 0.01)
+
+
+def config() -> Config:
+    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTRE), roi_r=HALF)
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    return cfg
+
+
+def shifted(dy: float):
+    cx, cy, _ = pixel_circle(CAMERA, CENTRE, HALF)
+    return normalize(CAMERA.rays(cx, cy + dy))
+
+
+def sequence(n, drift=None, seed=0):
+    """`n` frames of a rotating ball, optionally with the ball itself moving."""
+    rng = np.random.default_rng(seed)
+    texture = make_texture(rng, n_blobs=120)
+    R = np.eye(3)
+    out = []
+    for i in range(n):
+        if i > 0:
+            R = rotvec_to_matrix(STEP) @ R
+        centre = CENTRE if drift is None else drift(i)
+        out.append((render(texture, R, rng, SIZE, centre, HALF, occluders=False), R))
+    return out, texture, rng
+
+
+def test_refit_is_a_change_of_coordinates():
+    """The map and the ball's orientation in the camera survive a window move exactly."""
+    tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=False))
+    images, texture, rng = sequence(20)
+    for image, _ in images:
+        tracker.process_frame(image)
+    orientation = tracker.R_wc @ tracker.engine.R  # body -> camera, the physical state
+    mean, weight = (a.copy() for a in tracker.engine.export_map())
+    cost_before = tracker.engine._cost_level
+
+    tracker.refit_centre(shifted(5.0))
+    after_mean, after_weight = tracker.engine.export_map()
+    assert np.array_equal(mean, after_mean)
+    assert np.array_equal(weight, after_weight)
+    assert np.allclose(tracker.R_wc @ tracker.engine.R, orientation, atol=1e-9)
+
+    # The same ball, moved 5 px and followed, is not a rotation.
+    _, R_last = images[-1]
+    moved = render(texture, R_last, rng, SIZE, shifted(5.0), HALF, occluders=False)
+    result = tracker.process_frame(moved)
+    assert result is not None, "the tracker should not lose a ball it just followed"
+    assert np.degrees(np.linalg.norm(result.w_cam)) < 0.15, result.w_cam
+    assert result.step.cost < 1.5 * cost_before
+
+
+def test_watch_follows_a_moving_ball():
+    """With the watch off the ball's movement becomes rotation; with it on, it does not."""
+    move, start, over = 25.0, 220, 150
+
+    def drift(i):
+        return shifted(move * float(np.clip((i - start) / over, 0.0, 1.0)))
+
+    images, _, _ = sequence(start + over + 20, drift=drift)
+    errors = {}
+    for watch in (False, True):
+        tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=watch))
+        wrong = []
+        for image, _ in images:
+            result = tracker.process_frame(image)
+            wrong.append(
+                np.nan
+                if result is None
+                else np.degrees(np.linalg.norm(result.w_cam - np.array(STEP)))
+            )
+        during = np.array(wrong[start + 70 : start + over])
+        errors[watch] = float(np.nanmedian(during))
+        if watch:
+            assert tracker.refits, "the watch should have noticed a 25 px move"
+            assert tracker.refits[-1].max_shift_px > 10.0
+    assert errors[True] < 0.5 * errors[False], errors

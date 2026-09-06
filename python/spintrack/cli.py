@@ -72,8 +72,44 @@ def _add_run(sub) -> None:
     p.add_argument(
         "--no-prefetch", action="store_true", help="decode in the tracking thread"
     )
+    p.add_argument(
+        "--no-scale-check",
+        action="store_true",
+        help="skip the inner/outer check on the ball's assumed radius",
+    )
+    p.add_argument(
+        "--no-summary",
+        action="store_true",
+        help="do not write the run quality sidecar (<out>-summary.json)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_run)
+
+
+def _add_summarize(sub) -> None:
+    p = sub.add_parser("summarize", help="run quality summary of an existing .dat")
+    p.add_argument("dat", help="a FicTrac-format .dat written by spintrack or FicTrac")
+    p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="frame rate, if the .dat has no timestamps",
+    )
+    p.add_argument(
+        "--json", default=None, metavar="PATH", help="also write the sidecar"
+    )
+    p.set_defaults(func=cmd_summarize)
+
+
+def cmd_summarize(args) -> int:
+    from spintrack.quality import format_summary, summary_from_dat, write_sidecar
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    quality = summary_from_dat(args.dat, args.fps)
+    print(format_summary(quality))
+    if args.json:
+        write_sidecar(args.json, quality, {"dat": str(args.dat)})
+    return 0
 
 
 def _add_calibrate(sub) -> None:
@@ -82,10 +118,38 @@ def _add_calibrate(sub) -> None:
     p.add_argument(
         "--src", default=None, help="override src_fn: video path or camera index"
     )
+    p.add_argument(
+        "--c2a-angles",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("ELEV", "AZIM", "TWIST"),
+        help="write c2a_r from the camera position in degrees, without a window "
+        "(a camera directly behind the animal, level with the ball, is 0 180 0)",
+    )
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help="fit the ball from the recording and write it to the config, no window",
+    )
+    p.add_argument(
+        "--frames", type=int, default=100, help="frames to detect the ball from"
+    )
     p.set_defaults(func=cmd_calibrate)
 
 
 def cmd_calibrate(args) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if args.c2a_angles is not None:
+        from spintrack.calibrate.headless import write_c2a_angles
+
+        write_c2a_angles(args.config, *args.c2a_angles)
+        if not args.auto:
+            return 0
+    if args.auto:
+        from spintrack.calibrate.headless import write_auto_geometry
+
+        return write_auto_geometry(args.config, args.src, args.frames)
     from spintrack.calibrate.gui import calibrate
 
     return calibrate(args.config, args.src)
@@ -94,6 +158,28 @@ def cmd_calibrate(args) -> int:
 def _host_port(spec: str) -> tuple[str, int]:
     host, _, port = spec.rpartition(":")
     return host or "127.0.0.1", int(port)
+
+
+def _c2a_provenance(cfg) -> dict:
+    """Where the camera-to-animal transform came from, for the sidecar."""
+    source = cfg.c2a_source()
+    angles = cfg.extra.get("c2a_angles") if cfg.c2a_src == "sliders" else None
+    return {
+        "source": source,
+        "identity": source == "c2a_r" and not any(cfg.c2a_r),
+        "angles": list(angles) if angles else None,
+    }
+
+
+def _c2a_line(prov: dict) -> str:
+    if prov["identity"]:
+        return "identity (explicit)"
+    if prov["angles"]:
+        el, az, tw = prov["angles"]
+        return f"from config (sliders: elevation {el:g}, azimuth {az:g}, twist {tw:g})"
+    if prov["source"] == "c2a_r":
+        return "from config"
+    return f"from config ({prov['source']})"
 
 
 def cmd_run(args) -> int:
@@ -123,11 +209,30 @@ def cmd_run(args) -> int:
     if not src_spec:
         log.error("no source: set src_fn in the config or pass --src")
         return 2
+    if cfg.c2a_source() is None:
+        log.error(
+            "no camera-to-animal transform (c2a_r): the lab-frame and forward/side "
+            "columns would be\ncamera-frame values in disguise. Fix: spintrack "
+            "calibrate CONFIG --c2a-angles ELEV AZIM TWIST\n(a camera directly behind "
+            "the animal, level with the ball, is 0 180 0), or write\n"
+            "`c2a_r : { 0, 0, 0 }` to use the identity explicitly."
+        )
+        return 2
     if not str(src_spec).isdigit():
         src_path = Path(src_spec)
         if not src_path.is_absolute():
             src_path = config_path.parent / src_path
         src_spec = str(src_path)
+    prepared = None
+    if not cfg.has_ball() or cfg.vfov is None:
+        from spintrack.autofit import prepare_config
+        from spintrack.detect import DetectionError
+
+        try:
+            prepared = prepare_config(cfg, src_spec)
+        except (DetectionError, ValueError) as exc:
+            log.error("%s", exc)
+            return 2
     source = open_source(src_spec)
 
     if args.out:
@@ -154,7 +259,12 @@ def cmd_run(args) -> int:
     if args.print:
         recorders.append(TerminalRecorder())
 
-    params = TrackParams(max_pixels=None) if args.all_pixels else None
+    params = TrackParams() if args.all_pixels or args.no_scale_check else None
+    if params is not None:
+        params.max_pixels = None if args.all_pixels else params.max_pixels
+        params.scale_check_stride = (
+            0 if args.no_scale_check else params.scale_check_stride
+        )
     debug_video = args.debug_video
     if debug_video is None and cfg.save_debug:
         debug_video = "auto"
@@ -163,6 +273,29 @@ def cmd_run(args) -> int:
     refined_out = args.refine_out
     if args.refine > 0 and refined_out is None:
         refined_out = str(out_path.with_name(out_path.stem + "-refined.dat"))
+    summary_out = None
+    if not args.no_summary:
+        summary_out = str(out_path.with_name(out_path.stem + "-summary.json"))
+    provenance = {
+        "config": str(config_path),
+        "source": str(src_spec),
+        "vfov": (
+            prepared.vfov.report()
+            if prepared is not None and prepared.vfov is not None
+            else {"value": cfg.vfov, "source": "config"}
+        ),
+        "ball": (
+            prepared.report()
+            if prepared is not None
+            else {"source": "config", "roi_c": cfg.roi_c, "roi_r": cfg.roi_r}
+        ),
+        "c2a": _c2a_provenance(cfg),
+    }
+    checks = {"c2a_r": _c2a_line(provenance["c2a"])}
+    if prepared is not None:
+        checks["ball"] = prepared.line()
+        if prepared.vfov is not None:
+            checks["vfov"] = prepared.vfov.line()
     log.info("spintrack %s: %s -> %s", __version__, src_spec, out_path)
 
     def progress(stats):
@@ -184,6 +317,9 @@ def cmd_run(args) -> int:
             debug_video=debug_video,
             refine_sweeps=args.refine,
             refined_out=refined_out,
+            summary_out=summary_out,
+            provenance=provenance,
+            checks=checks,
         )
     finally:
         source.close()
@@ -198,6 +334,12 @@ def cmd_run(args) -> int:
         log.info("refined: %s -> %s", stats.refine, refined_out)
     if debug_video:
         log.info("debug video: %s", debug_video)
+    if stats.quality is not None:
+        from spintrack.quality import format_summary
+
+        log.info("%s", format_summary(stats.quality))
+        if summary_out:
+            log.info("summary: %s", summary_out)
     return 0
 
 
@@ -209,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     _add_run(sub)
     _add_calibrate(sub)
+    _add_summarize(sub)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()

@@ -18,6 +18,7 @@ import yaml
 
 _TRUE = {"y", "yes", "true", "1"}
 _FALSE = {"n", "no", "false", "0"}
+_AUTO = {"auto", "none", ""}
 
 
 @dataclass
@@ -28,7 +29,7 @@ class Config:
     """
 
     src_fn: str = ""
-    vfov: float | None = None
+    vfov: float | None = None  # None or `auto` in the config: fitted from the recording
     fisheye: bool = False
     q_factor: int = 6
     src_fps: float = -1.0
@@ -148,6 +149,16 @@ class Config:
             path.write_text(self.to_text())
 
     # ----- derived -----
+    def c2a_source(self) -> str | None:
+        """Which key defines the camera-to-animal transform, or None if none does."""
+        if self.c2a_r is not None and len(self.c2a_r) == 3:
+            return "c2a_r"
+        if self.c2a_src.startswith("c2a_cnrs_"):
+            corners = getattr(self, self.c2a_src, None)
+            if corners and len(corners) == 8:
+                return self.c2a_src
+        return None
+
     def has_ball(self) -> bool:
         return (self.roi_c is not None and self.roi_r is not None) or len(
             self.roi_circ
@@ -161,7 +172,7 @@ class Config:
 # Field name -> coercion kind.
 _FIELD_TYPES: dict[str, str] = {
     "src_fn": "str",
-    "vfov": "float",
+    "vfov": "auto_float",
     "fisheye": "bool",
     "q_factor": "int",
     "src_fps": "float",
@@ -231,6 +242,12 @@ def _coerce(key: str, value: Any) -> Any:
     if kind == "str":
         return "" if value is None else str(value)
     if kind == "float":
+        return float(value)
+    if kind == "auto_float":
+        # `auto` (or a missing key) means "measure it from the recording"; see
+        # `spintrack.autofit.fit_vfov`.
+        if value is None or (isinstance(value, str) and value.strip().lower() in _AUTO):
+            return None
         return float(value)
     if kind == "int":
         return _to_int(value)

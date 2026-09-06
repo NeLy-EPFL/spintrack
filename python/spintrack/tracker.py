@@ -21,9 +21,14 @@ from spintrack.io.dat import N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
 from spintrack.maps import load_map, save_map
 from spintrack.path import PathIntegrator
-from spintrack.sphere import fit_ball, source_mask, window_geometry
+from spintrack.sphere import fit_ball, pixel_circle, source_mask, window_geometry
 
 log = logging.getLogger("spintrack")
+
+# Move the window when the followed centre has drifted this far from it. Small
+# enough that the ball's own movement is not read as rotation, large enough that a
+# still ball is not re-fitted on detection noise.
+FOLLOW_TOL_PX = 0.25
 
 
 @dataclass
@@ -77,6 +82,9 @@ class Tracker:
             self.camera, self.centre, self.half_angle, cfg.window_size(), mask
         )
         self.R_wc = self.geometry.to_camera  # window -> camera
+        # The reporting convention is fixed to the first window frame, so a later re-fit
+        # moves the window without stepping the absolute-orientation columns.
+        self.R_wc0 = self.R_wc
         self.cam_to_lab = self._camera_to_lab(cfg)
         self.params = params_from_config(cfg, params)
         if cfg.sphere_map_fn:
@@ -89,15 +97,39 @@ class Tracker:
         self.frame = 0
         self.seq = 0
         self._prev_ts: float | None = None
+        self._prev_obs: np.ndarray | None = None
+        self.geometry_version = 0
+        self.centre_initial = self.centre.copy()
+        self.refits: list = []
+        self._moves: list = []  # one Q per window move, for the offline refinement
+        self.watch = None
+        if self.params.centre_watch:
+            from spintrack.refit import CentreWatch
+
+            cx, cy, radius = pixel_circle(self.camera, self.centre, self.half_angle)
+            self.watch = CentreWatch((cx, cy), radius, self.params.centre_watch_factor)
+        self.scale_check = None
+        if self.params.scale_check_stride > 0:
+            from spintrack.autofit import ScaleCheck
+
+            check = ScaleCheck(self.geometry, self.params, self.half_angle)
+            self.scale_check = check if check.enabled else None
 
     def _camera_to_lab(self, cfg: Config) -> np.ndarray:
-        if cfg.c2a_r is not None and len(cfg.c2a_r) == 3:
+        """The transform named by `cfg.c2a_source()`; identity (with a warning) if none.
+
+        Also records which key it came from in `self.c2a_source`. The camera-frame columns
+        of the output are valid without a transform, so this warns rather than raising;
+        `spintrack run` refuses instead, because its lab-frame columns would be camera
+        values in disguise.
+        """
+        self.c2a_source = cfg.c2a_source() or "identity"
+        if self.c2a_source == "c2a_r":
             return rotvec_to_matrix(np.asarray(cfg.c2a_r, dtype=np.float64))
-        src = cfg.c2a_src
-        corners = getattr(cfg, src, None) if src.startswith("c2a_cnrs_") else None
-        if corners and len(corners) == 8:
+        if self.c2a_source.startswith("c2a_cnrs_"):
+            corners = getattr(cfg, self.c2a_source)
             pts = np.asarray(corners, dtype=np.float64).reshape(4, 2)
-            return camera_to_lab_from_square(pts, self.camera, src[-2:])
+            return camera_to_lab_from_square(pts, self.camera, self.c2a_source[-2:])
         log.warning("no camera-to-lab transform in config (c2a_r); using identity")
         return np.eye(3)
 
@@ -123,7 +155,11 @@ class Tracker:
     ) -> FrameResult | None:
         """Track one grayscale frame (2-D uint8). Returns None if the frame was dropped."""
         window = self.geometry.remap(gray)
+        # Captured before the step, which overwrites both.
+        r_prev, velocity = self.engine.R, self.engine.velocity
         step = self.engine.step(window)
+        self._check_scale(step, r_prev, velocity)
+        self._watch_centre(gray, step)
         frame = self.frame
         self.frame += 1
         if not step.ok:
@@ -153,11 +189,103 @@ class Tracker:
             frame, int(values[22]), ts_ms, w_cam, w_lab, R_cam, R_lab, step, values
         )
 
+    def refit_centre(self, new_centre) -> np.ndarray:
+        """Point the tracking window at a new ball centre, keeping the surface map.
+
+        Returns the rotation `Q` from the old window frame to the new one, which the
+        caller must apply to any orientation it recorded in the old frame. The ignore
+        polygons are image-fixed (the animal has not moved), so they are not translated.
+        """
+        centre = normalize(np.asarray(new_centre, dtype=np.float64))
+        mask = source_mask(self.camera, centre, self.half_angle, self.cfg.roi_ignr)
+        geometry = window_geometry(
+            self.camera, centre, self.half_angle, self.cfg.window_size(), mask
+        )
+        Q = geometry.to_camera.T @ self.R_wc
+        self.engine.rebuild(geometry, Q)
+        self.geometry = geometry
+        self.R_wc = geometry.to_camera
+        self.centre = centre
+        self.geometry_version += 1
+        self._moves.append(Q)
+        self._prev_obs = None
+        if self.scale_check is not None:
+            from spintrack.autofit import ScaleCheck
+
+            check = ScaleCheck(geometry, self.params, self.half_angle)
+            if check.enabled:
+                # The statistic is a ratio of projections within each frame, so rows taken
+                # in the old window frame stay comparable with rows taken in the new one.
+                check.rows = self.scale_check.rows
+                self.scale_check = check
+            else:
+                self.scale_check = None
+        return Q
+
+    def _watch_centre(self, gray: np.ndarray, step) -> None:
+        """Keep the tracking window on a ball that is moving in its holder."""
+        if self.watch is None:
+            return
+        target = self.watch.update(self.frame, gray, step.cost if step.ok else None)
+        if target is None:
+            return
+        cx, cy, _ = pixel_circle(self.camera, self.centre, self.half_angle)
+        if float(np.hypot(target[0] - cx, target[1] - cy)) < FOLLOW_TOL_PX:
+            return
+        # The radius is left alone: a ball only changes apparent size by moving along the
+        # optical axis, and translation on its own is much better conditioned.
+        self.refit_centre(self.camera.rays(target[0], target[1]))
+        self.watch.note_refit(self.frame)
+        self._record_refit(target)
+
+    def orientations_in_current_window(self, recorded) -> list:
+        """Bring window-frame orientations recorded before a re-fit into the current frame.
+
+        `recorded` is a sequence of `(R_win, geometry_version)`; every window move left a
+        `Q` behind, and an orientation from version `v` needs the product of the moves
+        since then applied to it.
+        """
+        out = []
+        for R_win, version in recorded:
+            if R_win is None:
+                out.append(None)
+                continue
+            for Q in self._moves[version:]:
+                R_win = Q @ R_win
+            out.append(R_win)
+        return out
+
+    def _record_refit(self, target) -> None:
+        """Fold this window move into the episode it belongs to, for the run summary."""
+        from spintrack.refit import RefitEvent
+
+        origin = tuple(self.watch.origin_px)
+        last = self.refits[-1] if self.refits else None
+        if last is not None and self.frame - last.end <= self.params.centre_watch_gap:
+            last.extend(self.frame, (target[0], target[1]), self.watch.confidence)
+            return
+        here = (float(target[0]), float(target[1]))
+        event = RefitEvent(
+            self.frame, self.frame, origin, here, here, self.watch.confidence
+        )
+        self.refits.append(event)
+
+    def _check_scale(self, step, r_prev, velocity) -> None:
+        """Feed one frame-to-frame increment to the radius check, if one is due."""
+        previous, self._prev_obs = self._prev_obs, self.engine.last_obs
+        if self.scale_check is None or previous is None or not step.ok:
+            return
+        if self.frame % self.params.scale_check_stride:
+            return
+        self.scale_check.step(
+            previous, self.engine.last_obs, r_prev, step.w_win, velocity
+        )
+
     def _values(self, frame, seq, ts_ms, wall_ms, w_win, R_win, err, delta_ts, path):
         """The 25 FicTrac columns for one tracked frame (also advances `path`)."""
         R_wc = self.R_wc
         w_cam = R_wc @ w_win
-        R_cam = R_wc @ R_win @ R_wc.T
+        R_cam = R_wc @ R_win @ self.R_wc0.T
         w_lab = self.cam_to_lab @ w_cam
         R_lab = self.cam_to_lab @ R_cam @ self.cam_to_lab.T
         p = path.step(w_lab)

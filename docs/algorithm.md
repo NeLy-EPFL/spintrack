@@ -47,6 +47,50 @@ iterations and analytic derivatives.
    semantics. Unlike FicTrac, the camera-frame columns are in true camera coordinates rather
    than the window frame; the two coincide for a ball near the image centre.
 
+## Geometry from the data
+
+Three of the numbers the solver needs are measured from the recording rather than asked for.
+
+**The ball's image circle** (`spintrack.detect`). A high per-pixel quantile over ~100 frames
+erases the rotating surface texture and leaves the shading envelope; the convex hull of the
+foreground removes what bites into the disc and RANSAC removes what sticks out of it; then
+along each of 360 rays the outermost local maximum of the radial gradient is taken sub-pixel,
+which is what keeps interior blob edges from winning. The measured rim, not a circle
+resampled from the fit, is what goes into `roi_circ`: a sphere's silhouette under a pinhole
+camera is an ellipse, and off-axis that is worth several percent of radius. The detection
+carries a confidence and refuses rather than returning a poor circle.
+
+**The field of view** (`autofit.fit_vfov`). The pixel circle and `vfov` together fix the
+ball's angular radius, so only `vfov` is searched, with the circle held fixed. Nine log-spaced
+candidates over 1-120 degrees, each tracked for 1000 frames, and the median cost taken; the
+value is believed only when the curve has a minimum inside the grid, deeper than its own
+wobble. The 1000 frames matter: over 300 the run is self-consistent at any assumed geometry
+and the curve is flat.
+
+**The radius, checked against itself** (`autofit.ScaleCheck`). The same frame-to-frame
+increment is solved again on an inner disc and an outer annulus of the tracking window. The
+two regions see the surface at different depths, and the depth is exactly what the assumed
+radius sets, so their ratio is 1 when the radius is right and moves monotonically when it is
+not - independently of the cost, which cannot tell an over-large ball from an under-large one.
+
+## Following a ball that moves
+
+A ball that sinks in its holder leaves the window looking at the wrong part of the image, and
+the solver quietly absorbs the translation into the rotation. `spintrack.refit` watches the
+cost against a long baseline; when it is sustainedly high it re-detects the ball and, if it
+really has moved, follows it.
+
+The map is not rebuilt. It is stored in the window frame at `R = I`, which is the ball's body
+frame, so a new window is only a change of coordinates: with `Q = R_wc_new^T R_wc_old`, the
+orientation and velocity become `Q R` and `Q v`, the residual model `I_k - M(R^T v_k)` is
+unchanged, and the ball's rotation relative to the camera is exactly preserved. The reported
+absolute orientation stays referred to the first window frame so that the columns do not step.
+
+The window has to move on *every* frame while the ball is moving, not just when a detection
+lands: a window left one frame behind turns the ball's own movement into a rotation of about
+`d / r` radians. Detection is too slow for that, so it runs every tenth frame and an
+alpha-beta filter carries the centre in between.
+
 ## Offline refinement
 
 Online tracking builds the map incrementally, so the first frames' errors are baked into

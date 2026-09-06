@@ -49,6 +49,12 @@ class SceneSpec:
     sensor: SensorSpec = field(default_factory=SensorSpec)
     occluders: OccluderSpec = field(default_factory=OccluderSpec)
     motion: MotionSpec = field(default_factory=MotionSpec)
+    # Optional movement of the ball itself in its holder, as
+    # `{"kind": "bump", "start": int, "end": int, "amplitude_radii": float,
+    #   "direction_deg": float}`: between `start` and `end` the centre slides
+    # `amplitude_radii` ball radii along `direction_deg` (90 = down the image) and comes
+    # back, following a raised cosine. The animal does not move with it.
+    ball_path: dict | None = None
     n_frames: int = 1000
     fps: float = 100.0
     codec: str = "h264"  # h264 | hevc | lossless
@@ -188,6 +194,32 @@ def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> Conf
     return cfg
 
 
+def centre_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
+    """Per-frame ball centre direction (n_frames, 3); constant unless `ball_path` is set."""
+    centre = spec.ball_centre()
+    path = np.repeat(centre[None, :], spec.n_frames, axis=0)
+    if not spec.ball_path:
+        return path
+    kind = spec.ball_path.get("kind", "bump")
+    if kind != "bump":
+        raise ValueError(f"unknown ball_path kind {kind!r}")
+    start = int(spec.ball_path["start"])
+    end = int(spec.ball_path["end"])
+    amplitude = float(spec.ball_path["amplitude_radii"]) * renderer.radius_px
+    angle = np.radians(float(spec.ball_path.get("direction_deg", 90.0)))
+    cx, cy = renderer.centre_px
+    index = np.arange(start, min(end, spec.n_frames))
+    phase = 2.0 * np.pi * (index - start) / max(end - start, 1)
+    offset = amplitude * 0.5 * (1.0 - np.cos(phase))
+    moved = renderer.camera.rays(
+        cx + offset * np.cos(angle), cy + offset * np.sin(angle)
+    )
+    path[start : start + len(index)] = moved / np.linalg.norm(
+        moved, axis=-1, keepdims=True
+    )
+    return path
+
+
 def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
     """Render the scene into `out_dir` (video.mp4, truth.npz, config.txt, scene.json)."""
     out_dir = Path(out_dir)
@@ -204,8 +236,11 @@ def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
     writer = FfmpegWriter(
         video, spec.width, spec.height, spec.fps, spec.codec, spec.crf
     )
+    path = centre_path(spec, renderer)
     R_prev = np.eye(3)
     for i in range(spec.n_frames):
+        if i > 0 and not np.array_equal(path[i], path[i - 1]):
+            renderer.set_centre(path[i])
         frame = renderer.render(R_prev, R[i], i, spec.n_frames)
         writer.write(frame)
         R_prev = R[i]
@@ -226,6 +261,7 @@ def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
         ts_ms=ts_ms,
         cam_to_lab=cam_to_lab,
         centre=spec.ball_centre(),
+        centre_path=path,
         half_angle=np.radians(spec.half_angle_deg),
         fps=spec.fps,
     )

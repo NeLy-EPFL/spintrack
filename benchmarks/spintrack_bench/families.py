@@ -48,6 +48,12 @@ FAMILIES: dict[str, SceneSpec] = {
     ),
     "noisy": _fly("noisy", sensor={"read_noise": 8.0, "shot_noise": 14.0, "blur_sigma": 1.0}),
     "offaxis": _fly("offaxis", ball_azimuth_deg=16.0, ball_elevation_deg=9.0, half_angle_deg=8.0),
+    # The ball sinks in its holder and comes back, as in AN07B017_260414_Fly4_004.
+    "ball_drop": _fly(
+        "ball_drop", occluders={"legs": 6, "body": True},
+        ball_path={"kind": "bump", "start": 300, "end": 840, "amplitude_radii": 0.4,
+                   "direction_deg": 90.0},
+    ),
     # JSP-like geometry: small ball in a narrow-FOV frame, HEVC, q_factor 12.
     "lab_small_ball": _fly(
         "lab_small_ball", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,

@@ -58,5 +58,6 @@ def run_spintrack(
         "tracking_ms_per_frame": 1e3 * t_track / n_frames,
         "frames_prev_fallback": sources["prev"],
         "frames_lost": sources["lost"],
+        "n_refits": len(tracker.refits),
     }
     return est, timing

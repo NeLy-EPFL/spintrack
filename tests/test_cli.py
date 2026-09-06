@@ -5,6 +5,7 @@ import sys
 import cv2
 import numpy as np
 
+from spintrack.calibrate.sliders import c2a_from_angles
 from spintrack.camera import PinholeCamera
 from spintrack.cli import main
 from spintrack.config import Config
@@ -76,6 +77,27 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
     # Identity camera-to-lab: lab columns equal camera columns; heading integrates -dr_z.
     assert np.allclose(dat[:, 5:8], dat[:, 1:4])
     assert np.isclose(dat[-1, 16], (-dat[1:, 7].sum()) % (2 * np.pi), atol=1e-6)
+
+
+def test_cli_run_refuses_a_config_without_c2a(tmp_path):
+    """Without c2a_r the lab-frame columns would silently be camera-frame values."""
+    cfg = Config(
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+    )
+    cfg.save(tmp_path / "config.txt")
+    out = tmp_path / "out.dat"
+    assert main(["run", str(tmp_path / "config.txt"), "--out", str(out)]) == 2
+    assert not out.exists()
+
+
+def test_cli_calibrate_c2a_angles_writes_the_transform(tmp_path):
+    cfg = Config(src_fn="ball.mp4", vfov=40.0)
+    cfg.save(tmp_path / "config.txt")
+    assert main(["calibrate", str(tmp_path / "config.txt"), "--c2a-angles", "0", "180", "0"]) == 0  # fmt: skip
+    written = Config.load(tmp_path / "config.txt")
+    assert np.allclose(written.c2a_r, c2a_from_angles(0, 180, 0))
+    assert written.c2a_src == "sliders"
+    assert written.extra["c2a_angles"] == [0.0, 180.0, 0.0]
 
 
 def test_cli_debug_video_and_refinement(tmp_path):

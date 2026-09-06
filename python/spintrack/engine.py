@@ -56,6 +56,17 @@ class TrackParams:
     # residual-scaled thresholds, always reweighting converges best; keep it large.
     reweight_iters: int = 1000
     max_bad_frames: int = -1
+    # Re-solve every n-th frame on an inner disc and an outer annulus of the window, as an
+    # independent check that the ball's assumed radius is right (0 disables). It reads the
+    # engine's state and never writes to it, so tracking output is bit-for-bit unchanged.
+    scale_check_stride: int = 10
+    # Watch the photometric cost for a ball that has moved in its holder, and re-fit the
+    # tracking window onto it when it has (see `spintrack.refit`).
+    centre_watch: bool = True
+    centre_watch_factor: float = 2.0
+    centre_watch_gap: int = (
+        100  # frames of stillness that end a "the ball moved" episode
+    )
     # Relocalise against the map when both solves fail (FicTrac's opt_do_global).
     global_search: bool = False
     global_candidates: int = 2000
@@ -131,6 +142,38 @@ class TrackEngine:
 
     def export_map(self) -> tuple[np.ndarray, np.ndarray]:
         return self.core.map_mean(), self.core.map_weight()
+
+    def rebuild(self, geometry: WindowGeometry, Q: np.ndarray) -> None:
+        """Move to a new tracking window, carrying the map and the current orientation.
+
+        The map lives in the window frame at `R = I`, which is the ball's body frame, so a
+        new window only changes the coordinates the orientation is written in: `Q` maps
+        the old window frame to the new one. The previous-frame map cannot be carried (the
+        new core has never seen a frame), which costs one frame of the `prev` fallback.
+        """
+        mean, weight = self.export_map()
+        n = geometry.size
+        map_h, map_w = self.map_shape
+        if round(self.params.map_scale * n) != map_h:
+            raise ValueError("rebuild needs a window of the same size")
+        self.geometry = geometry
+        self.core = _Engine(
+            np.ascontiguousarray(geometry.surface, dtype=np.float32),
+            np.ascontiguousarray(geometry.index, dtype=np.int64),
+            n,
+            map_w,
+            map_h,
+            self.params.levels,
+            self.params.max_pixels,
+        )
+        self.core.set_map(
+            np.ascontiguousarray(mean, dtype=np.float32),
+            np.ascontiguousarray(weight, dtype=np.float32),
+        )
+        self._mask = geometry.mask.astype(np.float32)
+        self.R = Q @ self.R
+        self.velocity = Q @ self.velocity
+        self.last_obs = None
 
     # ----- normalization -----
     def normalize(self, window: np.ndarray) -> np.ndarray:
@@ -345,6 +388,10 @@ class TrackEngine:
         )
 
     # ----- inspection -----
+    def map_coverage(self) -> float:
+        """Fraction of map cells seen at least `w_min`; the grid is equal-area."""
+        return float(np.mean(self.core.map_weight() >= self.params.w_min))
+
     def map_image(self) -> np.ndarray:
         """uint8 rendering of the accumulated map (unseen cells mid-gray)."""
         mean = self.core.map_mean()

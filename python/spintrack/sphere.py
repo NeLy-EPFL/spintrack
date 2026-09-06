@@ -78,6 +78,26 @@ def ball_outline(
     return np.stack([x, y], axis=1)
 
 
+def pixel_circle(
+    camera: Camera, centre, half_angle: float
+) -> tuple[float, float, float]:
+    """Image circle `(cx, cy, r)` of the ball outline, in continuous pixel coordinates.
+
+    The silhouette of a sphere under a pinhole camera is exactly a circle, so this is the
+    inverse of `fit_ball` there; under a fisheye it is the best-fit circle of the outline.
+    The circle is fitted rather than summarised: for a ball far off the optical axis the
+    outline points crowd one side, and their centroid misses the centre by a few pixels.
+    """
+    outline = ball_outline(camera, centre, half_angle, 180)
+    a = np.stack([2.0 * outline[:, 0], 2.0 * outline[:, 1], np.ones(len(outline))], 1)
+    sol, *_ = np.linalg.lstsq(a, (outline**2).sum(axis=1), rcond=None)
+    return (
+        float(sol[0]),
+        float(sol[1]),
+        float(np.sqrt(sol[2] + sol[0] ** 2 + sol[1] ** 2)),
+    )
+
+
 def source_mask(
     camera: Camera, centre, half_angle: float, ignore_polygons=(), shrink: float = 0.975
 ) -> np.ndarray:

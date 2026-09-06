@@ -18,6 +18,8 @@ from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.io.recorders import Recorder
 from spintrack.io.sources import Frame, FrameSource
+from spintrack.quality import RunQuality, summarize_run, write_sidecar
+from spintrack.sphere import pixel_circle
 from spintrack.tracker import FrameResult, Tracker
 
 log = logging.getLogger("spintrack")
@@ -31,6 +33,7 @@ class RunStats:
     wall_s: float = 0.0
     tracking_s: float = 0.0
     refine: dict = field(default_factory=dict)
+    quality: RunQuality | None = None
 
     @property
     def fps(self) -> float:
@@ -81,12 +84,16 @@ def run(
     debug_video: str | None = None,
     refine_sweeps: int = 0,
     refined_out: str | None = None,
+    summary_out: str | None = None,
+    provenance: dict | None = None,
+    checks: dict | None = None,
 ) -> RunStats:
     """Track every frame of `source`; returns run statistics.
 
     `debug_video` writes an annotated video; `refine_sweeps > 0` keeps every normalized
     window in memory, re-estimates all orientations against the complete map afterwards and
-    writes the refined records to `refined_out`.
+    writes the refined records to `refined_out`. The run quality summary always lands in
+    `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
     """
     tracker = Tracker(cfg, source.width, source.height, params)
     stats = RunStats()
@@ -97,6 +104,8 @@ def run(
         canvas = DebugCanvas(tracker)
         writer = DebugVideoWriter(debug_video, canvas.size, source.fps, cfg.vid_codec)
     keep: list[tuple] = []  # (frame index, ts, wall, normalized window, orientation)
+    # (frame, ts, tracked, cost, iterations, solve source, camera-frame increment)
+    per_frame: list[tuple] = []
     t0 = time.perf_counter()
     stop = threading.Event()
     q: queue.Queue = queue.Queue(maxsize=32)
@@ -122,6 +131,16 @@ def run(
             result = tracker.process_frame(frame.image, frame.ts_ms, frame.wall_ms)
             stats.tracking_s += time.perf_counter() - t1
             stats.frames += 1
+            step = result.step if result is not None else None
+            per_frame.append((
+                frame.index,
+                frame.ts_ms,
+                result is not None,
+                step.cost if step is not None else np.nan,
+                step.iters if step is not None else 0,
+                step.source if step is not None else "lost",
+                result.w_cam if result is not None else np.zeros(3),
+            ))  # fmt: skip
             if result is None:
                 stats.dropped += 1
             else:
@@ -136,7 +155,11 @@ def run(
             if refine_sweeps > 0 and tracker.engine.last_obs is not None:
                 R_win = result.step.R_win if result is not None else None
                 obs16 = tracker.engine.last_obs.astype(np.float16)
-                keep.append((frame.index, frame.ts_ms, frame.wall_ms, obs16, R_win))
+                # Orientations recorded before a window move are in the old window frame;
+                # `geometry_version` says which frame each one belongs to, and they are
+                # brought forward together once the run is over.
+                keep.append((frame.index, frame.ts_ms, frame.wall_ms, obs16, R_win,
+                             tracker.geometry_version))  # fmt: skip
             if progress is not None and stats.frames % 500 == 0:
                 stats.wall_s = time.perf_counter() - t0
                 progress(stats)
@@ -149,6 +172,51 @@ def run(
         stats.wall_s = time.perf_counter() - t0
         if writer is not None:
             writer.close()
+    scale_report = None
+    if per_frame:
+        frames, ts, ok, cost, iters, sources, w_cam = zip(*per_frame, strict=True)
+        fps = source.fps if source.fps and source.fps > 0 else cfg.src_fps
+        stats.quality = summarize_run(
+            frames,
+            ts,
+            ok,
+            cost,
+            iters,
+            sources,
+            np.asarray(w_cam),
+            fps if fps > 0 else None,
+            map_coverage=tracker.engine.map_coverage(),
+        )
+        stats.quality.checks.update(checks or {})
+        if tracker.refits:
+            stats.quality.checks["ball centre"] = (
+                f"followed a moving ball over {len(tracker.refits)} stretch(es): "
+                + ", ".join(
+                    f"frames {e.start}-{e.end}, up to {e.max_shift_px:.0f} px"
+                    for e in tracker.refits[:3]
+                )
+            )
+        elif tracker.watch is not None:
+            stats.quality.checks["ball centre"] = "stable"
+        if tracker.scale_check is not None:
+            verdict = tracker.scale_check.result()
+            stats.quality.checks["rotation scale"] = verdict.line()
+            scale_report = verdict.report()
+        if summary_out:
+            cx, cy, r = pixel_circle(tracker.camera, tracker.centre, tracker.half_angle)
+            geometry = {
+                "centre_px": [cx, cy],
+                "radius_px": r,
+                "half_angle_deg": float(np.degrees(tracker.half_angle)),
+                "window_size": tracker.geometry.size,
+            }
+            if scale_report is not None:
+                geometry["scale_check"] = scale_report
+            geometry["centre_initial"] = [float(v) for v in tracker.centre_initial]
+            geometry["refits"] = [e.as_dict() for e in tracker.refits]
+            write_sidecar(
+                summary_out, stats.quality, {**(provenance or {}), "geometry": geometry}
+            )
     if save_map:
         tracker.save_map(save_map)
     if refine_sweeps > 0 and keep:
@@ -167,7 +235,7 @@ def run(
         ts_list = [k[1] for k in keep]
         wall_list = [k[2] for k in keep]
         windows = [k[3] for k in keep]
-        online = [k[4] for k in keep]
+        online = tracker.orientations_in_current_window([(k[4], k[5]) for k in keep])
         refined, rstats = refine_orientations(
             tracker.engine, windows, online, refine_sweeps
         )

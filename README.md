@@ -22,7 +22,10 @@ spintrack run config.txt                 # FicTrac config, writes <video>-<times
 spintrack run config.txt --src ball.mp4  # override the source (video path or camera index)
 spintrack run config.txt --udp 127.0.0.1:1111 --print
 spintrack run config.txt --debug-video --refine 2 --save-map ball.npz
+spintrack calibrate config.txt --auto    # find the ball (and vfov) in the recording
+spintrack calibrate config.txt --c2a-angles 0 180 0   # camera behind the animal
 spintrack calibrate config.txt           # click rim points, ignore regions, animal axes
+spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
 ```
 
 `--debug-video` writes an annotated video (ball orientation, tracking window, map, path);
@@ -31,6 +34,31 @@ it encodes H.264 with PyAV's bundled FFmpeg, so no system `ffmpeg` is needed.
 recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
 (also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
 fixed.
+
+### The geometry does not have to be hand-measured
+
+A config without `roi_circ`/`roi_c` gets its ball found in the recording, and `vfov : auto`
+gets the field of view fitted from the photometric cost. `spintrack calibrate CONFIG --auto`
+does the same and writes the numbers back, so a headless machine never needs the click-based
+calibrator. Detection refuses rather than guessing when it is not sure: a ball radius that is
+5% wrong makes every reported speed about 7% wrong. `vfov` is only fitted when the cost has a
+real minimum; where the ball is small in the frame the cost is flat and the run says so,
+because there any value in the flat range tracks identically.
+
+`c2a_r` is now required: without it the lab-frame and forward/side columns would be
+camera-frame values wearing a different name. Write it with `--c2a-angles`, or
+`c2a_r : { 0, 0, 0 }` to say "camera frame is the animal frame" on purpose.
+
+### Every run says how it went
+
+Each run ends with a quality block and writes `<out>-summary.json`: cost percentiles,
+dropped frames, solver effort, map coverage, and the frame ranges where tracking was
+measurably harder than in the rest of the same run. It also reports two checks that need no
+ground truth - whether the ball's assumed radius is consistent with what the inner and outer
+parts of the window each imply, and whether the ball moved in its holder mid-recording. If it
+did, the tracking window follows it instead of quietly turning the movement into rotation.
+`spintrack summarize X.dat` produces the same summary from an existing file (without the
+solver-effort part, which a `.dat` does not carry).
 
 ```python
 from spintrack import Config, Tracker
