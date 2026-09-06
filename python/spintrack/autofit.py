@@ -412,11 +412,12 @@ MIN_INPLANE_DEG = 0.2  # a smaller in-plane increment carries no usable signal
 MIN_CHECKED = 50
 # Outer/inner rotation ratio against relative radius error, measured on `clean_fly`,
 # `offaxis`, `occluded`, `lab_small_ball` and `sparse` with `roi_circ` scaled by hand;
-# each entry is the mean over the five, and the whole curve is divided by its value at
-# zero so that the true radius reads exactly 1. The five scenes agree to 0.028 in ratio,
-# about one percentage point of radius, which is this check's noise floor - and the
-# near-orthographic `lab_small_ball` sits on the same curve as the 11-degree `clean_fly`,
-# so one curve serves both regimes.
+# each entry is the mean over the five. The zero-error entry is 0.996 rather than 1, and
+# `radius_error_from_ratio` divides the curve by it: 0.996 is the ratio a correct radius
+# actually produces, so reading it as +0.18% would bias the check at its own zero. The
+# five scenes agree to 0.028 in ratio, about one percentage point of radius, which is
+# this check's noise floor - and the near-orthographic `lab_small_ball` sits on the same
+# curve as the 11-degree `clean_fly`, so one curve serves both regimes.
 #
 # The near-orthographic prediction (a point at normalised offset t sits at depth
 # sqrt(1 - t^2) and moves by omega times that depth, so a solver assuming radius 1 + eps
@@ -439,12 +440,10 @@ def radius_error_from_ratio(ratio: float) -> float:
     Interpolates `RATIO_CALIBRATION` (monotone decreasing), extrapolating linearly in the
     log of the ratio beyond the calibrated range so that a gross error still reads gross.
     """
+    zero = RATIO_CALIBRATION[2][1]
     eps = np.array([e for e, _ in RATIO_CALIBRATION])
-    curve = np.log(
-        np.array([r for _, r in RATIO_CALIBRATION]) / RATIO_CALIBRATION[2][1]
-    )
-    value = np.log(max(ratio, 1e-6) / RATIO_CALIBRATION[2][1] * RATIO_CALIBRATION[2][1])
-    value = np.log(max(ratio, 1e-6))
+    curve = np.log(np.array([r for _, r in RATIO_CALIBRATION]) / zero)
+    value = np.log(max(ratio, 1e-6) / zero)
     if value >= curve[0]:
         slope = (eps[1] - eps[0]) / (curve[1] - curve[0])
         return float(eps[0] + (value - curve[0]) * slope)
@@ -458,7 +457,9 @@ def radius_error_from_ratio(ratio: float) -> float:
 class ScaleVerdict:
     """What the inner and outer parts of the window say about the assumed radius."""
 
-    ratio: float  # outer gain / inner gain; 1 when the assumed radius is right
+    # Outer gain / inner gain; `RATIO_CALIBRATION`'s zero entry when the assumed
+    # radius is right, which is 0.996 rather than 1.
+    ratio: float
     radius_err_pct: float
     ci_pct: tuple[float, float]
     n_checked: int

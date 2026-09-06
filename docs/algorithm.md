@@ -70,8 +70,10 @@ and the curve is flat.
 **The radius, checked against itself** (`autofit.ScaleCheck`). The same frame-to-frame
 increment is solved again on an inner disc and an outer annulus of the tracking window. The
 two regions see the surface at different depths, and the depth is exactly what the assumed
-radius sets, so their ratio is 1 when the radius is right and moves monotonically when it is
-not - independently of the cost, which cannot tell an over-large ball from an under-large one.
+radius sets, so their ratio is fixed when the radius is right and moves monotonically when it
+is not - independently of the cost, which cannot tell an over-large ball from an under-large
+one. The fixed value is the measured 0.996 rather than exactly 1, and the inversion is
+normalised by it so that a correct radius reads zero error.
 
 ## Following a ball that moves
 
