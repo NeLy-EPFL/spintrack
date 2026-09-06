@@ -52,6 +52,22 @@ def _prefetch(source: FrameSource, q: queue.Queue, stop: threading.Event) -> Non
         q.put(exc)
 
 
+def _join_prefetch(reader: threading.Thread, q: queue.Queue) -> None:
+    """Wait for the prefetch thread, draining the queue so it can notice `stop`.
+
+    It only checks `stop` between frames, so a producer blocked on a full queue would
+    never see it. Leaving it inside `source.read()` is worse than untidy: the caller then
+    closes the source underneath it, and `cv2.VideoCapture` deadlocks on a concurrent
+    read and release.
+    """
+    while reader.is_alive():
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            pass
+        reader.join(timeout=0.05)
+
+
 def run(
     cfg: Config,
     source: FrameSource,
@@ -84,8 +100,10 @@ def run(
     t0 = time.perf_counter()
     stop = threading.Event()
     q: queue.Queue = queue.Queue(maxsize=32)
+    reader = None
     if prefetch:
-        threading.Thread(target=_prefetch, args=(source, q, stop), daemon=True).start()
+        reader = threading.Thread(target=_prefetch, args=(source, q, stop), daemon=True)
+        reader.start()
 
     def next_frame() -> Frame | None:
         if not prefetch:
@@ -126,6 +144,8 @@ def run(
                 break
     finally:
         stop.set()
+        if reader is not None:
+            _join_prefetch(reader, q)
         stats.wall_s = time.perf_counter() - t0
         if writer is not None:
             writer.close()

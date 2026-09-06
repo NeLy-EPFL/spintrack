@@ -943,6 +943,7 @@ wheels = [
 name = "spintrack"
 source = { editable = "." }
 dependencies = [
+    { name = "av" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "opencv-python-headless" },
@@ -950,9 +951,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-av = [
-    { name = "av" },
-]
 serial = [
     { name = "pyserial" },
 ]
@@ -971,13 +969,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'av'", specifier = ">=13" },
+    { name = "av", specifier = ">=13" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-python-headless", specifier = ">=4.8" },
     { name = "pyserial", marker = "extra == 'serial'", specifier = ">=3.5" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
-provides-extras = ["av", "serial"]
+provides-extras = ["serial"]
 
 [package.metadata.requires-dev]
 bench = [

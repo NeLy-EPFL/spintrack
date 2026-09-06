@@ -25,7 +25,8 @@ spintrack run config.txt --debug-video --refine 2 --save-map ball.npz
 spintrack calibrate config.txt           # click rim points, ignore regions, animal axes
 ```
 
-`--debug-video` writes an annotated video (ball orientation, tracking window, map, path).
+`--debug-video` writes an annotated video (ball orientation, tracking window, map, path);
+it encodes H.264 with PyAV's bundled FFmpeg, so no system `ffmpeg` is needed.
 `--refine N` re-estimates every frame offline against the map built from the whole
 recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
 (also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
@@ -39,7 +40,8 @@ cfg = Config.load("config.txt")
 src = VideoSource("trial.mp4")
 tracker = Tracker(cfg, src.width, src.height)
 for frame in src:
-    result = tracker.process_frame(frame.image, frame.ts_ms)  # None when the frame is dropped
+    # None when the frame is dropped
+    result = tracker.process_frame(frame.image, frame.ts_ms)
     if result is not None:
         print(result.heading, result.w_lab)
 ```

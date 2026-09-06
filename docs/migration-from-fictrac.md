@@ -47,7 +47,11 @@ How the keys map onto spintrack's solver:
 - `max_bad_frames`: reset tracking after this many consecutive untrackable frames.
 - `sphere_map_fn`: a FicTrac sphere-map PNG (converted on import) or a spintrack `.npz`
   written by `--save-map`; the first frame is localised globally against it.
-- `save_debug`: write the annotated debug video next to the `.dat`.
+- `save_debug`: write the annotated debug video next to the `.dat`. `vid_codec` picks
+  the encoder; `h264` (the default), `hevc` and `vp9` go through PyAV, whose wheels bundle
+  an FFmpeg with those encoders. The `opencv-python` one does not, so `cv2.VideoWriter`
+  would quietly write MPEG-4 Part 2 instead, which browsers and most editors cannot play.
+  The fourcc codecs OpenCV does handle (`mp4v`, `xvid`, `mjpg`, `raw`) still use it.
 
 ## Output
 

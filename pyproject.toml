@@ -20,13 +20,13 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
+    "av>=13",
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-av = ["av>=13"]
 serial = ["pyserial>=3.5"]
 
 [project.scripts]
