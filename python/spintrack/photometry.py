@@ -172,7 +172,12 @@ class Photometry:
         # `illum_tau` is in frames, so a strided sample stands for `stride` of them.
         decay = np.exp(-stride / p.illum_tau)
         self.acc_n = decay * self.acc_n + seen
-        self.acc_res = decay * self.acc_res + res * seen
+        # The residual of the *uncorrected* window, so that the accumulator is the bias
+        # field itself (an exponential mean of what the map cannot explain) and a refresh
+        # reads it off. Stepping the field by a fraction of the corrected residual instead
+        # made a damped oscillator of it: 16% overshoot, 63% of the way only 450 frames
+        # after the warmup, against the first refresh here.
+        self.acc_res = decay * self.acc_res + (res + self.bias) * seen
         if p.illum_weight:
             self.acc_res2 = decay * self.acc_res2 + res * res * seen
         if p.illum_gain:
@@ -193,7 +198,9 @@ class Photometry:
         synthetic scenes and on recordings.
         """
         ok = self.mask & (self.acc_n > 1.0)
-        field = np.where(ok, self.acc_res / np.maximum(self.acc_n, EPS), 0.0)
+        field = np.where(
+            ok, self.acc_res / np.maximum(self.acc_n, EPS) - self.bias, 0.0
+        )
         return np.where(ok, field - (field[ok].mean() if ok.any() else 0.0), 0.0)
 
     def refresh(self, core=None) -> None:
@@ -208,15 +215,14 @@ class Photometry:
         seen = self.acc_n > 1.0
         ok = mask & seen
         if p.illum_bias:
-            # LMS: one refresh moves the field by `update_every / tau` of the mean
-            # residual, so the field has the time constant `illum_tau` however often it
-            # is refreshed. The mask mean is projected out because the field and the map
-            # are only separable up to one additive constant.
-            step = min(1.0, p.illum_update_every / max(p.illum_tau, 1.0))
-            delta = np.where(ok, self.acc_res / n, 0.0)
-            delta = _smooth(delta, ok, p.illum_smooth)
-            delta = np.where(ok, delta - float(delta[ok].mean()), 0.0)
-            self.bias = np.where(mask, self.bias + step * delta, 0.0)
+            # The accumulator is an exponential mean of the uncorrected residual with the
+            # time constant `illum_tau`, so the field is read off it. The mask mean is
+            # projected out because the field and the map are only separable up to one
+            # additive constant; pixels not seen since the last reset keep their value.
+            field = np.where(ok, self.acc_res / n, 0.0)
+            field = _smooth(field, ok, p.illum_smooth)
+            field = np.where(ok, field - float(field[ok].mean()), 0.0)
+            self.bias = np.where(ok, field, np.where(mask, self.bias, 0.0))
         if p.illum_gain:
             # Regress the observation on the model. Only the shape of the field is
             # identifiable - the overall scale trades off against the map's amplitude -

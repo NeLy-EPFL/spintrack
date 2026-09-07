@@ -185,6 +185,10 @@ class TrackEngine:
         k = max(3, round(self.params.norm_win_pc * n) | 1)
         self._ksize = (k, k)
         self.photometry = Photometry(geometry.mask, self.params)
+        # Where the illumination fields were learned: the window's optical axis in the
+        # camera frame, averaged with the fields' own memory (see `_resample_photometry`).
+        self._illum_axis = geometry.to_camera[:, 2].copy()
+        self._illum_axis_frame = 0
         self.reset()
 
     # ----- state -----
@@ -270,7 +274,12 @@ class TrackEngine:
             np.ascontiguousarray(weight, dtype=np.float32),
         )
         self._mask = geometry.mask.astype(np.float32)
-        self._resample_photometry(old_geometry.size, old_geometry.rad_per_pixel, Q)
+        self._resample_photometry(
+            old_geometry.size,
+            old_geometry.rad_per_pixel,
+            Q,
+            old_geometry.to_camera[:, 2],
+        )
         self.R = Q @ self.R
         self.velocity = Q @ self.velocity
 
@@ -396,26 +405,40 @@ class TrackEngine:
         )  # fmt: skip
 
     def _resample_photometry(
-        self, old_size: int, old_rad_per_pixel: float, Q: np.ndarray
+        self, old_size: int, old_rad_per_pixel: float, Q: np.ndarray, old_axis=None
     ) -> None:
         """Carry the illumination fields into the current window.
 
         Unlike the map, these fields are fixed in the *window*, so a different window is a
         resampling, not a rotation: each new window pixel takes the value of whichever old
         window pixel looked in the same direction. `Q` maps the old window frame to the
-        new one.
+        new one; `old_axis` is the old window's optical axis in the camera frame (None for
+        fields loaded from another run, which are always resampled).
         """
         geometry = self.geometry
         n = geometry.size
-        # A ball that has moved in its holder is lit differently - shading follows the
-        # surface normal, and translating the ball changes it - so a field measured before
-        # the move is not merely displaced, it is wrong. Past a fraction of a ball radius,
-        # drop it and re-learn rather than carry a shadow to where there is none.
-        moved = float(np.linalg.norm(matrix_to_rotvec(Q)))
-        if moved > self.params.illum_reset_move * 0.5 * n * geometry.rad_per_pixel:
-            self.photometry.forget()
-            self.photometry.push(self.core)
-            return
+        axis = geometry.to_camera[:, 2]
+        if old_axis is not None:
+            # A ball that has moved in its holder is lit differently - shading follows the
+            # surface normal, and translating the ball changes it - so a field measured
+            # before the move is not merely displaced, it is wrong. Past a fraction of a
+            # ball radius, drop it and re-learn rather than carry a shadow to where there
+            # is none. The distance is measured from where the field was *learned*: the
+            # window's axis averaged with the field's own memory, so that a follower moving
+            # the window a pixel per frame still trips the reset once the ball has gone
+            # far enough within a time constant, while a drift the field has had time to
+            # absorb does not.
+            since = self.frames_tracked - self._illum_axis_frame
+            decay = np.exp(-since / max(self.params.illum_tau, 1.0))
+            learned = normalize(decay * self._illum_axis + (1.0 - decay) * old_axis)
+            self._illum_axis_frame = self.frames_tracked
+            moved = float(np.arccos(np.clip(learned @ axis, -1.0, 1.0)))
+            if moved > self.params.illum_reset_move * 0.5 * n * geometry.rad_per_pixel:
+                self.photometry.forget()
+                self.photometry.push(self.core)
+                self._illum_axis = axis.copy()
+                return
+            self._illum_axis = learned
         old_cam = EquidistantCamera(old_size, old_size, old_rad_per_pixel)
         new_cam = EquidistantCamera(n, n, geometry.rad_per_pixel)
         xs, ys = pixel_centres(n, n)
