@@ -63,11 +63,11 @@ median-cleaned, zero-phase smoothed, held at the resting level by the rule above
 following each move from the frame the ball left that level - and `ScriptedWatch`
 replays it in the second pass, which therefore measures nothing and runs faster. On
 `ball_drop` (exact truth) the window's p95 distance from the ball over the episode goes
-from 7.8 px to 2.2, and the episode's per-frame error from 0.056 to 0.043 deg (median)
-and from 0.205 to 0.109 (p95), against a second pass that follows the ball for itself;
+from 7.8 px to 2.2, and the episode's per-frame error from 0.056 to 0.044 deg (median)
+and from 0.205 to 0.113 (p95), against a second pass that follows the ball for itself;
 on trial 004's 240 px fall the optical-flow cross-check's residual along the fall over
 the episode goes from 4.31 px rms online to 4.17 for a second pass that follows for
-itself and 3.83 for the planned window.
+itself and 3.82 for the planned window.
 """
 
 from __future__ import annotations
@@ -159,9 +159,9 @@ V_STILL = 0.05
 # ball rather than stepping onto it. A window offset that is constant costs no rotation,
 # only its change does, so smoothing bias on an accelerating ball matters less than the
 # look's noise, and wider is better on both scenes measured: on `ball_drop` (a smooth
-# 0.26 px/frame excursion) the episode error is 0.053, 0.047 and 0.043 deg at sigma 1.5,
+# 0.26 px/frame excursion) the episode error is 0.053, 0.047 and 0.044 deg at sigma 1.5,
 # 3 and 6 (0.056 following online, 0.039 at 12), and on trial 004's 8 px/frame fall the
-# optical-flow cross-check residual over the episode is 3.96, 3.90 and 3.83 px at 1.5, 3
+# optical-flow cross-check residual over the episode is 3.96, 3.90 and 3.82 px at 1.5, 3
 # and 6 (4.17 following online). Six is the widest tried on the fast ball, so it is the
 # default.
 PLAN_SIGMA = 6.0
@@ -550,9 +550,13 @@ def _gaussian_filter(x: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def plan_window_trajectory(
-    looks, n_frames: int, reference_px, radius_px: float, scatter: float,
+    looks,
+    n_frames: int,
+    reference_px,
+    radius_px: float,
+    scatter: float,
     sigma: float = PLAN_SIGMA,
-) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:  # fmt: skip
+) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:
     """Where the window should have been on every frame, from all the looks at once.
 
     `looks` are `(frame, position, rim fraction)` as `CentreWatch` records them. They
@@ -564,9 +568,12 @@ def plan_window_trajectory(
     is ignored as the online rule ignores it. A move is followed from the last frame the
     looks sat within the scatter of the level (at most `PLAN_LOOKBACK` frames before the
     departure) until they have stayed within `STILL_SPREAD * T_MOVE` of each other for
-    `STILL_FRAMES`, where their median becomes the new level. Returns the per-frame
-    window position, the rim fraction of the look on each frame (NaN where there was
-    none) and the moves as `(start, stop, peak px)`.
+    `STILL_FRAMES`, where their median becomes the new level. The window reaches a new
+    target - the looks where a move starts, the level where it ends - by closing
+    `1 - CATCHUP` of the remaining gap per frame rather than stepping onto it, as it
+    does online.
+    Returns the per-frame window position, the rim fraction of the look on each frame
+    (NaN where there was none) and the moves as `(start, stop, peak px)`.
     """
     n = int(n_frames)
     reference = np.asarray(reference_px, dtype=np.float64)
@@ -585,7 +592,10 @@ def plan_window_trajectory(
     t_move = max(T_MOVE_PX, T_MOVE_RADII * radius_px, T_MOVE_SCATTER * scatter)
     t_fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * radius_px)
     near = max(1.0, scatter)
-    w = np.empty_like(s)
+    # Where the window is meant to be: the level while the ball rests, the looks while
+    # it moves. The window itself lags these targets only where they jump.
+    target = np.empty_like(s)
+    follow = np.zeros(n, dtype=bool)
     level = reference.copy()
     episodes: list[tuple[int, int, float]] = []
     i = 0
@@ -593,34 +603,42 @@ def plan_window_trajectory(
         d = np.hypot(*(s[i:] - level).T)
         away = np.flatnonzero(d > t_move)
         if away.size == 0:
-            w[i:] = level
+            target[i:] = level
             break
         j = i + int(away[0])  # the departure from the level
         back = np.flatnonzero(d[away[0] :] <= t_move)
         end = j + int(back[0]) if back.size else n
         peak = float(np.hypot(*(s[j:end] - level).T).max())
         if peak < t_fast and end - j < CONFIRM_SLOW_FRAMES:
-            w[i:end] = level
+            target[i:end] = level
             i = end
             continue
         first = max(i, j - PLAN_LOOKBACK)
         close = np.flatnonzero(np.hypot(*(s[first:j] - level).T) <= near)
         start = first + int(close[-1]) if close.size else j
-        w[i:start] = level
+        target[i:start] = level
         k = j + 1
         while k + STILL_FRAMES <= n:
             spread = float(np.hypot(*np.ptp(s[k : k + STILL_FRAMES], axis=0)))
             if spread < STILL_SPREAD * t_move:
                 break
             k += 1
-        if k + STILL_FRAMES > n:  # still moving when the frames run out
-            w[start:] = s[start:]
-            episodes.append((start, n, peak))
+        stop = n if k + STILL_FRAMES > n else k  # the former: moving as the frames end
+        target[start:stop] = s[start:stop]
+        follow[start:stop] = True
+        episodes.append((start, stop, peak))
+        if stop == n:
             break
-        w[start:k] = s[start:k]
-        episodes.append((start, k, peak))
-        level = np.median(s[k : k + STILL_FRAMES], axis=0)
-        i = k
+        level = np.median(s[stop : stop + STILL_FRAMES], axis=0)
+        i = stop
+    w = np.empty_like(s)
+    w[0] = target[0]
+    for t in range(1, n):
+        # Carry the ball's own motion exactly; only a gap to the target is closed
+        # gradually, so the window leaves a level along the ball and settles onto the
+        # next one without a step.
+        predicted = w[t - 1] + (s[t] - s[t - 1] if follow[t] and follow[t - 1] else 0.0)
+        w[t] = predicted + (1.0 - CATCHUP) * (target[t] - predicted)
     return w, rim, episodes
 
 

@@ -209,10 +209,10 @@ level rather than from the frame an online confirmation ends. The second pass me
 nothing, which is also why it tracks faster than the first. On `ball_drop`, with exact
 truth, the window's distance from the ball over the episode goes from 7.8 px (p95) for the
 online follower to 2.2, and the episode's per-frame error from 0.056 deg (median) and 0.205
-(p95), for a second pass that follows the ball for itself, to 0.043 and 0.109. On trial
+(p95), for a second pass that follows the ball for itself, to 0.044 and 0.113. On trial
 004's fall, judged by the optical-flow cross-check over the episode, the residual along the
 fall goes from 4.31 px rms for the online run to 4.17 for a second pass that follows for
-itself and 3.83 for the planned window. The smoothing is six frames wide, and wider was
+itself and 3.82 for the planned window. The smoothing is six frames wide, and wider was
 better on both scenes up to the widest tried: a window offset that stays constant costs no
 rotation, only its change does, so the bias of smoothing an accelerating ball matters less
 than the look's noise.
