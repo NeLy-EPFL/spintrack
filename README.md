@@ -22,10 +22,12 @@ spintrack run config.txt                 # FicTrac config, writes <video>-<times
 spintrack run config.txt --src ball.mp4  # override the source (video path or camera index)
 spintrack run config.txt --udp 127.0.0.1:1111 --print
 spintrack run config.txt --debug-video --refine 2 --save-map ball.npz
+spintrack run config.txt --two-pass      # map the ball, then track it again from the map
 spintrack calibrate config.txt --auto    # find the ball (and vfov) in the recording
 spintrack calibrate config.txt --c2a-angles 0 180 0   # camera behind the animal
 spintrack calibrate config.txt           # click rim points, ignore regions, animal axes
 spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
+spintrack map ball.npz --layout cube     # look at the ball's surface map
 ```
 
 `--debug-video` writes an annotated video (ball orientation, tracking window, map,
@@ -34,7 +36,15 @@ it encodes H.264 with PyAV's bundled FFmpeg, so no system `ffmpeg` is needed.
 `--refine N` re-estimates every frame offline against the map built from the whole
 recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
 (also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
-fixed.
+fixed. `--two-pass` maps the ball in a throwaway first pass over the recording and tracks
+it again from the finished map, so the opening frames see a whole ball instead of one
+visible cap; it fixes the cold start, not the drift that accumulates afterwards, which is
+what `--refine` is for. The two compose. `spintrack map` renders a saved map as a picture,
+either as a Lambert equal-area rectangle or unfolded onto a cube.
+
+The surface map is an equi-angular cubemap; `--map-projection equal_area` switches to
+FicTrac's Lambert cylindrical grid, which is what a like-for-like comparison against
+FicTrac wants. Maps convert between the two on load.
 
 ### The lighting stays out of the ball's texture
 
@@ -91,9 +101,11 @@ to `Tracker.process_frame`. spintrack does not bundle camera SDKs.
 FicTrac binarizes the tracking window and searches a rotation that best matches a binary
 surface map with a derivative-free optimiser. spintrack instead normalizes the window
 photometrically, keeps a floating-point surface map, and aligns the two with Gauss-Newton
-iterations using analytic derivatives (sub-pixel, a few iterations per frame), with robust
-weights against occluders, a coarse-to-fine fallback for saccades, an estimate of the rig's
-static illumination that keeps it out of the map, and an optional global relocalisation. Details in [docs/algorithm.md](docs/algorithm.md).
+iterations using analytic derivatives (sub-pixel, a few iterations per frame), with an
+anti-aliased window, robust weights against occluders, a coarse-to-fine fallback for
+saccades, an estimate of the rig's static illumination that keeps it out of the map, a
+window that follows a ball moving in its holder, and an optional global relocalisation.
+Details in [docs/algorithm.md](docs/algorithm.md).
 
 ## Accuracy and speed
 
@@ -103,18 +115,20 @@ black box on the same videos). Median per-frame rotation error in degrees; full 
 
 | scene            | FicTrac | spintrack |
 |------------------|--------:|----------:|
-| clean fly walk   |   0.243 |     0.041 |
-| lab-like, q12    |   0.165 |     0.049 |
-| low contrast     |   0.346 |     0.046 |
-| occluded by legs |   0.275 |     0.046 |
-| saccades         |   0.242 |     0.034 |
-| motion blur      |   0.304 |     0.098 |
-| fine speckle     |  90.266 |     0.037 |
+| clean fly walk   |   0.243 |     0.019 |
+| lab-like, q12    |   0.165 |     0.046 |
+| low contrast     |   0.346 |     0.029 |
+| occluded by legs |   0.275 |     0.036 |
+| saccades         |   0.242 |     0.017 |
+| motion blur      |   0.304 |     0.092 |
+| fine speckle     |  90.266 |     0.020 |
 
 Tracking time per frame at the lab's settings (120x120 window, one core): FicTrac ~7 ms,
-spintrack ~1 ms (~0.5 ms at FicTrac's default 60x60 window). On six real 60 s trials
+spintrack ~2.5 ms with every check on, ~1.7 ms with the ball follower and the radius check
+off (~2 ms and ~1.4 ms at FicTrac's default 60x60 window). On six real 60 s trials
 (1600x1008 HEVC, 100 fps) spintrack agrees with FicTrac to a median 0.1 deg per frame and
-runs at ~400 fps including decoding.
+runs at ~240 fps including decoding (~3.5 ms of tracking per frame, of which the silhouette
+measurement that follows a moving ball is about 1.5).
 
 ## Develop
 

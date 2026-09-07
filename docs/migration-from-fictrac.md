@@ -24,6 +24,8 @@ Prebuilt wheels for Linux, macOS and Windows; no CMake, OpenCV, NLopt or Boost t
 | `sphere_map_fn`             | honoured (.png template or spintrack .npz)  |
 | (no equivalent)             | `--refine N` offline re-estimation          |
 | (no equivalent)             | `--save-map`, `--load-map`, `--frozen-map`  |
+| (no equivalent)             | `--two-pass` map-then-track in one command  |
+| equal-area sphere-map grid  | equi-angular cubemap (`--map-projection`)   |
 
 ## Configuration
 
@@ -74,6 +76,12 @@ How the keys map onto spintrack's solver:
 - `illumination` (spintrack-only, on by default): estimate the camera-fixed illumination -
   the holder's shadow above all - and keep it out of the ball's surface map. FicTrac has
   no equivalent; `illumination: n` or `--no-illumination` turns it off.
+- `--map-projection` (spintrack-only, `cube` by default): how the surface map tiles the
+  sphere. `equal_area` is FicTrac's Lambert cylindrical grid, and is what a like-for-like
+  comparison against FicTrac wants; `cube` is an equi-angular cubemap with the same number
+  of cells, which removes the 8.6-degree cells the cylindrical grid puts at its poles. See
+  `docs/algorithm.md`. Maps convert between the two grids on load, so a FicTrac template
+  and a map saved by either projection all still load.
 - `save_debug`: write the annotated debug video next to the `.dat`. `vid_codec` picks
   the encoder; `h264` (the default), `hevc` and `vp9` go through PyAV, whose wheels bundle
   an FFmpeg with those encoders. The `opencv-python` one does not, so `cv2.VideoWriter`
