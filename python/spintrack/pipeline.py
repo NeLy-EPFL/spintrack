@@ -188,6 +188,7 @@ def run(
             np.asarray(w_cam),
             fps if fps > 0 else None,
             map_coverage=tracker.engine.map_coverage(),
+            illumination=tracker.engine.photometry.report(),
         )
         stats.quality.checks.update(checks or {})
         if tracker.refits:

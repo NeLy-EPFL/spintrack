@@ -53,6 +53,10 @@ class RunQuality:
     sources: dict[str, int]  # map / prev / global / reset / lost counts
     turned_deg: float  # sum of |w_cam| in degrees over tracked frames
     map_coverage: float | None  # fraction of map cells with weight >= w_min
+    # Peak of the static illumination field, in normalized-intensity units, and the
+    # fraction of the window it dims by more than half. None when the correction is off.
+    illum_peak: float | None = None
+    illum_dim_frac: float | None = None
     episodes: list[Episode] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     checks: dict = field(default_factory=dict)
@@ -176,6 +180,7 @@ def summarize_run(
     fps: float | None = None,
     *,
     map_coverage: float | None = None,
+    illumination: dict | None = None,
 ) -> RunQuality:
     """Build a `RunQuality` from the per-frame series of one run.
 
@@ -238,6 +243,7 @@ def summarize_run(
         map_coverage=map_coverage,
         episodes=episodes,
         notes=notes,
+        **(illumination or {}),
     )
 
 
@@ -282,6 +288,16 @@ def format_summary(q: RunQuality) -> str:
         )
     else:
         lines.append(turned.capitalize())
+    if q.illum_peak is not None:
+        dimmed = (
+            f", {100 * q.illum_dim_frac:.1f}% of the window down-weighted below half"
+            if q.illum_dim_frac is not None
+            else ""
+        )
+        lines.append(
+            f"illumination: static field peaks at {q.illum_peak:.2f} of a "
+            f"normalized-intensity unit{dimmed}"
+        )
     for key, value in q.checks.items():
         if isinstance(value, str):
             lines.append(f"{key}: {value}")

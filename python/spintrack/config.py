@@ -63,6 +63,9 @@ class Config:
     accumulate_map: bool = True
     output_fn: str = ""  # output base name; FicTrac defaults to the video name
     map_frozen: bool = False  # spintrack: never update a loaded map (sphere_map_fn)
+    # spintrack: separate the rig's static illumination from the ball's texture
+    # instead of letting it accumulate in the surface map (see `photometry.py`).
+    illumination: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
     comments: list[str] = field(default_factory=list)
 
@@ -206,6 +209,7 @@ _FIELD_TYPES: dict[str, str] = {
     "accumulate_map": "bool",
     "output_fn": "str",
     "map_frozen": "bool",
+    "illumination": "bool",
 }
 
 

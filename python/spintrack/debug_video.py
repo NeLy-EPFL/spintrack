@@ -171,6 +171,12 @@ class DebugCanvas:
         col1 = np.zeros((self.height, self.panel), np.uint8)
         col1[: self.panel] = win
         col1[self.panel : self.panel + self.panel // 2] = map_img
+        illum = tr.engine.illumination_image()
+        half = self.panel // 2
+        if illum is not None and self.height >= self.panel + 2 * half:
+            col1[self.panel + half : self.panel + 2 * half, :half] = cv2.resize(
+                illum, (half, half), interpolation=cv2.INTER_NEAREST
+            )
         col1 = cv2.cvtColor(col1, cv2.COLOR_GRAY2BGR)
         cv2.putText(
             col1, "window", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1
@@ -184,6 +190,16 @@ class DebugCanvas:
             (255, 255, 0),
             1,
         )
+        if illum is not None:
+            cv2.putText(
+                col1,
+                "illumination",
+                (6, self.panel + half + 16),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 0),
+                1,
+            )
 
         # Fictive path (world frame: x north/up, y east/right).
         col2 = np.zeros((self.height, self.panel, 3), np.uint8)

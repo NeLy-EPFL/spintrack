@@ -229,7 +229,9 @@ impl Map {
 
     /// Add one observation at `(u, v)` with bilinear footprint, decaying old evidence by
     /// `lambda` and capping the weight at `w_max`; marks the cells in `touched` if given.
+    /// `scale` multiplies the footprint, so a less trustworthy pixel counts for less.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn splat(
         &mut self,
         u: f32,
@@ -237,14 +239,18 @@ impl Map {
         value: f32,
         lambda: f32,
         w_max: f32,
+        scale: f32,
         touched: Option<&mut Touched>,
     ) {
+        if scale <= 0.0 {
+            return;
+        }
         let (u0, u1, v0, v1, fu, fv) = self.cell_indices(u, v);
         let cells = [
-            (v0 * self.w + u0, (1.0 - fu) * (1.0 - fv)),
-            (v0 * self.w + u1, fu * (1.0 - fv)),
-            (v1 * self.w + u0, (1.0 - fu) * fv),
-            (v1 * self.w + u1, fu * fv),
+            (v0 * self.w + u0, scale * (1.0 - fu) * (1.0 - fv)),
+            (v0 * self.w + u1, scale * fu * (1.0 - fv)),
+            (v1 * self.w + u0, scale * (1.0 - fu) * fv),
+            (v1 * self.w + u1, scale * fu * fv),
         ];
         let mut touched = touched;
         for (idx, b) in cells {
@@ -374,7 +380,7 @@ mod tests {
         let mut m = Map::new(64, 32);
         for du in [-0.4f32, 0.0, 0.4] {
             for dv in [-0.4f32, 0.0, 0.4] {
-                m.splat(10.5 + du, 7.5 + dv, 2.0, 1.0, 100.0, None);
+                m.splat(10.5 + du, 7.5 + dv, 2.0, 1.0, 100.0, 1.0, None);
             }
         }
         let s = m.sample(10.5, 7.5, 0.1, 1.0).expect("seen");

@@ -78,6 +78,14 @@ pub struct Engine {
     prev_r: Option<Mat3>,
     prev_map_valid: bool,
     touched: Touched,
+    /// Static camera-frame photometric fields, pyramided like the observation.
+    photo: Option<Photometric>,
+}
+
+/// Per-window-pixel gain and observation weight, one vector per pyramid level.
+struct Photometric {
+    gain: Vec<Vec<f32>>,
+    wt: Vec<Vec<f32>>,
 }
 
 impl Engine {
@@ -120,6 +128,14 @@ impl Engine {
         out
     }
 
+    fn gain_level(&self, level: usize) -> Option<&[f32]> {
+        self.photo.as_ref().map(|p| p.gain[level].as_slice())
+    }
+
+    fn wt_level(&self, level: usize) -> Option<&[f32]> {
+        self.photo.as_ref().map(|p| p.wt[level].as_slice())
+    }
+
     /// Coarse copies of the map for levels 1.. (level 0 is the map itself).
     fn coarse_maps(map: &Map, n_levels: usize) -> Vec<Map> {
         (1..n_levels).map(|l| map.coarse(l)).collect()
@@ -144,6 +160,8 @@ impl Engine {
             .map(|l| Level {
                 map: if l == 0 { base } else { &coarse[l - 1] },
                 obs: &obs_levels[l],
+                gain: self.gain_level(l),
+                wt: self.wt_level(l),
                 subset: &self.subsets[l],
             })
             .collect();
@@ -222,6 +240,7 @@ impl Engine {
             prev_r: None,
             prev_map_valid: false,
             touched: Touched::new(map_w * map_h),
+            photo: None,
         })
     }
 
@@ -338,6 +357,8 @@ impl Engine {
                     &coarse[top - 1]
                 },
                 obs: &obs_levels[top],
+                gain: self.gain_level(top),
+                wt: self.wt_level(top),
                 subset: &self.subsets[top],
             };
             // Deterministic quasi-uniform rotations: unit quaternions from a Halton-like set.
@@ -438,6 +459,8 @@ impl Engine {
         let lvl = Level {
             map: &map_l,
             obs: &obs_levels[level],
+            gain: self.gain_level(level),
+            wt: self.wt_level(level),
             subset: &self.subsets[level],
         };
         let mut weights = vec![1.0f32; lvl.subset.len()];
@@ -489,6 +512,8 @@ impl Engine {
         let lvl = Level {
             map: base,
             obs: &obs_levels[0],
+            gain: self.gain_level(0),
+            wt: self.wt_level(0),
             subset: &self.subsets[0],
         };
         let mut weights = vec![1.0f32; lvl.subset.len()];
@@ -537,7 +562,13 @@ impl Engine {
             self.prev_r = Some(r_m);
             self.prev_map_valid = false;
             if update_main {
-                self.touched.clear();
+                let (gain0, wt0) = match &self.photo {
+                    Some(p) => (Some(p.gain[0].as_slice()), Some(p.wt[0].as_slice())),
+                    None => (None, None),
+                };
+                let map = &mut self.map;
+                let touched_set = &mut self.touched;
+                touched_set.clear();
                 for (k, &i) in self.index.iter().enumerate() {
                     let v = self.surface[k];
                     let p = [
@@ -545,18 +576,27 @@ impl Engine {
                         rt32[1][0] * v[0] + rt32[1][1] * v[1] + rt32[1][2] * v[2],
                         rt32[2][0] * v[0] + rt32[2][1] * v[1] + rt32[2][2] * v[2],
                     ];
-                    let (u, vv) = self.map.project(p);
+                    let (u, vv) = map.project(p);
                     // Touched cells are only needed to forget the rest of the map.
                     let touched = if forget_outside {
-                        Some(&mut self.touched)
+                        Some(&mut *touched_set)
                     } else {
                         None
                     };
-                    self.map
-                        .splat(u, vv, obs_v[i as usize], lambda_, w_max, touched);
+                    // The map holds unshaded texture, so a gain-corrected pixel
+                    // contributes obs/gain, with weight gain^2 (inverse noise variance
+                    // of that estimate) times its own reliability.
+                    let g = gain0.map_or(1.0, |g| g[k]);
+                    let value = if g > 0.0 {
+                        obs_v[i as usize] / g
+                    } else {
+                        obs_v[i as usize]
+                    };
+                    let scale = wt0.map_or(1.0, |w| w[k]) * g * g;
+                    map.splat(u, vv, value, lambda_, w_max, scale, touched);
                 }
                 if forget_outside {
-                    self.map.forget_outside(&self.touched.mask, margin);
+                    map.forget_outside(&touched_set.mask, margin);
                 }
             }
         });
@@ -579,7 +619,7 @@ impl Engine {
                     (rt[2][0] as f32) * v[0] + (rt[2][1] as f32) * v[1] + (rt[2][2] as f32) * v[2],
                 ];
                 let (u, vv) = self.prev_map.project(p);
-                self.prev_map.splat(u, vv, value, 1.0, w_max, None);
+                self.prev_map.splat(u, vv, value, 1.0, w_max, 1.0, None);
             }
         }
         self.prev_map_valid = true;
@@ -606,6 +646,86 @@ impl Engine {
     }
 
     /// Replace the accumulated map (e.g. with a saved template).
+    /// Set the static camera-frame photometric fields (both `window_size` x
+    /// `window_size` float32), or clear them with `None`. `gain` scales the map value the
+    /// observation is compared against; `wt` scales how much the pixel counts. Cleared
+    /// fields take the exact code path the tracker had before they existed.
+    #[pyo3(signature = (gain=None, wt=None))]
+    fn set_photometric(
+        &mut self,
+        gain: Option<PyReadonlyArray2<f32>>,
+        wt: Option<PyReadonlyArray2<f32>>,
+    ) -> PyResult<()> {
+        if gain.is_none() && wt.is_none() {
+            self.photo = None;
+            return Ok(());
+        }
+        let n_levels = self.subsets.len();
+        let ones = vec![1.0f32; self.n * self.n];
+        let gain_v = match &gain {
+            Some(a) => self.read_obs(a)?,
+            None => ones.clone(),
+        };
+        let wt_v = match &wt {
+            Some(a) => self.read_obs(a)?,
+            None => ones,
+        };
+        self.photo = Some(Photometric {
+            gain: self.observation_levels(&gain_v, n_levels),
+            wt: self.observation_levels(&wt_v, n_levels),
+        });
+        Ok(())
+    }
+
+    /// Render the accumulated map into the window at orientation `r`: the model the
+    /// residual is taken against. Returns `(value, confidence)`, both `window_size` x
+    /// `window_size` float32 and zero where the map has not been seen.
+    #[pyo3(signature = (r, w_min=0.1, w_sat=3.0))]
+    #[allow(clippy::type_complexity)]
+    fn render<'py>(
+        &self,
+        py: Python<'py>,
+        r: PyReadonlyArray2<f64>,
+        w_min: f32,
+        w_sat: f32,
+    ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
+        let r_m = read_mat3(&r)?;
+        let n = self.n;
+        let (value, conf) = py.detach(|| {
+            let rt = geom::transpose(&r_m);
+            let mut rt32 = [[0.0f32; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    rt32[i][j] = rt[i][j] as f32;
+                }
+            }
+            let mut value = vec![0.0f32; n * n];
+            let mut conf = vec![0.0f32; n * n];
+            for (k, &i) in self.index.iter().enumerate() {
+                let v = self.surface[k];
+                let p = [
+                    rt32[0][0] * v[0] + rt32[0][1] * v[1] + rt32[0][2] * v[2],
+                    rt32[1][0] * v[0] + rt32[1][1] * v[1] + rt32[1][2] * v[2],
+                    rt32[2][0] * v[0] + rt32[2][1] * v[1] + rt32[2][2] * v[2],
+                ];
+                let (u, vv) = self.map.project(p);
+                if let Some(s) = self.map.sample(u, vv, w_min, w_sat) {
+                    value[i as usize] = s.value;
+                    conf[i as usize] = s.confidence;
+                }
+            }
+            (value, conf)
+        });
+        Ok((
+            Array2::from_shape_vec((n, n), value)
+                .expect("shape")
+                .into_pyarray(py),
+            Array2::from_shape_vec((n, n), conf)
+                .expect("shape")
+                .into_pyarray(py),
+        ))
+    }
+
     fn set_map(
         &mut self,
         mean: PyReadonlyArray2<f32>,

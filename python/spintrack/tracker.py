@@ -19,7 +19,7 @@ from spintrack.engine import StepResult, TrackEngine, TrackParams
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
 from spintrack.io.dat import N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
-from spintrack.maps import load_map, save_map
+from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.path import PathIntegrator
 from spintrack.sphere import (
     centre_from_pixel_circle,
@@ -60,6 +60,8 @@ def params_from_config(cfg: Config, base: TrackParams | None = None) -> TrackPar
     p.norm_win_pc = float(cfg.thr_win_pc) if cfg.thr_win_pc > 0 else p.norm_win_pc
     p.forget_outside_view = not cfg.accumulate_map
     p.max_bad_frames = int(cfg.max_bad_frames)
+    if not cfg.illumination:
+        p.illum_bias = p.illum_gain = p.illum_weight = p.illum_flat = False
     p.global_search = bool(cfg.opt_do_global)
     if cfg.opt_bound > 0:
         p.max_step = float(cfg.opt_bound)
@@ -99,6 +101,14 @@ class Tracker:
         if cfg.sphere_map_fn:
             mean, weight = load_map(cfg.sphere_map_fn, self.engine.map_shape)
             self.engine.load_map(mean, weight, frozen=cfg.map_frozen)
+            # The illumination fields describe the rig, so a saved one is a head start.
+            fields, saved = load_illumination(cfg.sphere_map_fn, self.geometry.size)
+            if fields:
+                self.engine.load_illumination(
+                    fields,
+                    saved.get("centre", self.centre),
+                    saved.get("half_angle", self.half_angle),
+                )
         self.path = PathIntegrator()
         self.frame = 0
         self.seq = 0
@@ -151,6 +161,7 @@ class Tracker:
     def save_map(self, path) -> None:
         """Write the current surface map as a spintrack `.npz` template."""
         mean, weight = self.engine.export_map()
+        illum = self.engine.photometry.state()
         save_map(
             path,
             mean,
@@ -158,6 +169,9 @@ class Tracker:
             window_size=self.geometry.size,
             centre=self.centre,
             half_angle=self.half_angle,
+            illum_bias=illum["bias"],
+            illum_gain=illum["gain"],
+            illum_wt=illum["wt"],
         )
 
     def process_frame(

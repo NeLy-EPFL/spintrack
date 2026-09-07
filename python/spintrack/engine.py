@@ -13,7 +13,9 @@ import cv2
 import numpy as np
 
 from spintrack._core import Engine as _Engine
-from spintrack.geometry import matrix_to_rotvec
+from spintrack.camera import EquidistantCamera, pixel_centres
+from spintrack.geometry import matrix_to_rotvec, normalize, rotation_between
+from spintrack.photometry import Photometry
 from spintrack.sphere import WindowGeometry
 
 
@@ -36,6 +38,46 @@ class TrackParams:
     map_w_max: float = 50.0
     forget_outside_view: bool = False  # FicTrac fork's `accumulate_map: n`
     forget_margin: int = 1
+    # Static camera-frame illumination (see `photometry.py`). The arms are independent,
+    # and `benchmarks/spintrack_bench/` (`photometry_sweep` on synthetic scenes with
+    # ground truth, `illumination_real` on lab recordings) measures them separately and in
+    # combination; only the bias field earned its default.
+    illum_bias: bool = True  # additive field, estimated from the map residual
+    # Multiplicative field scaling the model. Worth 5% of median tracking error on the
+    # synthetic shadow scenes, but per-pixel gain and map amplitude are only separable
+    # when the ball turns enough to mix the two, and on the lab recordings it does not:
+    # over 4000 frames the field spreads without converging (p95 1.13 -> 1.35, max -> 2.4)
+    # instead of settling. Off until it is conditioned on something.
+    illum_gain: bool = False
+    # Per-pixel inverse-noise-variance weight. It lowers the reported cost, but that is
+    # partly circular - the cost is weighted by the same weights - and on ground truth it
+    # is not an improvement.
+    illum_weight: bool = False
+    # Temporal flat field of the raw window, applied before the local normalization. It
+    # flattens the shading further than the bias field does, but at ~3 effectively
+    # independent samples per pixel its estimate contains texture, and subtracting that
+    # raises the photometric residual by up to 60% on the lab recordings.
+    illum_flat: bool = False
+    # Accumulate the fields for reporting without applying any of them.
+    illum_measure: bool = False
+    illum_tau: float = 500.0  # frames; memory of the fields and of their accumulators
+    illum_update_every: int = 25  # frames between field refreshes
+    # Fold in every n-th accepted frame. The field has a time constant of hundreds
+    # of frames, so sampling costs it nothing and keeps the estimator off the hot
+    # path (every frame is ~0.6 ms at q_factor 12, every fourth is ~0.15 ms).
+    illum_stride: int = 4
+    # Forget the fields when a window re-fit moves them this far, as a fraction of
+    # the ball's radius: past that the ball has moved enough to be lit differently.
+    illum_reset_move: float = 0.05
+    illum_warmup: int = 100  # frames before the first refresh
+    illum_smooth: float = 0.0  # window px; spatial smoothing of the fields (0 = none)
+    illum_gain_damping: float = 0.25
+    illum_gain_min: float = 0.4
+    illum_gain_max: float = 2.5
+    illum_weight_min: float = 0.05
+    illum_weight_max: float = 4.0
+    illum_flat_tau: float = 2000.0
+    illum_flat_sigma: float = 4.0  # window px; smoothing of the raw flat field
     min_overlap: float = 0.25
     min_inlier_frac: float = 0.5
     max_cost: float = float("inf")
@@ -108,6 +150,7 @@ class TrackEngine:
         self._mask = geometry.mask.astype(np.float32)
         k = max(3, round(self.params.norm_win_pc * n) | 1)
         self._ksize = (k, k)
+        self.photometry = Photometry(geometry.mask, self.params)
         self.reset()
 
     # ----- state -----
@@ -158,6 +201,7 @@ class TrackEngine:
         the debug video every frame whose window moved.
         """
         mean, weight = self.export_map()
+        old_geometry = self.geometry
         n = geometry.size
         map_h, map_w = self.map_shape
         if round(self.params.map_scale * n) != map_h:
@@ -177,6 +221,7 @@ class TrackEngine:
             np.ascontiguousarray(weight, dtype=np.float32),
         )
         self._mask = geometry.mask.astype(np.float32)
+        self._resample_photometry(old_geometry.size, old_geometry.rad_per_pixel, Q)
         self.R = Q @ self.R
         self.velocity = Q @ self.velocity
 
@@ -257,6 +302,9 @@ class TrackEngine:
 
     def _update_maps(self, obs: np.ndarray) -> None:
         p = self.params
+        # Measure the static field against the map the tracker just used, before this
+        # frame is folded into it: otherwise the residual is partly self-referential.
+        self.photometry.observe(self.core, self.R, obs)
         self.core.update(
             obs,
             self.R,
@@ -302,9 +350,63 @@ class TrackEngine:
             res.overlap, res.iters, res.converged, np.asarray(res.hessian),
         )  # fmt: skip
 
+    def _resample_photometry(
+        self, old_size: int, old_rad_per_pixel: float, Q: np.ndarray
+    ) -> None:
+        """Carry the illumination fields into the current window.
+
+        Unlike the map, these fields are fixed in the *window*, so a different window is a
+        resampling, not a rotation: each new window pixel takes the value of whichever old
+        window pixel looked in the same direction. `Q` maps the old window frame to the
+        new one.
+        """
+        geometry = self.geometry
+        n = geometry.size
+        # A ball that has moved in its holder is lit differently - shading follows the
+        # surface normal, and translating the ball changes it - so a field measured before
+        # the move is not merely displaced, it is wrong. Past a fraction of a ball radius,
+        # drop it and re-learn rather than carry a shadow to where there is none.
+        moved = float(np.linalg.norm(matrix_to_rotvec(Q)))
+        if moved > self.params.illum_reset_move * 0.5 * n * geometry.rad_per_pixel:
+            self.photometry.forget()
+            self.photometry.push(self.core)
+            return
+        old_cam = EquidistantCamera(old_size, old_size, old_rad_per_pixel)
+        new_cam = EquidistantCamera(n, n, geometry.rad_per_pixel)
+        xs, ys = pixel_centres(n, n)
+        dirs_old = new_cam.rays(xs, ys) @ Q  # Q.T applied row-wise
+        x, y, _ = old_cam.project(dirs_old)
+        self.photometry.resample(
+            (x - 0.5).astype(np.float32), (y - 0.5).astype(np.float32), geometry.mask
+        )
+        self.photometry.push(self.core)
+
+    def load_illumination(
+        self, fields: dict, centre: np.ndarray, half_angle: float
+    ) -> None:
+        """Start from illumination fields measured in another run on the same rig.
+
+        They were measured in the window that run aimed at *its* ball centre, so they are
+        resampled into this one. Which is the whole reason the centre and angular radius
+        are stored beside them: applied as they stand, a field measured half a ball radius
+        away would put the holder's shadow somewhere the holder is not.
+        """
+        if not fields:
+            return
+        n = self.geometry.size
+        old_cam = EquidistantCamera.from_extent(n, 2.0 * float(half_angle))
+        old_to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), normalize(centre))
+        self.photometry.load(**fields)
+        self._resample_photometry(
+            n, old_cam.rad_per_pixel, self.geometry.to_camera.T @ old_to_camera
+        )
+
     def step(self, window: np.ndarray) -> StepResult:
         """Track one remapped grayscale window (uint8, window_size x window_size)."""
-        obs = self.normalize(window)
+        photo = self.photometry
+        if photo.flat is not None:
+            window = photo.flat.apply(window)
+        obs = photo.correct(self.normalize(window))
         self.last_obs = obs
         if self._needs_localisation:
             return self._localise(obs)
@@ -396,6 +498,16 @@ class TrackEngine:
     def map_coverage(self) -> float:
         """Fraction of map cells seen at least `w_min`; the grid is equal-area."""
         return float(np.mean(self.core.map_weight() >= self.params.w_min))
+
+    def illumination_image(self) -> np.ndarray | None:
+        """uint8 rendering of the static bias field, on the same scale as the map."""
+        photo = self.photometry
+        if not photo.active:
+            return None
+        field = photo.bias if self.params.illum_bias else photo.residual_field()
+        img = np.clip(128 + 40 * field, 0, 255).astype(np.uint8)
+        img[~photo.mask] = 128
+        return img
 
     def map_image(self) -> np.ndarray:
         """uint8 rendering of the accumulated map (unseen cells mid-gray)."""

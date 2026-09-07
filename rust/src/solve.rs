@@ -27,6 +27,11 @@ pub struct SolveParams {
 pub struct Level<'a> {
     pub map: &'a Map,
     pub obs: &'a [f32],
+    /// Optional per-pixel photometric fields, indexed like `obs`. `gain` scales the map
+    /// value the observation is compared against (a shadowed pixel sees a weaker copy of
+    /// the texture); `wt` scales that pixel's contribution to the normal equations.
+    pub gain: Option<&'a [f32]>,
+    pub wt: Option<&'a [f32]>,
     pub subset: &'a [u32],
 }
 
@@ -114,7 +119,8 @@ pub fn accumulate(
             continue;
         };
         n_overlap += 1;
-        let res = level.obs[k as usize] - s.value;
+        let g_k = level.gain.map_or(1.0, |g| g[k as usize]);
+        let res = level.obs[k as usize] - g_k * s.value;
         let a = res.abs();
         if reweight {
             let mut rho = if a <= huber { 1.0 } else { huber / a };
@@ -133,15 +139,15 @@ pub fn accumulate(
             n_inlier += 1;
             sum_sq_in += (res * res) as f64;
         }
-        let wgt = rho * s.confidence;
+        let wgt = rho * s.confidence * level.wt.map_or(1.0, |w| w[k as usize]);
         if wgt <= 0.0 {
             continue;
         }
         let (du, dv) = map.projection_jacobian(pp);
         let g = [
-            s.du * du[0] + s.dv * dv[0],
-            s.du * du[1] + s.dv * dv[1],
-            s.du * du[2] + s.dv * dv[2],
+            g_k * (s.du * du[0] + s.dv * dv[0]),
+            g_k * (s.du * du[1] + s.dv * dv[1]),
+            g_k * (s.du * du[2] + s.dv * dv[2]),
         ];
         let gc = mul3(&r, g);
         let c = cross(

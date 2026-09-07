@@ -78,6 +78,11 @@ def _add_run(sub) -> None:
         help="skip the inner/outer check on the ball's assumed radius",
     )
     p.add_argument(
+        "--no-illumination",
+        action="store_true",
+        help="do not separate the rig's static lighting from the ball's texture",
+    )
+    p.add_argument(
         "--no-summary",
         action="store_true",
         help="do not write the run quality sidecar (<out>-summary.json)",
@@ -259,6 +264,8 @@ def cmd_run(args) -> int:
     if args.print:
         recorders.append(TerminalRecorder())
 
+    if args.no_illumination:
+        cfg.illumination = False
     params = TrackParams() if args.all_pixels or args.no_scale_check else None
     if params is not None:
         params.max_pixels = None if args.all_pixels else params.max_pixels
