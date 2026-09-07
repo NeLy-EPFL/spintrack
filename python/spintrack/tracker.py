@@ -85,16 +85,21 @@ class Tracker:
             self.centre, self.half_angle = fit_ball(pts, self.camera)
         else:
             raise ValueError("config must define the ball via roi_c/roi_r or roi_circ")
+        self.params = params_from_config(cfg, params)
         mask = source_mask(self.camera, self.centre, self.half_angle, cfg.roi_ignr)
         self.geometry = window_geometry(
-            self.camera, self.centre, self.half_angle, cfg.window_size(), mask
+            self.camera,
+            self.centre,
+            self.half_angle,
+            cfg.window_size(),
+            mask,
+            prefilter=self.params.prefilter,
         )
         self.R_wc = self.geometry.to_camera  # window -> camera
         # The reporting convention is fixed to the first window frame, so a later re-fit
         # moves the window without stepping the absolute-orientation columns.
         self.R_wc0 = self.R_wc
         self.cam_to_lab = self._camera_to_lab(cfg)
-        self.params = params_from_config(cfg, params)
         if cfg.sphere_map_fn:
             self.params.global_search = True  # needed to localise against the template
         self.engine = TrackEngine(self.geometry, self.params)
@@ -243,7 +248,12 @@ class Tracker:
         centre = normalize(np.asarray(new_centre, dtype=np.float64))
         mask = source_mask(self.camera, centre, self.half_angle, self.cfg.roi_ignr)
         geometry = window_geometry(
-            self.camera, centre, self.half_angle, self.cfg.window_size(), mask
+            self.camera,
+            centre,
+            self.half_angle,
+            self.cfg.window_size(),
+            mask,
+            prefilter=self.params.prefilter,
         )
         Q = geometry.to_camera.T @ self.R_wc
         self.engine.rebuild(geometry, Q)

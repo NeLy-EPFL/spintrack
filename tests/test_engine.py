@@ -84,11 +84,19 @@ def test_engine_forget_outside_view_tracks_too():
 
 
 def test_global_search_relocalises_after_a_large_jump():
+    """A 38-degree jump within one frame: the local solve converges on a wrong minimum.
+
+    Nothing but its cost gives that minimum away - the robust weights adapt to the
+    residuals, so the inlier fraction stays high - which is what the cost gate is for; it
+    is off by default because a walking animal's cost trips it (see `TrackParams`).
+    """
     rng = np.random.default_rng(2)
     mask = source_mask(CAM, CENTRE, HALF)
     geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
     texture = make_texture(rng)
-    engine = TrackEngine(geom, TrackParams(global_search=True, max_step=0.3))
+    engine = TrackEngine(
+        geom, TrackParams(global_search=True, max_step=0.3, cost_gate=3.0)
+    )
     R = np.eye(3)
     engine.step(render_window(geom, texture, R, rng))
     # Sweep the ball so the map covers a broad region.

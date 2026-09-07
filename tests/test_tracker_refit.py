@@ -85,7 +85,7 @@ def test_refit_is_a_change_of_coordinates():
         tracker.process_frame(image)
     orientation = tracker.R_wc @ tracker.engine.R  # body -> camera, the physical state
     mean, weight = (a.copy() for a in tracker.engine.export_map())
-    cost_before = tracker.engine._cost_level
+    cost_before = float(np.median(tracker.engine._costs))
 
     tracker.refit_centre(shifted(5.0))
     after_mean, after_weight = tracker.engine.export_map()

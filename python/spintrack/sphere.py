@@ -16,6 +16,20 @@ import numpy as np
 from spintrack.camera import Camera, EquidistantCamera, pixel_centres
 from spintrack.geometry import normalize, rotation_between
 
+# Anti-aliasing of the window remap, as the standard deviation of a Gaussian in units of
+# the decimation (source pixels per window pixel: 5.8 on the synthetic scenes, 8.6 on the
+# lab recordings). Bilinear interpolation at that decimation samples one source pixel in
+# thirty and aliases the surface texture. Pre-filtering the source halves the per-frame
+# error on the synthetic scenes (clean_fly 0.036 -> 0.019 deg, sparse 0.061 -> 0.026) and
+# cuts trial 003's disagreement with an optical-flow cross-check by 13-31%; 0.35 and 0.7
+# both measure worse. Below `PREFILTER_MIN_DECIMATION` there is nothing to alias, and the
+# blur costs 1-4% on the lab-like scenes, so the filter is skipped. It is one `cv2.pyrDown`
+# (a binomial blur of variance one in source pixels, then a halving) followed by a Gaussian
+# on the half-size image: as accurate as the Gaussian on the full frame and a quarter of
+# its cost. A second halving is not - it loses 5-15% of the gain.
+PREFILTER_SIGMA = 0.5
+PREFILTER_MIN_DECIMATION = 2.0
+
 
 def tangent_basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Two unit vectors orthogonal to `axis` and to each other."""
@@ -155,6 +169,14 @@ class WindowGeometry:
         np.ndarray
     )  # (N, 3) float32 unit ball-centre-to-surface vectors, window frame
     index: np.ndarray  # (N,) int64 flat row-major indices of the masked pixels
+    decimation: float = 1.0  # source pixels per window pixel, median over the window
+    # The pre-filter (see `PREFILTER_SIGMA`): `cv2.pyrDown` halvings, then a Gaussian of
+    # `top_up_sigma` (pixels of the reduced image; 0 for none), then the remap through
+    # `map_x_small`, `map_y_small`, the maps in the reduced image's coordinates.
+    levels: int = 0
+    top_up_sigma: float = 0.0
+    map_x_small: np.ndarray | None = None
+    map_y_small: np.ndarray | None = None
 
     @property
     def n_valid(self) -> int:
@@ -162,22 +184,57 @@ class WindowGeometry:
 
     def remap(self, image: np.ndarray) -> np.ndarray:
         """Resample a source image (2-D) into the window with bilinear interpolation."""
+        if self.levels == 0 and self.top_up_sigma == 0.0:
+            return cv2.remap(
+                image,
+                self.map_x,
+                self.map_y,
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+            )
+        small = image
+        for _ in range(self.levels):
+            small = cv2.pyrDown(small)
+        if self.top_up_sigma > 0.0:
+            small = cv2.GaussianBlur(small, (0, 0), self.top_up_sigma)
         return cv2.remap(
-            image,
-            self.map_x,
-            self.map_y,
+            small,
+            self.map_x_small,
+            self.map_y_small,
             cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
         )
 
 
+def prefilter_plan(decimation: float, sigma: float) -> tuple[int, float]:
+    """Pyramid levels and top-up Gaussian (reduced-image px) for a blur of `sigma`.
+
+    `sigma` is in units of the decimation. One `cv2.pyrDown` contributes a variance of one
+    source pixel squared; the remainder of the target variance is a Gaussian on the
+    half-size image. The pyramid's alignment is exact: output pixel `j` is centered on
+    input pixel `2 j`, so a map in source pixel indices is divided by two.
+    """
+    if sigma <= 0.0 or decimation < PREFILTER_MIN_DECIMATION:
+        return 0, 0.0
+    target = (sigma * decimation) ** 2
+    levels = 1 if target >= 1.0 else 0
+    remainder = np.sqrt(max(target - levels, 0.0)) / 2.0**levels
+    return levels, float(remainder) if remainder >= 0.3 else 0.0
+
+
 def window_geometry(
-    camera: Camera, centre, half_angle: float, size: int, mask: np.ndarray
+    camera: Camera,
+    centre,
+    half_angle: float,
+    size: int,
+    mask: np.ndarray,
+    prefilter: float = PREFILTER_SIGMA,
 ) -> WindowGeometry:
     """Build the tracking window for a ball at `centre` (unit) with `half_angle` (rad).
 
     The window frame has +z along `centre`; the ball centre sits at distance 1 and the
     ball radius is `sin(half_angle)`. `mask` is the source-image mask from `source_mask`.
+    `prefilter` is the anti-aliasing blur in units of the decimation (0 for none).
     """
     c = normalize(np.asarray(centre, dtype=np.float64))
     to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), c)
@@ -201,6 +258,10 @@ def window_geometry(
     )
     window_mask = valid & hit & (seen > 0)
     index = np.flatnonzero(window_mask.ravel())
+    step = np.hypot(np.gradient(map_x, axis=1), np.gradient(map_y, axis=1))
+    decimation = float(np.median(step[window_mask])) if window_mask.any() else 1.0
+    levels, top_up = prefilter_plan(decimation, prefilter)
+    scale = np.float32(2.0**levels)
     return WindowGeometry(
         size=size,
         rad_per_pixel=window_cam.rad_per_pixel,
@@ -210,4 +271,9 @@ def window_geometry(
         mask=window_mask,
         surface=np.ascontiguousarray(surface.reshape(-1, 3)[index], dtype=np.float32),
         index=index,
+        decimation=decimation,
+        levels=levels,
+        top_up_sigma=top_up,
+        map_x_small=map_x / scale,
+        map_y_small=map_y / scale,
     )

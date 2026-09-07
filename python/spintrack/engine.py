@@ -7,6 +7,7 @@ and returns the rotation increment in the window frame.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 import cv2
@@ -36,6 +37,9 @@ class TrackParams:
     w_min: float = 0.1  # map weight below which a cell counts as unseen
     w_sat: float = 3.0
     damping: float = 1e-6
+    # Anti-aliasing blur of the source before the window remap, in units of the decimation
+    # (0 disables; see `sphere.PREFILTER_SIGMA`).
+    prefilter: float = 0.5
     norm_win_pc: float = 0.25  # normalization window, fraction of the window size
     norm_floor: float = 2.0  # gray-level floor added to the local std
     # `cube` is an equi-angular cubemap; `equal_area` is the Lambert cylindrical grid
@@ -97,10 +101,19 @@ class TrackParams:
     min_overlap: float = 0.25
     min_inlier_frac: float = 0.5
     max_cost: float = float("inf")
-    # Reject a solve whose cost exceeds this multiple of the running cost of accepted
-    # frames (catches wrong local minima on repetitive textures); 0 disables.
-    cost_gate: float = 3.0
+    # Reject a solve whose cost exceeds this multiple of the 90th percentile of the last
+    # `cost_gate_history` accepted map solves, so that a wrong local minimum after a jump
+    # the local solve cannot follow falls through to the previous-frame solve or the
+    # global search. Off by default (0): with the pre-filtered window the cost is bimodal
+    # - a still frame's is a tenth of a moving one's (trial 003: median 0.006, p90 0.072)
+    # - so any level learned while the animal stands rejects the frames where it walks. A
+    # running mean rejected 700 of 4000 frames on 003 (cross-check correlation 0.999 ->
+    # 0.95); the percentile still sent 277 to the previous-frame solve there and lost 54
+    # frames of 004's drop, while on the 21 synthetic scenes the gate never fires at all.
+    # The failure it guards against is a rotation of tens of degrees within one frame.
+    cost_gate: float = 0.0
     cost_gate_warmup: int = 10
+    cost_gate_history: int = 200
     max_step: float = 0.5  # rad per frame; larger increments are rejected
     velocity_smoothing: float = 0.5  # 0 disables the constant-velocity prediction
     # Solve on a spatial subsample of about this many window pixels (None = all). The map
@@ -185,7 +198,7 @@ class TrackEngine:
         self._frozen = False
         self._needs_localisation = False
         self.last_obs: np.ndarray | None = None  # normalized window of the last step
-        self._cost_level: float | None = None  # running mean cost of accepted frames
+        self._costs: deque[float] = deque(maxlen=self.params.cost_gate_history)
 
     def _new_core(self, geometry: WindowGeometry) -> _Engine:
         """Build the Rust core for `geometry`. The one place its arguments are chosen: a
@@ -304,17 +317,13 @@ class TrackEngine:
         p = self.params
         if not np.isfinite(cost) or cost > p.max_cost:
             return False
-        gated = p.cost_gate > 0 and self._cost_level is not None
-        if gated and self.frames_tracked >= p.cost_gate_warmup:
-            return cost <= p.cost_gate * self._cost_level
+        if p.cost_gate > 0 and len(self._costs) >= max(p.cost_gate_warmup, 1):
+            return cost <= p.cost_gate * float(np.percentile(self._costs, 90))
         return True
 
     def _note_cost(self, cost: float) -> None:
         if np.isfinite(cost):
-            if self._cost_level is None:
-                self._cost_level = cost
-            else:
-                self._cost_level = 0.9 * self._cost_level + 0.1 * cost
+            self._costs.append(float(cost))
 
     def _accept(self, res) -> bool:
         p = self.params
@@ -513,7 +522,10 @@ class TrackEngine:
         else:
             self.velocity = (1.0 - a) * self.velocity + a * w if a > 0 else np.zeros(3)
         self._update_maps(obs)
-        self._note_cost(res.cost)
+        if source == "map":
+            # A solve against the previous frame's map scores lower than one against the
+            # accumulated map; letting it into the level ratchets the gate shut.
+            self._note_cost(res.cost)
         self.n_bad = 0
         self.frames_tracked += 1
         return StepResult(

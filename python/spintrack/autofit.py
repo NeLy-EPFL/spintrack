@@ -260,11 +260,20 @@ def _cost_at(
     """
     from dataclasses import replace as _replace
 
+    from spintrack.engine import TrackParams
     from spintrack.io.sources import VideoSource
     from spintrack.tracker import Tracker
 
     trial = _replace(
         cfg, vfov=float(vfov), roi_circ=list(points), roi_c=None, roi_r=None
+    )
+    # This search lives on the cost's sensitivity to the geometry, so the two things that
+    # explain away part of a wrong field of view's cost are turned off: the static
+    # illumination field, which absorbs a systematic misregistration residual as if it
+    # were shading, and the window pre-filter, which blurs it. With the field learning, the
+    # curve's depth on the 16-degree test ball falls from 2.2 to 1.96.
+    params = _replace(
+        params or TrackParams(), prefilter=0.0, illum_bias=False, illum_gain=False
     )
     source = VideoSource(src_spec)
     try:
@@ -414,13 +423,16 @@ OUTER_MIN = 0.70  # and above this, "outer"
 MIN_INPLANE_DEG = 0.2  # a smaller in-plane increment carries no usable signal
 MIN_CHECKED = 50
 # Outer/inner rotation ratio against relative radius error, measured on `clean_fly`,
-# `offaxis`, `occluded`, `lab_small_ball` and `sparse` with `roi_circ` scaled by hand;
-# each entry is the mean over the five. The zero-error entry is 0.996 rather than 1, and
-# `radius_error_from_ratio` divides the curve by it: 0.996 is the ratio a correct radius
-# actually produces, so reading it as +0.18% would bias the check at its own zero. The
-# five scenes agree to 0.028 in ratio, about one percentage point of radius, which is
-# this check's noise floor - and the near-orthographic `lab_small_ball` sits on the same
-# curve as the 11-degree `clean_fly`, so one curve serves both regimes.
+# `offaxis`, `occluded`, `lab_small_ball` and `sparse` with `roi_r` scaled, a check every
+# second frame (300-360 per run) and the window pre-filter on, which flattens the
+# over-large branch (0.918 at +5% against 0.893 without it) and leaves the under-large
+# one alone; each entry is the mean over the five. The zero-error entry is 1.005 rather
+# than 1, and `radius_error_from_ratio` divides the curve by it: 1.005 is the ratio a
+# correct radius actually produces, so reading it as a ratio of 1 would bias the check at
+# its own zero. At a correct radius the five scenes spread from 0.971 (`lab_small_ball`)
+# to 1.031 (`offaxis`), about two percentage points of radius either way, which is this
+# check's noise floor; the near-orthographic `lab_small_ball` sits on the same curve as
+# the 11-degree `clean_fly` to that precision, so one curve serves both regimes.
 #
 # The near-orthographic prediction (a point at normalised offset t sits at depth
 # sqrt(1 - t^2) and moves by omega times that depth, so a solver assuming radius 1 + eps
@@ -430,10 +442,10 @@ MIN_CHECKED = 50
 # so the calibration is measured rather than derived.
 RATIO_CALIBRATION = (
     (-0.10, 1.121),
-    (-0.05, 1.067),
-    (0.00, 0.996),
-    (0.05, 0.893),
-    (0.10, 0.750),
+    (-0.05, 1.068),
+    (0.00, 1.005),
+    (0.05, 0.918),
+    (0.10, 0.811),
 )
 
 
@@ -461,7 +473,7 @@ class ScaleVerdict:
     """What the inner and outer parts of the window say about the assumed radius."""
 
     # Outer gain / inner gain; `RATIO_CALIBRATION`'s zero entry when the assumed
-    # radius is right, which is 0.996 rather than 1.
+    # radius is right, which is 1.005 rather than 1.
     ratio: float
     radius_err_pct: float
     ci_pct: tuple[float, float]

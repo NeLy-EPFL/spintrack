@@ -144,7 +144,7 @@ def test_scale_check_does_not_change_tracking(tmp_path):
 def test_radius_error_inversion_is_monotone_and_unbiased_at_its_zero():
     from spintrack.autofit import RATIO_CALIBRATION, radius_error_from_ratio
 
-    # The curve's own zero-error entry must read exactly zero, not the +0.18% that
+    # The curve's own zero-error entry must read exactly zero, not the -0.3% that
     # taking it as a ratio of 1 gives.
     assert radius_error_from_ratio(RATIO_CALIBRATION[2][1]) == pytest.approx(
         0.0, abs=1e-9
@@ -156,4 +156,4 @@ def test_radius_error_inversion_is_monotone_and_unbiased_at_its_zero():
     )
     # The calibration points must come back as the errors they were measured at.
     assert radius_error_from_ratio(1.121) == pytest.approx(-0.10, abs=0.005)
-    assert radius_error_from_ratio(0.750) == pytest.approx(0.10, abs=0.005)
+    assert radius_error_from_ratio(0.811) == pytest.approx(0.10, abs=0.005)
