@@ -24,8 +24,9 @@ iterations and analytic derivatives.
 ## Per frame
 
 1. **Normalize.** Local zero-mean, unit-variance normalization of the window over the valid
-   pixels (box window of `thr_win_pc * n` pixels). This removes illumination gradients and
-   flicker and makes residuals comparable across balls.
+   pixels (box window of `thr_win_pc * n` pixels), then subtraction of the static
+   illumination field (below). The first removes smooth illumination gradients and flicker
+   and makes residuals comparable across balls; the second removes what it cannot.
 2. **Predict.** Start from the constant-velocity prediction `exp(w0) R_prev`, where `w0` is the
    low-passed previous increment.
 3. **Align.** Iteratively reweighted Gauss-Newton on the residuals
@@ -39,13 +40,57 @@ iterations and analytic derivatives.
    whether the frame is accepted. On failure the window is aligned against the previous
    frame's map (drift-prone but robust to occlusion bursts); if that fails too the frame is
    dropped, and after `max_bad_frames` failures tracking resets.
-5. **Update.** The normalized window is splatted into the map (bilinear footprint, running
+5. **Update.** The corrected window is splatted into the map (bilinear footprint, running
    mean with optional forgetting). `accumulate_map: n` keeps only a one-cell dilation of the
    current view, reproducing the lab fork's behaviour.
 6. **Output.** The increment is expressed in camera coordinates (`R_wc w`), then lab
    coordinates (`c2a_r`), and integrated into the fictive path with FicTrac's column
    semantics. Unlike FicTrac, the camera-frame columns are in true camera coordinates rather
    than the window frame; the two coincide for a ball near the image centre.
+
+## Static illumination
+
+The lamps and the ball holder do not rotate with the ball, so whatever they do to a window
+pixel is fixed in the camera frame while the texture it falls on turns past it. Anything
+camera-fixed left in the observation is therefore not texture, and splatting it into the
+ball-fixed map smears it over the surface. On the lab recordings the band just above the
+holder sits about 0.9 low in normalized-intensity units, where map values span roughly
++/-3, and keeps a third of the texture contrast of the rest of the ball.
+
+The local normalization in step 1 handles a *smooth* gradient by construction: a shading
+field that varies slowly compared with its box cancels out of both the local mean and the
+local standard deviation. A holder shadow is not smooth. Its edge is sharp compared with
+the box, which straddles bright and dark and so reads high just above the shadow and low
+inside it, and it divides by a standard deviation the same edge has inflated. That is what
+produces the `+0.3, +0.2, -0.9` signature the three example recordings all show.
+
+So spintrack estimates a per-window-pixel field `bias` and subtracts it before the solve
+and before the splat, leaving both sides consistent:
+
+    residual = (obs - bias) - gain * M(project(R^T v_k))   weighted by rho * map_conf * wt
+
+`bias` is estimated from the mean of `obs - M(project(R^T v_k))` per window pixel, updated
+as a slow LMS step every `illum_update_every` frames with time constant `illum_tau`, and
+projected to zero mean because the field and the map are separable only up to one additive
+constant. It has to go through the map: averaging the *frames* would work only if the ball
+turned enough for the texture to average away, and on these recordings a window pixel sees
+about three effectively independent patches of surface in two thousand frames, so a plain
+temporal mean is mostly texture and subtracting it would take real signal out of the map.
+Against the map the texture is subtracted explicitly, and no spatial smoothing is needed.
+
+The update is self-limiting rather than self-reinforcing: when the ball is still, the map
+absorbs the whole observation, the residual goes to zero, and the field stops moving.
+
+The field belongs to a ball in a given place. A window re-fit that only nudges the window
+resamples it by direction, since it is the camera frame it is fixed in; but a ball that has
+actually moved in its holder is lit differently, shading being a function of the surface
+normal, so past `illum_reset_move` of a radius the field is discarded and re-learned. On
+the trial where the ball sinks 242 px and comes back, carrying the old field instead costs
+more than the correction saves over that stretch.
+
+`gain` and `wt` are the multiplicative and weighting counterparts, both off by default;
+`spintrack.photometry` records what measuring them showed. `illumination: n`, or
+`--no-illumination`, restores the plain behaviour.
 
 ## Geometry from the data
 

@@ -32,7 +32,8 @@ All documented FicTrac keys are accepted (`vfov`, `fisheye`, `q_factor`, `roi_ci
 `thr_win_pc`, ...), plus the lab fork's `accumulate_map`. YAML and TOML files with the same
 keys work too. Keys spintrack does not need (`thr_ratio`, `opt_max_evals`, `opt_tol`,
 `opt_max_err`, `q_factor` beyond the window size) are accepted and ignored. spintrack adds
-`map_frozen: y` (never update a map loaded through `sphere_map_fn`).
+`map_frozen: y` (never update a map loaded through `sphere_map_fn`) and `illumination: n`
+(stop separating the rig's static lighting from the ball's texture).
 
 Three differences worth knowing before you copy a FicTrac config across:
 
@@ -67,7 +68,12 @@ How the keys map onto spintrack's solver:
   reproducing the lab fork's behaviour; the default accumulates the whole surface.
 - `max_bad_frames`: reset tracking after this many consecutive untrackable frames.
 - `sphere_map_fn`: a FicTrac sphere-map PNG (converted on import) or a spintrack `.npz`
-  written by `--save-map`; the first frame is localised globally against it.
+  written by `--save-map`; the first frame is localised globally against it. A spintrack
+  `.npz` also carries the static illumination field, which describes the rig rather than
+  the ball, so a map saved from one trial gives the next one a head start.
+- `illumination` (spintrack-only, on by default): estimate the camera-fixed illumination -
+  the holder's shadow above all - and keep it out of the ball's surface map. FicTrac has
+  no equivalent; `illumination: n` or `--no-illumination` turns it off.
 - `save_debug`: write the annotated debug video next to the `.dat`. `vid_codec` picks
   the encoder; `h264` (the default), `hevc` and `vp9` go through PyAV, whose wheels bundle
   an FFmpeg with those encoders. The `opencv-python` one does not, so `cv2.VideoWriter`

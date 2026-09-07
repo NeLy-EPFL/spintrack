@@ -28,12 +28,21 @@ spintrack calibrate config.txt           # click rim points, ignore regions, ani
 spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
 ```
 
-`--debug-video` writes an annotated video (ball orientation, tracking window, map, path);
+`--debug-video` writes an annotated video (ball orientation, tracking window, map,
+illumination, path);
 it encodes H.264 with PyAV's bundled FFmpeg, so no system `ffmpeg` is needed.
 `--refine N` re-estimates every frame offline against the map built from the whole
 recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
 (also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
 fixed.
+
+### The lighting stays out of the ball's texture
+
+A ball sitting in a holder is darker near the holder, and that darkness belongs to the rig,
+not to the ball. Because the lamps do not turn with the ball, spintrack can tell the two
+apart: it measures what stays put in the camera frame and subtracts it, so the surface map
+holds texture rather than a shadow smeared around the sphere. `--no-illumination` turns it
+off. See [docs/algorithm.md](docs/algorithm.md#static-illumination).
 
 ### The geometry does not have to be hand-measured
 
@@ -83,8 +92,8 @@ FicTrac binarizes the tracking window and searches a rotation that best matches 
 surface map with a derivative-free optimiser. spintrack instead normalizes the window
 photometrically, keeps a floating-point surface map, and aligns the two with Gauss-Newton
 iterations using analytic derivatives (sub-pixel, a few iterations per frame), with robust
-weights against occluders, a coarse-to-fine fallback for saccades, and an optional global
-relocalisation. Details in [docs/algorithm.md](docs/algorithm.md).
+weights against occluders, a coarse-to-fine fallback for saccades, an estimate of the rig's
+static illumination that keeps it out of the map, and an optional global relocalisation. Details in [docs/algorithm.md](docs/algorithm.md).
 
 ## Accuracy and speed
 
