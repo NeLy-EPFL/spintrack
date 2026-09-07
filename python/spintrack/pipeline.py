@@ -276,9 +276,19 @@ def run(
         ts_list = [k[1] for k in keep]
         wall_list = [k[2] for k in keep]
         windows = [k[3] for k in keep]
-        online = tracker.orientations_in_current_window([(k[4], k[5]) for k in keep])
+        # Each window stays paired with the orientation in its own window frame; only the
+        # refined result is brought into the final one (see `spintrack.refine`).
+        versions = [k[5] for k in keep]
         refined, rstats = refine_orientations(
-            tracker.engine, windows, online, refine_sweeps
+            tracker.engine,
+            windows,
+            [k[4] for k in keep],
+            refine_sweeps,
+            versions=versions,
+            moves=tracker._moves,
+        )
+        refined = tracker.orientations_in_current_window(
+            list(zip(refined, versions, strict=True))
         )
         rows = tracker.records_from_orientations(refined, ts_list, wall_list, frames)
         stats.refine = {**rstats, "frames": len(rows)}
