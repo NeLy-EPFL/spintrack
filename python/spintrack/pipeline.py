@@ -87,6 +87,8 @@ def run(
     summary_out: str | None = None,
     provenance: dict | None = None,
     checks: dict | None = None,
+    tracker: Tracker | None = None,
+    two_pass_source: Callable[[], FrameSource] | None = None,
 ) -> RunStats:
     """Track every frame of `source`; returns run statistics.
 
@@ -94,8 +96,39 @@ def run(
     window in memory, re-estimates all orientations against the complete map afterwards and
     writes the refined records to `refined_out`. The run quality summary always lands in
     `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
+
+    `two_pass_source` opens the same recording a second time: the ball is mapped in a
+    throwaway first pass and this run starts from that map, so the opening frames are
+    matched against a finished ball instead of an empty one. It fixes the cold start, not
+    the drift that accumulates afterwards - that is what `refine_sweeps` is for, and the
+    two compose. `tracker` supplies a pre-built tracker instead of building one, which is
+    how the first pass hands its map over.
     """
-    tracker = Tracker(cfg, source.width, source.height, params)
+    first = None
+    if tracker is None:
+        if two_pass_source is not None:
+            log.info("pass 1 of 2: mapping the ball")
+            first = Tracker(cfg, source.width, source.height, params)
+            source_1 = two_pass_source()
+            try:
+                run(
+                    cfg,
+                    source_1,
+                    tracker=first,
+                    params=params,
+                    max_frames=max_frames,
+                    prefetch=prefetch,
+                    progress=progress,
+                )
+            finally:
+                source_1.close()
+            log.info(
+                "pass 2 of 2: tracking from a map covering %.0f%% of the ball",
+                100.0 * first.engine.map_coverage(),
+            )
+        tracker = Tracker(cfg, source.width, source.height, params)
+        if first is not None:
+            tracker.prime_from(first)
     stats = RunStats()
     canvas = writer = None
     if debug_video:
@@ -201,6 +234,11 @@ def run(
             )
         elif tracker.watch is not None:
             stats.quality.checks["ball centre"] = "stable"
+        if first is not None:
+            stats.quality.checks["two-pass"] = (
+                f"first pass mapped {100.0 * first.engine.map_coverage():.0f}% of the "
+                f"ball; this run started from it"
+            )
         if tracker.scale_check is not None:
             verdict = tracker.scale_check.result()
             stats.quality.checks["rotation scale"] = verdict.line()

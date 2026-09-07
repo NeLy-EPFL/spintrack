@@ -158,6 +158,21 @@ class Tracker:
         self.path.reset()
         self.seq = 0
 
+    def prime_from(self, other: Tracker) -> None:
+        """Start from another tracker's map and illumination fields.
+
+        Both trackers must have been built from the same config, so their initial windows
+        agree and the map needs no correction: the map lives in the window frame at
+        `R = I`, and a window re-fit in `other` carried it unchanged (see
+        `TrackEngine.rebuild`). The illumination fields are fixed in the *window*, so they
+        do come from wherever `other` ended up and are resampled into this one.
+        """
+        mean, weight = other.engine.export_map()
+        self.engine.load_map(mean, weight, frozen=self.cfg.map_frozen, localise=False)
+        self.engine.load_illumination(
+            other.engine.photometry.state(), other.centre, other.half_angle
+        )
+
     def save_map(self, path) -> None:
         """Write the current surface map as a spintrack `.npz` template."""
         mean, weight = self.engine.export_map()

@@ -205,9 +205,18 @@ class TrackEngine:
 
     # ----- maps -----
     def load_map(
-        self, mean: np.ndarray, weight: np.ndarray, frozen: bool = False
+        self,
+        mean: np.ndarray,
+        weight: np.ndarray,
+        frozen: bool = False,
+        localise: bool = True,
     ) -> None:
-        """Start from a saved map; the first frame is localised against it globally."""
+        """Start from a saved map; the first frame is localised against it globally.
+
+        `localise=False` says the caller already knows the map is in this engine's body
+        frame - the map of an earlier pass over the same recording, say - so the first
+        frame is solved from `R = I` like any other instead of searching all of SO(3).
+        """
         if mean.shape != self.map_shape or weight.shape != self.map_shape:
             raise ValueError(f"map arrays must have shape {self.map_shape}")
         self.core.set_map(
@@ -216,7 +225,7 @@ class TrackEngine:
         )
         self._have_map = True
         self._frozen = frozen
-        self._needs_localisation = True
+        self._needs_localisation = localise
         self.R = rotvec_to_matrix(self.params.map_frame)
         self.velocity = np.zeros(3)
 

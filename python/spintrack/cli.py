@@ -37,7 +37,12 @@ def _add_run(sub) -> None:
         "--all-pixels", action="store_true", help="solve on every window pixel"
     )
     p.add_argument(
-        "--save-map", default=None, metavar="PATH", help="write the final map (.npz)"
+        "--save-map",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="PATH",
+        help="write the final map (default path: <out>-map.npz)",
     )
     p.add_argument(
         "--load-map",
@@ -47,6 +52,11 @@ def _add_run(sub) -> None:
     )
     p.add_argument(
         "--frozen-map", action="store_true", help="never update the loaded map"
+    )
+    p.add_argument(
+        "--two-pass",
+        action="store_true",
+        help="map the ball in a first pass, then re-track from that map",
     )
     p.add_argument(
         "--map-projection",
@@ -279,6 +289,9 @@ def cmd_run(args) -> int:
             "`c2a_r : { 0, 0, 0 }` to use the identity explicitly."
         )
         return 2
+    if args.two_pass and str(src_spec).isdigit():
+        log.error("--two-pass needs a recording it can read twice, not a live camera")
+        return 2
     if not str(src_spec).isdigit():
         src_path = Path(src_spec)
         if not src_path.is_absolute():
@@ -335,6 +348,9 @@ def cmd_run(args) -> int:
         debug_video = "auto"
     if debug_video == "auto":
         debug_video = str(out_path.with_name(out_path.stem + "-debug.mp4"))
+    save_map = args.save_map
+    if save_map == "auto":
+        save_map = str(out_path.with_name(out_path.stem + "-map.npz"))
     refined_out = args.refine_out
     if args.refine > 0 and refined_out is None:
         refined_out = str(out_path.with_name(out_path.stem + "-refined.dat"))
@@ -378,8 +394,9 @@ def cmd_run(args) -> int:
             max_frames=args.max_frames,
             prefetch=not args.no_prefetch,
             progress=progress,
-            save_map=args.save_map,
+            save_map=save_map,
             debug_video=debug_video,
+            two_pass_source=(lambda: open_source(src_spec)) if args.two_pass else None,
             refine_sweeps=args.refine,
             refined_out=refined_out,
             summary_out=summary_out,
@@ -399,6 +416,8 @@ def cmd_run(args) -> int:
         log.info("refined: %s -> %s", stats.refine, refined_out)
     if debug_video:
         log.info("debug video: %s", debug_video)
+    if save_map:
+        log.info("map: %s", save_map)
     if stats.quality is not None:
         from spintrack.quality import format_summary
 
