@@ -11,8 +11,29 @@ import numpy as np
 from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.io.sources import VideoSource
+from spintrack.maps import map_directions
 from spintrack.tracker import Tracker
-from spintrack_bench.synth.dataset import load_truth
+from spintrack_bench.synth.dataset import SceneSpec, load_truth
+
+
+def map_fidelity(dataset: Path, tracker, truth: dict) -> float:
+    """Correlation between the recovered surface map and the true albedo.
+
+    The map is built in the window frame the tracker started in, so the ground truth has
+    to be rotated into it: window -> camera by `R_wc0`, camera -> body by the true
+    orientation of the first frame. Correlation, not error, because the map holds locally
+    normalized intensity rather than albedo.
+    """
+    spec = SceneSpec.from_json((Path(dataset) / "scene.json").read_text())
+    texture = spec.texture.build(np.random.default_rng(spec.seed))
+    mean, weight = tracker.engine.export_map()
+    dirs = map_directions(mean.shape)
+    to_body = truth["R"][0].T @ tracker.R_wc0
+    gt = texture.sample((dirs.reshape(-1, 3) @ to_body.T).astype(np.float64))
+    seen = (weight > 1.0).ravel()
+    if seen.sum() < 100:
+        return float("nan")
+    return float(np.corrcoef(mean.ravel()[seen], gt.ravel()[seen])[0, 1])
 
 
 def run_spintrack(
@@ -60,4 +81,13 @@ def run_spintrack(
         "frames_lost": sources["lost"],
         "n_refits": len(tracker.refits),
     }
+    timing["map_corr"] = map_fidelity(dataset, tracker, truth)
+    photo = tracker.engine.photometry
+    if photo.active:
+        field = photo.residual_field()
+        seen = photo.mask & (photo.acc_n > 1.0)
+        if seen.any():
+            # What is left in the camera frame that the ball-fixed map cannot explain.
+            timing["static_bias_rms"] = float(np.sqrt((field[seen] ** 2).mean()))
+            timing["static_bias_p99"] = float(np.percentile(np.abs(field[seen]), 99))
     return est, timing

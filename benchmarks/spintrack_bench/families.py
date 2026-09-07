@@ -7,6 +7,10 @@ import dataclasses
 from spintrack_bench.synth.dataset import SceneSpec
 
 _LAB_SENSOR = {"blur_sigma": 0.8, "read_noise": 2.0, "shot_noise": 5.0}
+# Matched to the lab recordings: the shadowed band is about 45% darker and keeps about
+# half its relative contrast, the stray light being what flattens the rest.
+_HOLDER = {"holder_shadow": 0.7, "holder_ambient": 0.08, "holder_elevation": 0.32,
+           "holder_softness": 0.1}  # fmt: skip
 
 
 def _fly(name: str, **kw) -> SceneSpec:
@@ -54,11 +58,30 @@ FAMILIES: dict[str, SceneSpec] = {
         ball_path={"kind": "bump", "start": 300, "end": 840, "amplitude_radii": 0.4,
                    "direction_deg": 90.0},
     ),
+    # The ball holder shadows the bottom of the ball: a darkening fixed in the camera
+    # frame that the texture rotates through, as in AN07B017_260414_Fly4_003.
+    "holder_shadow": _fly("holder_shadow", lighting=_HOLDER),
     # JSP-like geometry: small ball in a narrow-FOV frame, HEVC, q_factor 12.
     "lab_small_ball": _fly(
         "lab_small_ball", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
         ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18, q_factor=12,
         thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+    ),
+    # The same rig with the holder shadow: the scene this whole correction is aimed at.
+    "holder_shadow_lab": _fly(
+        "holder_shadow_lab", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
+        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18, q_factor=12,
+        thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+        lighting=_HOLDER,
+    ),
+    # As above but with the ball sitting low enough to be cut by the bottom of the frame,
+    # as it is on the real rig: the shadow then falls right at the edge of the mask, where
+    # the local normalization has no bright pixels left to balance it against.
+    "holder_shadow_cut": _fly(
+        "holder_shadow_cut", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
+        ball_azimuth_deg=-0.4, ball_elevation_deg=-0.86, codec="hevc", crf=18, q_factor=12,
+        thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+        lighting=_HOLDER,
     ),
 }  # fmt: skip
 

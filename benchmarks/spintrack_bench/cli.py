@@ -213,6 +213,8 @@ def cmd_report(args) -> int:
         .groupby(["dataset", "system"], as_index=False)
         .last()
     )
+    if args.systems != ["all"]:
+        df = df[df["system"].isin(args.systems)]
     cols = {
         "median_deg": "median err (deg)",
         "p95_deg": "p95 err (deg)",
@@ -229,8 +231,9 @@ def cmd_report(args) -> int:
         "`fictrac` and `fictrac-fork` are the C++ FicTrac 2.1.2 upstream and NeLy-EPFL builds run as",
         "black boxes on the same videos and configs (FicTrac's window-frame rotation vectors are",
         "mapped to camera coordinates before scoring). `spintrack` is the default configuration",
-        "(solve on at most ~4000 window pixels); `spintrack-full` solves on every pixel. Errors",
-        "are per-frame rotation errors in degrees; drift is the slope of the accumulated",
+        "(solve on at most ~4000 window pixels, with the rig's static illumination separated",
+        "from the ball's texture); `spintrack-full` solves on every pixel. Errors are",
+        "per-frame rotation errors in degrees; drift is the slope of the accumulated",
         "orientation error; endpoint error is the fictive-path endpoint discrepancy as a",
         "percentage of the true path length; tracking time excludes video decoding and was",
         "measured pinned to one core.",
@@ -316,6 +319,13 @@ def main(argv=None) -> int:
     p = sub.add_parser("report", help="render results tables")
     p.add_argument("--results", default=str(DEFAULT_RESULTS))
     p.add_argument("--out", default=None)
+    # Ad-hoc `--label` runs stay in the parquet but out of the published tables.
+    p.add_argument(
+        "--systems",
+        nargs="+",
+        default=["fictrac", "fictrac-fork", "spintrack", "spintrack-full"],
+        help="systems to show as columns ('all' for every label in the results)",
+    )
     p.set_defaults(func=cmd_report)
     args = ap.parse_args(argv)
     return args.func(args)

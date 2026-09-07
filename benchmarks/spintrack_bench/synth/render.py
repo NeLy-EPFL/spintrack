@@ -29,6 +29,15 @@ class LightingSpec:
     flicker_amp: float = 0.0  # fractional gain modulation
     flicker_hz: float = 100.0
     drift_amp: float = 0.0  # slow fractional gain drift over the clip
+    # Shadow cast by the holder the ball sits in: the surface is progressively occluded
+    # from the lamps below `holder_elevation` (as a fraction of the ball radius, measured
+    # down the image from the centre), losing up to `holder_shadow` of its illumination
+    # over `holder_softness` radii. Fixed in the camera frame, like the rest of the
+    # shading, so it darkens the texture that rotates past it rather than moving with it.
+    holder_shadow: float = 0.0
+    holder_elevation: float = 0.45
+    holder_softness: float = 0.25
+    holder_ambient: float = 0.0  # stray light in the shadow: kills contrast, not level
 
 
 @dataclass
@@ -146,7 +155,28 @@ class Renderer:
             ** self.lighting.shininess
         )
         self.shade = (self.lighting.ambient + self.lighting.diffuse * ndotl) * self.hit
+        lt = self.lighting
+        if lt.holder_shadow > 0.0 or lt.holder_ambient > 0.0:
+            ramp = self._holder_ramp(normals)
+            self.shade = self.shade * (1.0 - lt.holder_shadow * ramp)
+            self.glow = (lt.holder_ambient * ramp * self.hit).astype(np.float32)
+        else:
+            self.glow = np.zeros(self.hit.shape, dtype=np.float32)
         self.spec = (self.lighting.specular * spec * self.hit).astype(np.float32)
+
+    def _holder_ramp(self, normals: np.ndarray) -> np.ndarray:
+        """0 above the holder, rising smoothly to 1 in the shadow under the ball.
+
+        The normal's image-down component is the height on the ball, so this is a
+        horizontal band fixed in the camera frame: the texture rotates through it.
+        """
+        lt = self.lighting
+        c = np.asarray(self.centre, dtype=np.float64)
+        down = normalize(np.cross(c, np.cross([0.0, 1.0, 0.0], c)))
+        h = normals @ down
+        t = (h - lt.holder_elevation) / max(lt.holder_softness, 1e-6)
+        t = np.clip(t, 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
 
     # ----- ball appearance -----
     def albedo(self, R: np.ndarray) -> np.ndarray:
@@ -181,7 +211,7 @@ class Renderer:
             )
         else:
             alb = self.albedo(R)
-        patch = alb * self.shade + self.spec
+        patch = alb * self.shade + self.spec + self.glow
         ss = sensor.supersample
         hb, wb = patch.shape[0] // ss, patch.shape[1] // ss
         patch = patch.reshape(hb, ss, wb, ss).mean(axis=(1, 3))
