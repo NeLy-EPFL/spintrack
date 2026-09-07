@@ -333,19 +333,22 @@ def fit_vfov(
     spread = float(costs.max() / costs.min())
     flat_range = _flat_run(values, costs, best)
 
-    # An interior minimum is the whole test. Measured over the benchmark scenes, every
-    # scene with one lands within 6% of the true field of view after the golden section,
-    # however shallow it is (`saccades` beats its neighbour by 4% and still comes out at
-    # -1.8%), while the scenes that fail all have their minimum at an end of the grid.
-    if 0 < best < len(costs) - 1:
+    # An interior minimum is most of the test: the scenes that fail all have their minimum
+    # at an end of the grid. It is not the whole test, though. On a curve that is flat to
+    # within `FLAT_TOL` from end to end - the near-orthographic regime, where the cost
+    # genuinely does not depend on the field of view - which candidate comes out lowest is
+    # noise, and an interior one lands there as easily as an end one. Flat is flat: say so
+    # rather than reporting a fitted value from a 1% wobble.
+    if spread > FLAT_TOL and 0 < best < len(costs) - 1:
         depth = float(min(costs[best - 1], costs[best + 1]) / costs[best])
         vfov, extra = _golden_section(
             src_spec, cfg, points, values[best - 1], values[best + 1], n_frames, params
         )
         return VfovFit(vfov, True, spread, flat_range, turned_deg, depth, curve + extra)
 
-    # No interior minimum. Usable only where the cost is flat around the best candidate,
-    # which is the near-orthographic regime; anywhere else the search has simply failed.
+    # No interior minimum, or a flat curve. Usable only where the cost is flat around the
+    # best candidate, which is the near-orthographic regime; anywhere else the search has
+    # simply failed.
     near = costs[max(best - 1, 0) : best + 2]
     if float(near.max() / near.min()) > FLAT_TOL:
         raise ValueError(

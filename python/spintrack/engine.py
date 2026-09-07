@@ -14,7 +14,12 @@ import numpy as np
 
 from spintrack._core import Engine as _Engine
 from spintrack.camera import EquidistantCamera, pixel_centres
-from spintrack.geometry import matrix_to_rotvec, normalize, rotation_between
+from spintrack.geometry import (
+    matrix_to_rotvec,
+    normalize,
+    rotation_between,
+    rotvec_to_matrix,
+)
 from spintrack.photometry import Photometry
 from spintrack.sphere import WindowGeometry
 
@@ -33,8 +38,19 @@ class TrackParams:
     damping: float = 1e-6
     norm_win_pc: float = 0.25  # normalization window, fraction of the window size
     norm_floor: float = 2.0  # gray-level floor added to the local std
-    map_scale: float = 1.5  # map height = map_scale * window size; width = 2 * height
+    # `cube` is an equi-angular cubemap; `equal_area` is the Lambert cylindrical grid
+    # FicTrac uses, kept because a comparison against FicTrac wants the same tessellation.
+    # The cube trades a little resolution at the equator for the 8.6-degree cells the
+    # cylindrical grid puts at its poles, and is the default because it measures better:
+    # see `rust/src/map.rs` and `benchmarks/spintrack_bench/map_grid_sweep.py`.
+    map_projection: str = "cube"
+    map_scale: float = 1.5  # cells = 2 * (map_scale * window size)^2, either projection
     map_lambda: float = 1.0  # forgetting factor of the accumulated map (1 = none)
+    # Body frame the map is stored in, as a rotation vector from the initial window frame.
+    # The identity puts the grid's poles - its one badly shaped region, see `map.rs` - at
+    # the top and bottom of the first frame's view. Nothing depends on the choice, which
+    # is exactly what makes it the control for `spintrack_bench.map_grid_sweep poles`.
+    map_frame: tuple[float, float, float] = (0.0, 0.0, 0.0)
     map_w_max: float = 50.0
     forget_outside_view: bool = False  # FicTrac fork's `accumulate_map: n`
     forget_margin: int = 1
@@ -130,23 +146,29 @@ class StepResult:
     hessian: np.ndarray | None = None
 
 
+def map_shape(projection: str, scale: float, window: int) -> tuple[int, int]:
+    """`(h, w)` of the surface map, with the same cell count either way.
+
+    `2 * (scale * window)^2` cells: a `scale * window` by `2 * scale * window` rectangle,
+    or six faces of `scale * window / sqrt(3)` a side stacked into `(6 face, face)`.
+    """
+    if projection == "cube":
+        face = max(round(scale * window / np.sqrt(3.0)), 1)
+        return 6 * face, face
+    if projection != "equal_area":
+        raise ValueError(f"unknown map projection {projection!r}")
+    h = round(scale * window)
+    return h, 2 * h
+
+
 class TrackEngine:
     def __init__(self, geometry: WindowGeometry, params: TrackParams | None = None):
         self.geometry = geometry
         self.params = params or TrackParams()
+        p = self.params
         n = geometry.size
-        map_h = round(self.params.map_scale * n)
-        map_w = 2 * map_h
-        self.map_shape = (map_h, map_w)
-        self.core = _Engine(
-            np.ascontiguousarray(geometry.surface, dtype=np.float32),
-            np.ascontiguousarray(geometry.index, dtype=np.int64),
-            n,
-            map_w,
-            map_h,
-            self.params.levels,
-            self.params.max_pixels,
-        )
+        self.map_shape = map_shape(p.map_projection, p.map_scale, n)
+        self.core = self._new_core(geometry)
         self._mask = geometry.mask.astype(np.float32)
         k = max(3, round(self.params.norm_win_pc * n) | 1)
         self._ksize = (k, k)
@@ -155,7 +177,7 @@ class TrackEngine:
 
     # ----- state -----
     def reset(self) -> None:
-        self.R = np.eye(3)
+        self.R = rotvec_to_matrix(self.params.map_frame)
         self.velocity = np.zeros(3)
         self.n_bad = 0
         self.frames_tracked = 0
@@ -165,6 +187,21 @@ class TrackEngine:
         self._needs_localisation = False
         self.last_obs: np.ndarray | None = None  # normalized window of the last step
         self._cost_level: float | None = None  # running mean cost of accepted frames
+
+    def _new_core(self, geometry: WindowGeometry) -> _Engine:
+        """Build the Rust core for `geometry`. The one place its arguments are chosen: a
+        window re-fit builds a second one, and the two must not drift apart."""
+        map_h, map_w = self.map_shape
+        return _Engine(
+            np.ascontiguousarray(geometry.surface, dtype=np.float32),
+            np.ascontiguousarray(geometry.index, dtype=np.int64),
+            geometry.size,
+            map_w,
+            map_h,
+            self.params.levels,
+            self.params.max_pixels,
+            self.params.map_projection,
+        )
 
     # ----- maps -----
     def load_map(
@@ -180,7 +217,7 @@ class TrackEngine:
         self._have_map = True
         self._frozen = frozen
         self._needs_localisation = True
-        self.R = np.eye(3)
+        self.R = rotvec_to_matrix(self.params.map_frame)
         self.velocity = np.zeros(3)
 
     def export_map(self) -> tuple[np.ndarray, np.ndarray]:
@@ -202,20 +239,11 @@ class TrackEngine:
         """
         mean, weight = self.export_map()
         old_geometry = self.geometry
-        n = geometry.size
-        map_h, map_w = self.map_shape
-        if round(self.params.map_scale * n) != map_h:
+        p = self.params
+        if map_shape(p.map_projection, p.map_scale, geometry.size) != self.map_shape:
             raise ValueError("rebuild needs a window of the same size")
         self.geometry = geometry
-        self.core = _Engine(
-            np.ascontiguousarray(geometry.surface, dtype=np.float32),
-            np.ascontiguousarray(geometry.index, dtype=np.int64),
-            n,
-            map_w,
-            map_h,
-            self.params.levels,
-            self.params.max_pixels,
-        )
+        self.core = self._new_core(geometry)
         self.core.set_map(
             np.ascontiguousarray(mean, dtype=np.float32),
             np.ascontiguousarray(weight, dtype=np.float32),
@@ -411,7 +439,7 @@ class TrackEngine:
         if self._needs_localisation:
             return self._localise(obs)
         if not self._have_map:
-            self.R = np.eye(3)
+            self.R = rotvec_to_matrix(self.params.map_frame)
             self.velocity = np.zeros(3)
             self._update_maps(obs)
             self.frames_tracked += 1
@@ -496,7 +524,11 @@ class TrackEngine:
 
     # ----- inspection -----
     def map_coverage(self) -> float:
-        """Fraction of map cells seen at least `w_min`; the grid is equal-area."""
+        """Fraction of map cells seen at least `w_min`.
+
+        Read as a fraction of the surface unweighted, which the equal-area grid makes exact
+        and the cubemap makes true to within the 1.41:1 spread of its cell solid angles.
+        """
         return float(np.mean(self.core.map_weight() >= self.params.w_min))
 
     def illumination_image(self) -> np.ndarray | None:
@@ -505,14 +537,14 @@ class TrackEngine:
         if not photo.active:
             return None
         field = photo.bias if self.params.illum_bias else photo.residual_field()
-        img = np.clip(128 + 40 * field, 0, 255).astype(np.uint8)
-        img[~photo.mask] = 128
+        from spintrack.maps import CONTRAST, UNSEEN
+
+        img = np.clip(UNSEEN + CONTRAST * field, 0, 255).astype(np.uint8)
+        img[~photo.mask] = UNSEEN
         return img
 
-    def map_image(self) -> np.ndarray:
+    def map_image(self, layout: str = "grid") -> np.ndarray:
         """uint8 rendering of the accumulated map (unseen cells mid-gray)."""
-        mean = self.core.map_mean()
-        weight = self.core.map_weight()
-        img = np.clip(128 + 40 * mean, 0, 255).astype(np.uint8)
-        img[weight < self.params.w_min] = 128
-        return img
+        from spintrack.maps import render_map
+
+        return render_map(*self.export_map(), self.params.w_min, layout)

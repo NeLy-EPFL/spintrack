@@ -25,6 +25,7 @@ class Engine:
         map_h: int,
         levels: int = 3,
         max_pixels: int | None = None,
+        projection: str = "equal_area",
     ) -> None: ...
     @property
     def n_valid(self) -> int: ...

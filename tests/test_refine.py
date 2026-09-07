@@ -26,13 +26,19 @@ def _accumulated_error(R_est, R_true):
     )
 
 
-def test_refinement_reduces_accumulated_error_and_recovers_dropped_frames():
-    rng = np.random.default_rng(7)
+def _drifting_run(projection: str, seed: int = 7):
+    """80 frames of frame-to-frame tracking under heavy noise, with one frame dropped.
+
+    Returns `(engine, windows, online, truth)`. Frame-to-frame mode (`forget_outside_view`)
+    integrates a random walk, which is the drift refinement exists to undo.
+    """
+    rng = np.random.default_rng(seed)
     geom = window_geometry(CAM, CENTRE, HALF, 60, source_mask(CAM, CENTRE, HALF))
     texture = make_texture(rng)
-    # Frame-to-frame mode with heavy noise drifts; refinement against the full map should not.
-    engine = TrackEngine(geom, TrackParams(forget_outside_view=True))
-    noise = np.random.default_rng(8)
+    engine = TrackEngine(
+        geom, TrackParams(forget_outside_view=True, map_projection=projection)
+    )
+    noise = np.random.default_rng(seed + 1)
     R_true, windows, R_online = [], [], []
     R = np.eye(3)
     for i in range(80):
@@ -47,11 +53,42 @@ def test_refinement_reduces_accumulated_error_and_recovers_dropped_frames():
         windows.append(engine.last_obs.astype(np.float16))
         R_online.append(res.R_win.copy() if res.ok else None)
     R_online[40] = None  # pretend one frame was dropped online
-    err_online = _accumulated_error(R_online, R_true)
-    refined, stats = refine_orientations(engine, windows, R_online, sweeps=2)
-    err_refined = _accumulated_error(refined, R_true)
+    return engine, windows, R_online, R_true
+
+
+def test_refinement_reduces_accumulated_error_and_recovers_dropped_frames():
+    """Pinned to the equal-area grid, which is where this inequality still has room.
+
+    Over texture seeds 7, 11, 13 and 17 the refinement takes the worst-frame error down
+    by 5-13% there (seed 19 is the exception, +10%). On the cubemap the online run is
+    already better than the equal-area run manages after refinement, and refining it
+    changes the figure by a few percent either way, so the same assertion would be
+    measuring noise. `test_refinement_leaves_a_cube_run_alone` covers the default.
+    """
+    engine, windows, online, truth = _drifting_run("equal_area")
+    err_online = _accumulated_error(online, truth)
+    refined, stats = refine_orientations(engine, windows, online, sweeps=2)
+    err_refined = _accumulated_error(refined, truth)
     assert refined[40] is not None and stats["recovered"] >= 1
     assert err_refined < err_online, (err_online, err_refined)
     assert err_refined < 0.5, err_refined
     inc = increments(refined)
     assert inc[0] is not None and np.allclose(inc[0], 0) and len(inc) == 80
+
+
+def test_refinement_leaves_a_cube_run_alone():
+    """On the default map there is little drift left to remove, and none to add.
+
+    The point of the test is the second half: a sweep that rebuilds the map and re-solves
+    every frame must not make a run that was already good worse. `_accumulated_error` is a
+    worst-frame figure under heavy noise: over seeds 7, 11, 13, 17 and 19 the refined
+    figure is 0.98-1.05 of the online one whatever the map's temporal window, so the
+    margin here is that noise, and not regressing beyond it is the claim that holds.
+    """
+    engine, windows, online, truth = _drifting_run("cube")
+    err_online = _accumulated_error(online, truth)
+    refined, stats = refine_orientations(engine, windows, online, sweeps=2)
+    err_refined = _accumulated_error(refined, truth)
+    assert refined[40] is not None and stats["recovered"] >= 1
+    assert err_refined < 1.06 * err_online, (err_online, err_refined)
+    assert err_refined < 0.5, err_refined

@@ -7,7 +7,17 @@ import numpy as np
 from spintrack.camera import PinholeCamera
 from spintrack.engine import TrackEngine, TrackParams
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
-from spintrack.maps import fictrac_template_to_map, load_map, save_map
+from spintrack.maps import (
+    cube_directions,
+    fictrac_template_to_map,
+    load_map,
+    map_directions,
+    projection_of,
+    render_map,
+    resample_map,
+    sample_map,
+    save_map,
+)
 from spintrack.sphere import source_mask, window_geometry
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
@@ -58,3 +68,60 @@ def test_saved_map_localises_a_fresh_engine(tmp_path):
     )
     assert res2.ok and res2.source == "map"
     assert np.array_equal(b.export_map()[0], mean2)
+
+
+def test_sample_map_reads_cell_centres_exactly():
+    """`sample_map` inverts `map_directions`, so both agree with `Map::project` in Rust."""
+    rng = np.random.default_rng(0)
+    mean = rng.standard_normal((18, 36)).astype(np.float32)
+    weight = np.ones_like(mean)
+    value, seen = sample_map(mean, weight, map_directions(mean.shape))
+    assert np.allclose(value, mean, atol=1e-5), np.abs(value - mean).max()
+    assert seen.all()
+
+
+def test_cube_faces_meet_at_their_seams():
+    """The net is an unfolded dice: neighbouring faces have to line up along their edge."""
+    n = 32
+    faces = cube_directions(n)
+    texel = 0.5 * np.pi / n  # angular size of a face-centre texel
+    band = ["-x", "+z", "+x", "-z"]
+    for left, right in zip(band, band[1:] + band[:1], strict=True):
+        gap = np.arccos(
+            np.clip(np.sum(faces[left][:, -1] * faces[right][:, 0], axis=-1), -1, 1)
+        )
+        assert gap.max() < texel, (left, right, np.degrees(gap.max()))
+    for pole, row in (("+y", 0), ("-y", -1)):
+        edge = faces[pole][-1] if pole == "+y" else faces[pole][0]
+        gap = np.arccos(np.clip(np.sum(edge * faces["+z"][row], axis=-1), -1, 1))
+        assert gap.max() < texel, (pole, np.degrees(gap.max()))
+
+
+def test_cube_and_equal_area_shapes_are_told_apart():
+    assert projection_of((90, 180)) == "equal_area"
+    assert projection_of((312, 52)) == "cube"
+
+
+def test_resample_survives_a_change_of_projection():
+    """A map saved before the cube existed, or a FicTrac template, has to keep loading."""
+    dirs = map_directions((90, 180))
+    mean = (dirs[..., 0] * dirs[..., 1] + 0.5 * dirs[..., 2]).astype(np.float32)
+    weight = np.full(mean.shape, 5.0, dtype=np.float32)
+    unseen = dirs[..., 2] < -0.3  # a patch of the ball this run never looked at
+    weight[unseen] = 0.0
+    cube, cube_weight = resample_map(mean, weight, (312, 52))
+    back, back_weight = resample_map(cube, cube_weight, mean.shape)
+    seen = (weight > 1.0) & (back_weight > 1.0)
+    assert seen.mean() > 0.6, seen.mean()
+    assert np.corrcoef(mean[seen], back[seen])[0, 1] > 0.99
+    # Unseen stays unseen rather than being invented on the way through the cube; only
+    # the frontier bleeds, by the couple of cells two bilinear resamples reach.
+    deep = dirs[..., 2] < -0.5
+    assert back_weight[deep].max() < 0.1, back_weight[deep].max()
+
+
+def test_a_cube_map_renders_on_either_grid():
+    mean = np.random.default_rng(0).standard_normal((312, 52)).astype(np.float32)
+    weight = np.full(mean.shape, 5.0, dtype=np.float32)
+    assert render_map(mean, weight, layout="grid").shape == (90, 180)
+    assert render_map(mean, weight, layout="cube").shape == (156, 208)

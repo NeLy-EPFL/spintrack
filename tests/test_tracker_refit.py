@@ -3,6 +3,7 @@
 import sys
 
 import numpy as np
+import pytest
 
 from spintrack.camera import PinholeCamera
 from spintrack.config import Config
@@ -46,6 +47,34 @@ def sequence(n, drift=None, seed=0):
         centre = CENTRE if drift is None else drift(i)
         out.append((render(texture, R, rng, SIZE, centre, HALF, occluders=False), R))
     return out, texture, rng
+
+
+@pytest.mark.parametrize(
+    ("projection", "shape"), [("cube", (312, 52)), ("equal_area", (90, 180))]
+)
+def test_refit_carries_the_map_projection(projection, shape):
+    """A window move rebuilds the Rust core, which has to keep the map's projection.
+
+    Getting this wrong reads the map on the wrong grid: it survives the move as an array
+    and becomes noise as a map, and the tracker starts dropping frames a few frames later
+    rather than failing where the mistake was made. Both directions are worth pinning,
+    since a run can be either projection.
+    """
+    params = TrackParams(centre_watch=False, map_projection=projection)
+    tracker = Tracker(config(), *SIZE, params)
+    images, texture, rng = sequence(20)
+    for image, _ in images:
+        tracker.process_frame(image)
+    assert tracker.engine.map_shape == shape, tracker.engine.map_shape
+    tracker.refit_centre(shifted(5.0))
+    # The same ball, moved 5 px and followed, keeps turning at the same rate.
+    R = images[-1][1]
+    for _ in range(5):
+        R = rotvec_to_matrix(STEP) @ R
+        moved = render(texture, R, rng, SIZE, shifted(5.0), HALF, occluders=False)
+        result = tracker.process_frame(moved)
+        assert result is not None, "lost the ball after the window moved"
+        assert np.allclose(result.w_cam, STEP, atol=2e-3), result.w_cam
 
 
 def test_refit_is_a_change_of_coordinates():

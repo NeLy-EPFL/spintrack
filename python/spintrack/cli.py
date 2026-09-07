@@ -49,6 +49,12 @@ def _add_run(sub) -> None:
         "--frozen-map", action="store_true", help="never update the loaded map"
     )
     p.add_argument(
+        "--map-projection",
+        choices=("equal_area", "cube"),
+        default=None,
+        help="how the surface map tiles the sphere (default: cube)",
+    )
+    p.add_argument(
         "--debug-video",
         nargs="?",
         const="auto",
@@ -114,6 +120,56 @@ def cmd_summarize(args) -> int:
     print(format_summary(quality))
     if args.json:
         write_sidecar(args.json, quality, {"dat": str(args.dat)})
+    return 0
+
+
+def _add_map(sub) -> None:
+    p = sub.add_parser("map", help="render a saved surface map as an image")
+    p.add_argument("map", help="a spintrack .npz map or a FicTrac sphere-map .png")
+    p.add_argument(
+        "--out", default=None, metavar="PATH", help="output image (default: <map>.png)"
+    )
+    p.add_argument(
+        "--layout",
+        choices=("grid", "cube"),
+        default="grid",
+        help="the map's own equal-area rectangle, or an unfolded cube",
+    )
+    p.add_argument(
+        "--w-min",
+        type=float,
+        default=0.1,
+        metavar="W",
+        help="weight below which a cell counts as never seen",
+    )
+    p.set_defaults(func=cmd_map)
+
+
+def cmd_map(args) -> int:
+    import cv2
+    import numpy as np
+
+    from spintrack.maps import load_map, render_map
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log = logging.getLogger("spintrack")
+    path = Path(args.map)
+    if path.suffix.lower() == ".npz":
+        with np.load(path) as z:
+            shape = z["mean"].shape
+    else:  # a FicTrac template: convert it on its own grid
+        shape = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).shape
+    mean, weight = load_map(path, shape)
+    out = Path(args.out) if args.out else path.with_suffix(".png")
+    cv2.imwrite(str(out), render_map(mean, weight, args.w_min, args.layout))
+    log.info(
+        "%s: %dx%d cells, %.0f%% seen -> %s",
+        path,
+        shape[0],
+        shape[1],
+        100.0 * float(np.mean(weight >= args.w_min)),
+        out,
+    )
     return 0
 
 
@@ -266,12 +322,14 @@ def cmd_run(args) -> int:
 
     if args.no_illumination:
         cfg.illumination = False
-    params = TrackParams() if args.all_pixels or args.no_scale_check else None
+    tuned = args.all_pixels or args.no_scale_check or args.map_projection
+    params = TrackParams() if tuned else None
     if params is not None:
         params.max_pixels = None if args.all_pixels else params.max_pixels
         params.scale_check_stride = (
             0 if args.no_scale_check else params.scale_check_stride
         )
+        params.map_projection = args.map_projection or params.map_projection
     debug_video = args.debug_video
     if debug_video is None and cfg.save_debug:
         debug_video = "auto"
@@ -357,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command")
     _add_run(sub)
+    _add_map(sub)
     _add_calibrate(sub)
     _add_summarize(sub)
     args = parser.parse_args(argv)

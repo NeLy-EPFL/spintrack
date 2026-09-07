@@ -101,3 +101,41 @@ def test_global_search_relocalises_after_a_large_jump():
     assert res.ok and res.source == "global", res
     err = np.degrees(np.linalg.norm(matrix_to_rotvec(engine.R @ R_jump.T)))
     assert err < 0.5, err
+
+
+def test_equal_area_map_recovers_known_rotations():
+    """FicTrac's grid is no longer the default, so it needs a test of its own.
+
+    Same scene and same tolerances as `test_engine_recovers_known_rotations`, which covers
+    the cubemap now. On the benchmark scenes the cube is 7% better in the median, but this
+    scene is short enough that matching is the honest assertion.
+    """
+    rng = np.random.default_rng(0)
+    mask = source_mask(CAM, CENTRE, HALF)
+    geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
+    texture = make_texture(rng)
+    engine = TrackEngine(geom, TrackParams(map_projection="equal_area"))
+    assert engine.map_shape == (90, 180), engine.map_shape
+    R = np.eye(3)
+    engine.step(render_window(geom, texture, R, rng))
+    errors = []
+    for i in range(40):
+        w_true = np.array([0.02, -0.015, 0.01]) * (1 + 0.3 * np.sin(i / 3))
+        if i == 20:
+            w_true = np.array([0.0, 0.15, 0.05])
+        R = rotvec_to_matrix(w_true) @ R
+        res = engine.step(render_window(geom, texture, R, rng))
+        assert res.ok, f"frame {i} lost: {res}"
+        errors.append(
+            np.degrees(
+                np.linalg.norm(
+                    matrix_to_rotvec(
+                        rotvec_to_matrix(res.w_win) @ rotvec_to_matrix(w_true).T
+                    )
+                )
+            )
+        )
+    errors = np.array(errors)
+    assert np.median(errors) < 0.05, errors
+    assert errors.max() < 0.5, errors
+    assert np.degrees(np.linalg.norm(matrix_to_rotvec(engine.R @ R.T))) < 0.5

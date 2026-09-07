@@ -11,7 +11,7 @@ mod map;
 mod solve;
 
 use geom::Mat3;
-use map::{Map, Touched, box_blur};
+use map::{Map, Projection, Touched, box_blur};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -176,7 +176,8 @@ impl Engine {
     /// `max_pixels`: if set, the finest level uses a spatial stride so that at most about
     /// this many pixels enter the solve (all pixels still update the map).
     #[new]
-    #[pyo3(signature = (surface, index, window_size, map_w, map_h, levels=3, max_pixels=None))]
+    #[pyo3(signature = (surface, index, window_size, map_w, map_h, levels=3,
+                        max_pixels=None, projection="equal_area"))]
     fn new(
         surface: PyReadonlyArray2<f32>,
         index: PyReadonlyArray1<i64>,
@@ -185,7 +186,22 @@ impl Engine {
         map_h: usize,
         levels: usize,
         max_pixels: Option<usize>,
+        projection: &str,
     ) -> PyResult<Self> {
+        let projection = match projection {
+            "equal_area" => Projection::EqualArea,
+            "cube" => Projection::Cube,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown map projection {other:?}"
+                )));
+            }
+        };
+        if projection == Projection::Cube && map_h != 6 * map_w {
+            return Err(PyValueError::new_err(
+                "a cube map must be (6 * face, face)",
+            ));
+        }
         let s = surface.as_array();
         let idx = index.as_array();
         if s.shape()[1] != 3 || s.shape()[0] != idx.len() {
@@ -234,8 +250,8 @@ impl Engine {
             index: index_v,
             valid_f32,
             subsets,
-            map: Map::new(map_w, map_h),
-            prev_map: Map::new(map_w, map_h),
+            map: Map::new_with(projection, map_w, map_h),
+            prev_map: Map::new_with(projection, map_w, map_h),
             prev_obs: Vec::new(),
             prev_r: None,
             prev_map_valid: false,
