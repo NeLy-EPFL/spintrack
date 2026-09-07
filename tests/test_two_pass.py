@@ -23,7 +23,7 @@ from spintrack.tracker import Tracker
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_cli import CENTRE, HALF, H, W, render_frame
 from test_engine import make_texture
-from test_tracker_refit import SIZE, STEP, config, sequence
+from test_tracker_refit import SIZE, STEP, config, sequence, shifted
 
 PARAMS = TrackParams(centre_watch=False)
 
@@ -109,3 +109,79 @@ def test_two_pass_needs_a_recording(tmp_path, caplog):
     argv = ["run", str(tmp_path / "config.txt"), "--src", "0", "--two-pass"]
     assert main(argv) == 2
     assert "--two-pass" in caplog.text
+
+
+def test_planned_window_ignores_the_animal_and_leaves_with_the_ball():
+    """The rule that keeps a still ball's window still applies to the plan as well.
+
+    Six pixels for sixty frames is the animal at the rim, and the window must not move;
+    a fall is followed from the frame the ball leaves its resting place, not from the
+    frame an online confirmation would have ended.
+    """
+    from spintrack.refit import plan_window_trajectory
+
+    rng = np.random.default_rng(0)
+    n, reference = 1500, np.array([300.0, 200.0])
+    truth = np.zeros((n, 2))
+    truth[300:360, 1] = 6.0
+    t = np.arange(50) / 49
+    truth[700:750, 1] = 120.0 * t**2
+    truth[750:, 1] = 120.0
+    looks = [
+        (i, reference + truth[i] + rng.normal(0.0, 0.5, 2), 0.9)
+        for i in range(n)
+        if rng.random() > 0.05  # a look fails now and then
+    ]
+    window, rim, episodes = plan_window_trajectory(
+        looks, n, reference, radius_px=200.0, scatter=0.5
+    )
+    assert np.array_equal(window[:690], np.tile(reference, (690, 1)))
+    assert len(episodes) == 1, episodes
+    start, stop, peak = episodes[0]
+    assert 690 <= start <= 706 and 750 <= stop <= 800 and peak > 100.0, episodes
+    error = np.hypot(*(window - reference - truth).T)
+    assert np.median(error[700:900]) < 1.0, np.median(error[700:900])
+    assert np.percentile(error[700:900], 95) < 6.0, np.percentile(error[700:900], 95)
+    assert np.isfinite(rim).sum() == len(looks)
+
+
+def test_second_pass_places_the_window_from_the_first_pass_looks():
+    """Pass 2 knows where the ball went: its window leaves with the ball instead of
+    after the online confirmation, and the opening of the move costs less rotation
+    error."""
+    from spintrack.refit import ScriptedWatch
+
+    move, start, over = 25.0, 220, 150
+
+    def drift(i):
+        return shifted(move * float(np.clip((i - start) / over, 0.0, 1.0)))
+
+    images, _, _ = sequence(start + over + 40, drift=drift)
+
+    def run(tracker):
+        errors, first_move = [], None
+        for i, (image, _) in enumerate(images):
+            version = tracker.geometry_version
+            result = tracker.process_frame(image)
+            if first_move is None and tracker.geometry_version != version:
+                first_move = i
+            errors.append(
+                np.nan
+                if result is None
+                else np.degrees(np.linalg.norm(result.w_cam - np.array(STEP)))
+            )
+        return np.array(errors), first_move
+
+    first = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    online, moved_online = run(first)
+    second = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    second.prime_from(first)
+    assert isinstance(second.watch, ScriptedWatch)
+    assert len(second.watch.episodes) == 1, second.watch.episodes
+    planned, moved_planned = run(second)
+    assert moved_planned < moved_online, (moved_planned, moved_online)
+    early = slice(start + 10, start + 80)
+    assert np.nanmedian(planned[early]) < np.nanmedian(online[early]), (
+        np.nanmedian(online[early]),
+        np.nanmedian(planned[early]),
+    )

@@ -235,10 +235,17 @@ def run(
         elif tracker.watch is not None:
             stats.quality.checks["ball centre"] = "stable"
         if first is not None:
-            stats.quality.checks["two-pass"] = (
+            note = (
                 f"first pass mapped {100.0 * first.engine.map_coverage():.0f}% of the "
                 f"ball; this run started from it"
             )
+            moves = getattr(tracker.watch, "episodes", None)
+            if moves:
+                note += (
+                    f" and placed the window on the ball's trajectory measured there "
+                    f"({len(moves)} move(s))"
+                )
+            stats.quality.checks["two-pass"] = note
         if tracker.scale_check is not None:
             verdict = tracker.scale_check.result()
             stats.quality.checks["rotation scale"] = verdict.line()

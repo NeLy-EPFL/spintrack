@@ -54,6 +54,20 @@ the config's circle (3.5 px on 004) does not move a still ball's window. The map
 thrown away when the window moves: it is stored in the window frame at `R = I`, which is
 the ball's own body frame, so changing the window only re-expresses the current
 orientation. See `Tracker.refit_centre`.
+
+The delay that remains online is structural: the confirmation that keeps a still ball's
+window still, and the filter's lag on a fast drop. With two passes over a recording
+(`Tracker.prime_from`) both go. The first pass records every look it believed,
+`plan_window_trajectory` turns them into a window position per frame - interpolated,
+median-cleaned, zero-phase smoothed, held at the resting level by the rule above and
+following each move from the frame the ball left that level - and `ScriptedWatch`
+replays it in the second pass, which therefore measures nothing and runs faster. On
+`ball_drop` (exact truth) the window's p95 distance from the ball over the episode goes
+from 7.8 px to 2.2, and the episode's per-frame error from 0.056 to 0.043 deg (median)
+and from 0.205 to 0.109 (p95), against a second pass that follows the ball for itself;
+on trial 004's 240 px fall the optical-flow cross-check's residual along the fall over
+the episode goes from 4.31 px rms online to 4.17 for a second pass that follows for
+itself and 3.83 for the planned window.
 """
 
 from __future__ import annotations
@@ -137,6 +151,22 @@ CATCHUP = 0.7
 STILL_FRAMES = 30
 STILL_SPREAD = 0.5
 V_STILL = 0.05
+# Planning the window from a whole recording's looks (`plan_window_trajectory`): the
+# width in frames of the zero-phase Gaussian the looks are smoothed with, after a median
+# over `PLAN_MEDIAN` frames that removes isolated wrong looks; and how far back from the
+# frame where the smoothed looks leave the resting level to look for the frame where
+# they last sat within the look's scatter of it, so that the window leaves along the
+# ball rather than stepping onto it. A window offset that is constant costs no rotation,
+# only its change does, so smoothing bias on an accelerating ball matters less than the
+# look's noise, and wider is better on both scenes measured: on `ball_drop` (a smooth
+# 0.26 px/frame excursion) the episode error is 0.053, 0.047 and 0.043 deg at sigma 1.5,
+# 3 and 6 (0.056 following online, 0.039 at 12), and on trial 004's 8 px/frame fall the
+# optical-flow cross-check residual over the episode is 3.96, 3.90 and 3.83 px at 1.5, 3
+# and 6 (4.17 following online). Six is the widest tried on the fast ball, so it is the
+# default.
+PLAN_SIGMA = 6.0
+PLAN_MEDIAN = 5
+PLAN_LOOKBACK = 60
 # The seed-independent look's buffer: this many frames, every `COARSE_STRIDE`-th, halved
 # until the ball's radius would fall below `COARSE_MIN_RADIUS` (at most `COARSE_MAX_SCALE`
 # times). The stride is what erases the rotating surface texture from the temporal
@@ -240,6 +270,9 @@ class CentreWatch:
         self.window_px: np.ndarray | None = None  # where the window is
         self.following = False
         self.rim_fraction = 0.0
+        # Every look the filter believed, as `(frame, position, rim fraction)`, for a
+        # second pass over the same frames to plan the window from (see `replay`).
+        self.looks: list[tuple[int, np.ndarray, float]] = []
         self._last_look: tuple[int, np.ndarray] | None = None
         self._failed = 0  # looks that failed in a row
         self._unbelieved = 0  # looks that landed outside the innovation gate in a row
@@ -377,6 +410,7 @@ class CentreWatch:
         if seen is None:
             return
         looks.append(seen)
+        self.looks.append((frame, seen, self.rim_fraction))
         if len(looks) < REFERENCE_LOOKS:
             return
         self.reference_px = np.median(looks, axis=0)
@@ -398,6 +432,7 @@ class CentreWatch:
             size = float(np.hypot(*innovation))
             if size <= INNOVATION_GATE * self.band or self._unbelieved >= 3:
                 self._unbelieved = 0
+                self.looks.append((frame, seen, self.rim_fraction))
                 if not self.following:
                     self._innovations.append(size)
                 alpha, beta = self._gains(size)
@@ -470,3 +505,151 @@ class CentreWatch:
                 )  # fmt: skip
         self.window_px = target
         return self.origin_px + (self.window_px - self.reference_px)
+
+    def replay(self, n_frames: int) -> ScriptedWatch | None:
+        """The window trajectory a second pass over the same frames should follow.
+
+        None when no reference was ever taken (the rim look never worked here), in which
+        case the second pass is better off watching for itself.
+        """
+        if self.reference_px is None:
+            return None
+        scatter = self.scatter()
+        if scatter is None:
+            scatter = T_MOVE_PX / T_MOVE_SCATTER
+        trajectory, rim, episodes = plan_window_trajectory(
+            self.looks, n_frames, self.reference_px, self.radius_px, scatter
+        )
+        return ScriptedWatch(
+            self.origin_px, self.reference_px, trajectory, rim, episodes
+        )
+
+
+def _median_filter(x: np.ndarray, width: int) -> np.ndarray:
+    """Running median of `width` frames along the first axis, edges held."""
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    if width <= 1:
+        return x
+    half = width // 2
+    pad = np.pad(x, ((half, half), (0, 0)), mode="edge")
+    return np.median(sliding_window_view(pad, width, axis=0), axis=-1)
+
+
+def _gaussian_filter(x: np.ndarray, sigma: float) -> np.ndarray:
+    """Zero-phase Gaussian of `sigma` frames along the first axis, edges held."""
+    if sigma <= 0.0:
+        return x
+    half = int(np.ceil(4.0 * sigma))
+    kernel = np.exp(-0.5 * (np.arange(-half, half + 1) / sigma) ** 2)
+    kernel /= kernel.sum()
+    pad = np.pad(x, ((half, half), (0, 0)), mode="edge")
+    return np.stack(
+        [np.convolve(pad[:, k], kernel, mode="valid") for k in range(x.shape[1])], 1
+    )
+
+
+def plan_window_trajectory(
+    looks, n_frames: int, reference_px, radius_px: float, scatter: float,
+    sigma: float = PLAN_SIGMA,
+) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:  # fmt: skip
+    """Where the window should have been on every frame, from all the looks at once.
+
+    `looks` are `(frame, position, rim fraction)` as `CentreWatch` records them. They
+    are interpolated over the frames without one, cleaned with a `PLAN_MEDIAN`-frame
+    median and smoothed with a zero-phase Gaussian of `sigma` frames. The window then
+    holds the ball's resting level - `reference_px` to begin with - until the smoothed
+    looks leave it by more than `T_MOVE`. An excursion that never reaches `T_MOVE_FAST`
+    and lasts less than `CONFIRM_SLOW_FRAMES` is the animal at the rim, not a move, and
+    is ignored as the online rule ignores it. A move is followed from the last frame the
+    looks sat within the scatter of the level (at most `PLAN_LOOKBACK` frames before the
+    departure) until they have stayed within `STILL_SPREAD * T_MOVE` of each other for
+    `STILL_FRAMES`, where their median becomes the new level. Returns the per-frame
+    window position, the rim fraction of the look on each frame (NaN where there was
+    none) and the moves as `(start, stop, peak px)`.
+    """
+    n = int(n_frames)
+    reference = np.asarray(reference_px, dtype=np.float64)
+    pos = np.full((n, 2), np.nan)
+    rim = np.full(n, np.nan)
+    for frame, xy, fraction in looks:
+        if 0 <= frame < n:
+            pos[frame] = xy
+            rim[frame] = fraction
+    valid = np.flatnonzero(np.isfinite(pos[:, 0]))
+    if valid.size < 2:
+        return np.tile(reference, (n, 1)), rim, []
+    idx = np.arange(n)
+    s = np.stack([np.interp(idx, valid, pos[valid, k]) for k in range(2)], 1)
+    s = _gaussian_filter(_median_filter(s, PLAN_MEDIAN), sigma)
+    t_move = max(T_MOVE_PX, T_MOVE_RADII * radius_px, T_MOVE_SCATTER * scatter)
+    t_fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * radius_px)
+    near = max(1.0, scatter)
+    w = np.empty_like(s)
+    level = reference.copy()
+    episodes: list[tuple[int, int, float]] = []
+    i = 0
+    while i < n:
+        d = np.hypot(*(s[i:] - level).T)
+        away = np.flatnonzero(d > t_move)
+        if away.size == 0:
+            w[i:] = level
+            break
+        j = i + int(away[0])  # the departure from the level
+        back = np.flatnonzero(d[away[0] :] <= t_move)
+        end = j + int(back[0]) if back.size else n
+        peak = float(np.hypot(*(s[j:end] - level).T).max())
+        if peak < t_fast and end - j < CONFIRM_SLOW_FRAMES:
+            w[i:end] = level
+            i = end
+            continue
+        first = max(i, j - PLAN_LOOKBACK)
+        close = np.flatnonzero(np.hypot(*(s[first:j] - level).T) <= near)
+        start = first + int(close[-1]) if close.size else j
+        w[i:start] = level
+        k = j + 1
+        while k + STILL_FRAMES <= n:
+            spread = float(np.hypot(*np.ptp(s[k : k + STILL_FRAMES], axis=0)))
+            if spread < STILL_SPREAD * t_move:
+                break
+            k += 1
+        if k + STILL_FRAMES > n:  # still moving when the frames run out
+            w[start:] = s[start:]
+            episodes.append((start, n, peak))
+            break
+        w[start:k] = s[start:k]
+        episodes.append((start, k, peak))
+        level = np.median(s[k : k + STILL_FRAMES], axis=0)
+        i = k
+    return w, rim, episodes
+
+
+class ScriptedWatch:
+    """`CentreWatch`'s interface for a window trajectory planned in advance.
+
+    Built by `CentreWatch.replay` for the second of two passes over a recording: the
+    first pass measured the ball on every frame, so the second can put the window where
+    the ball was on each frame, from the frame it left its resting place, without the
+    confirmation delay and the filter lag an online follower pays to keep a still ball's
+    window still.
+    """
+
+    def __init__(self, origin_px, reference_px, trajectory, rim_fraction, episodes):
+        self.origin_px = np.asarray(origin_px, dtype=np.float64)
+        self.reference_px = np.asarray(reference_px, dtype=np.float64)
+        self.trajectory = np.asarray(trajectory, dtype=np.float64)
+        self._rim = np.asarray(rim_fraction, dtype=np.float64)
+        self.episodes = list(episodes)
+        self.rim_fraction = 0.0
+
+    def update(self, frame: int, gray) -> np.ndarray | None:
+        """Where to center the window on `frame`, as `CentreWatch.update` says it."""
+        if frame >= len(self.trajectory):
+            return None
+        if np.isfinite(self._rim[frame]):
+            self.rim_fraction = float(self._rim[frame])
+        return self.origin_px + (self.trajectory[frame] - self.reference_px)
+
+    def replay(self, n_frames: int) -> ScriptedWatch:
+        """A plan replays as itself."""
+        return self

@@ -39,7 +39,9 @@ recording, which removes drift and recovers dropped frames. `--save-map` / `--lo
 fixed. `--two-pass` maps the ball in a throwaway first pass over the recording and tracks
 it again from the finished map, so the opening frames see a whole ball instead of one
 visible cap; it fixes the cold start, not the drift that accumulates afterwards, which is
-what `--refine` is for. The two compose. `spintrack map` renders a saved map as a picture,
+what `--refine` is for. The two compose. If the ball moved in its holder, the second pass
+also places the window on the trajectory the first pass measured, without the online
+follower's delay. `spintrack map` renders a saved map as a picture,
 either as a Lambert equal-area rectangle or unfolded onto a cube.
 
 The surface map is an equi-angular cubemap; `--map-projection equal_area` switches to

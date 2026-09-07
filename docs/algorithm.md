@@ -178,6 +178,9 @@ Everything is measured as a displacement from a reference taken over the first l
 as an absolute position, so a systematic difference between the look and whatever fitted the
 config's circle (3.5 px on 004) does not move a still ball's window.
 
+What remains of the delay online is structural - the confirmation that keeps a still ball's
+window still, and the filter's lag on a fast drop - and `--two-pass` removes it, see below.
+
 ## Two passes over the recording
 
 `--two-pass` tracks the recording twice: a throwaway first pass to map the ball, then the
@@ -195,6 +198,24 @@ the second pass inherits the first pass's drift, baked into the map it is now ma
 against, and the accumulated orientation error comes out a wash. That is what the offline
 refinement below is for, and the two compose. A live camera cannot be read twice, so the
 flag is refused rather than ignored.
+
+The second pass also knows where the ball went. The follower above measures the ball's
+silhouette on every frame of the first pass, and the second pass places its window on a
+trajectory planned from all of those looks at once (`refit.plan_window_trajectory`):
+interpolated over the frames without a look, cleaned with a five-frame median, smoothed with
+a zero-phase Gaussian, held at the ball's resting level by the same rule that keeps a still
+ball's window still online, and following each move from the frame the ball leaves that
+level rather than from the frame an online confirmation ends. The second pass measures
+nothing, which is also why it tracks faster than the first. On `ball_drop`, with exact
+truth, the window's distance from the ball over the episode goes from 7.8 px (p95) for the
+online follower to 2.2, and the episode's per-frame error from 0.056 deg (median) and 0.205
+(p95), for a second pass that follows the ball for itself, to 0.043 and 0.109. On trial
+004's fall, judged by the optical-flow cross-check over the episode, the residual along the
+fall goes from 4.31 px rms for the online run to 4.17 for a second pass that follows for
+itself and 3.83 for the planned window. The smoothing is six frames wide, and wider was
+better on both scenes up to the widest tried: a window offset that stays constant costs no
+rotation, only its change does, so the bias of smoothing an accelerating ball matters less
+than the look's noise.
 
 ## Offline refinement
 
