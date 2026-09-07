@@ -464,6 +464,7 @@ def relocate_ball(
     *,
     quantile: float = QUANTILE,
     band: float | None = None,
+    cut: float | None = None,
     min_rim_fraction: float = 0.4,
     min_arc_fraction: float = 0.25,
 ) -> BallRelocation:
@@ -483,7 +484,14 @@ def relocate_ball(
 
     `polarity` may be left out, in which case it is read off the profile: the rim band
     is centred on the silhouette, so its inner quarter is ball and its outer quarter is
-    whatever surrounds it.
+    whatever surrounds it. `cut` fixes the fit's outlier cut in pixels (see `_fit_centre`).
+
+    Rays through the config's `roi_ignr` are deliberately *not* left out. With the animal
+    at the top of the ball that removes the rim's upper arc, and a circle of fixed radius
+    held only by its two sides and its bottom is free to climb: on the synthetic
+    `lab_small_ball` a look seeded on its own previous answer then walked 80 px off the
+    ball. The occluder's pull (3-8 px toward the body) is the lesser evil, and
+    `spintrack.refit` is what has to live with it.
     """
     band = max(8.0, RELOCATE_BAND * r) if band is None else band
     radii, angles, xs, ys = _polar_grid(cx, cy, r, band)
@@ -512,11 +520,11 @@ def relocate_ball(
         raise DetectionError("too few rim points survived the edge search")
     keep_r, keep_a = edge_r[ok], angles[ok]
     pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
-    centre, weights, d = _fit_centre(pts, np.array([cx, cy]), r)
+    centre, weights, d = _fit_centre(pts, np.array([cx, cy]), r, cut=cut, band=band)
     residual = _weighted_rms(d, weights)
     keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
     if keep.sum() >= 8:
-        centre, weights, d = _fit_centre(pts[keep], centre, r)
+        centre, weights, d = _fit_centre(pts[keep], centre, r, cut=cut)
         pts = pts[keep]
         residual = _weighted_rms(d, weights)
     theta = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])
@@ -559,27 +567,36 @@ def _weighted_rms(d, weights) -> float:
     return float(np.sqrt(float(np.sum(weights * d * d)) / total))
 
 
-def _fit_centre(pts, centre, r, rounds: int = 8):
-    """Robust least-squares centre of a circle of known radius `r` through `pts`.
+def _fit_centre(pts, centre, r, rounds: int = 8, cut=None, band=None):
+    """Robust least-squares center of a circle of known radius `r` through `pts`.
 
-    Minimising `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
+    Minimizing `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
     `c = mean_w(p_i - r u_i)` with `u_i` the unit vector from `c` to `p_i`, which is what
     this iterates, re-weighting Tukey-style on the radial residual as `refine_rim` does.
+
+    With `cut` (px) the Tukey cut is that fixed value on both sides, reached by halving
+    from twice `band` so that a seed well off the center still converges (a seed `band`
+    off puts genuine rim points `band` from the circle); without it the scale is estimated
+    from the residuals, which something bright standing past the rim (the animal)
+    inflates. See `spintrack.refit`.
     """
     weights = np.ones(len(pts))
     d = np.zeros(len(pts))
-    for _ in range(rounds):
+    for k in range(rounds):
         delta = pts - centre
         dist = np.hypot(delta[:, 0], delta[:, 1])
         d = dist - r
-        outer = np.abs(d[d >= 0.0])
-        scale = max(
-            1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
-            1.4826 * float(np.median(np.abs(d - np.median(d)))),
-            1e-3,
-        )
-        cut = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
-        weights = (1.0 - np.clip(d / cut, -1.0, 1.0) ** 2) ** 2
+        if cut is not None:
+            cuts = max(float(cut), 2.0 * float(band) / 2**k if band else 0.0)
+        else:
+            outer = np.abs(d[d >= 0.0])
+            scale = max(
+                1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
+                1.4826 * float(np.median(np.abs(d - np.median(d)))),
+                1e-3,
+            )
+            cuts = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
+        weights = (1.0 - np.clip(d / cuts, -1.0, 1.0) ** 2) ** 2
         unit = delta / np.maximum(dist, 1e-9)[:, None]
         total = float(weights.sum())
         if total <= 0:

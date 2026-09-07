@@ -118,10 +118,9 @@ class TrackParams:
     # independent check that the ball's assumed radius is right (0 disables). It reads the
     # engine's state and never writes to it, so tracking output is bit-for-bit unchanged.
     scale_check_stride: int = 10
-    # Watch the photometric cost for a ball that has moved in its holder, and re-fit the
-    # tracking window onto it when it has (see `spintrack.refit`).
+    # Measure the ball's silhouette on every frame and re-fit the tracking window onto a
+    # ball that moves in its holder (see `spintrack.refit`).
     centre_watch: bool = True
-    centre_watch_factor: float = 2.0
     centre_watch_gap: int = (
         100  # frames of stillness that end a "the ball moved" episode
     )

@@ -127,7 +127,7 @@ class Tracker:
             from spintrack.refit import CentreWatch
 
             cx, cy, radius = pixel_circle(self.camera, self.centre, self.half_angle)
-            self.watch = CentreWatch((cx, cy), radius, self.params.centre_watch_factor)
+            self.watch = CentreWatch((cx, cy), radius)
         self.scale_check = None
         if self.params.scale_check_stride > 0:
             from spintrack.autofit import ScaleCheck
@@ -270,7 +270,7 @@ class Tracker:
         """Keep the tracking window on a ball that is moving in its holder."""
         if self.watch is None:
             return
-        target = self.watch.update(self.frame, gray, step.cost if step.ok else None)
+        target = self.watch.update(self.frame, gray)
         if target is None:
             return
         cx, cy, _ = pixel_circle(self.camera, self.centre, self.half_angle)
