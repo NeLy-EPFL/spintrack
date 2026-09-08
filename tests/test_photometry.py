@@ -6,10 +6,12 @@ import numpy as np
 import pytest
 
 from spintrack.camera import PinholeCamera
+from spintrack.config import Config
 from spintrack.engine import TrackEngine, TrackParams
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.sphere import source_mask, window_geometry
+from spintrack.tracker import Tracker
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_engine import make_texture
@@ -89,7 +91,7 @@ def test_bias_field_recovers_the_shadow():
     plain, _, _ = run(TrackParams(illum_bias=False, illum_measure=True, **FAST))
     fixed, geom, _ = run(TrackParams(illum_bias=True, **FAST))
 
-    # The field lands where the artefact actually is. Deep inside the shadow the local
+    # The field lands where the artifact actually is. Deep inside the shadow the local
     # normalization copes, because the whole neighbourhood is dark; it is at the *edge*
     # that its box straddles bright and dark and drives the reading down. So the field
     # should be strongly negative in that band and flat well above it.
@@ -192,3 +194,54 @@ def test_map_file_carries_the_illumination_fields(tmp_path):
     assert np.array_equal(fields["bias"], state["bias"])
     # A map saved for a different window cannot supply window-shaped fields.
     assert load_illumination(path, SIZE + 2)[0] == {}
+
+
+def test_illumination_fn_loads_the_fields_and_leaves_the_map_alone(tmp_path):
+    """The point of `--load-illumination`: the rig's lighting without a previous ball.
+
+    `sphere_map_fn` carries the fields too, but only along with the surface map they were
+    saved beside, and localizing the first frame against it.
+    """
+    engine, _, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
+    state = engine.photometry.state()
+    mean, weight = engine.export_map()
+    path = save_map(
+        tmp_path / "m.npz", mean, weight, window_size=SIZE, centre=CENTRE,
+        half_angle=HALF, illum_bias=state["bias"], illum_gain=state["gain"],
+        illum_wt=state["wt"],
+    )  # fmt: skip
+    cfg = Config(vfov=CAM.vfov_deg, q_factor=SIZE // 10, roi_c=list(CENTRE), roi_r=HALF)
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    cfg.illumination_fn = str(path)
+    tracker = Tracker(cfg, CAM.width, CAM.height, TrackParams(centre_watch=False))
+    photo = tracker.engine.photometry
+    got, want = photo.bias[photo.mask], state["bias"][photo.mask]
+    assert np.corrcoef(got, want)[0, 1] > 0.99
+    assert tracker.engine.map_coverage() == 0.0
+    assert not tracker.params.global_search
+
+
+def test_a_loaded_field_survives_the_first_refresh():
+    """A loaded field goes into the accumulators, not only into `bias`.
+
+    Every refresh reads the field off the accumulators, so a field that was merely
+    assigned is replaced by a handful of the new run's own samples `illum_warmup` frames
+    in, and the head start lasts exactly that long. Seeded `illum_tau` frames deep it is
+    a prior instead, which the new frames pull away from over that time constant.
+    """
+    donor, geom, texture = run(TrackParams(illum_bias=True, **FAST), n=400)
+    fields = donor.photometry.state()
+    shade, glow = shading(SIZE)
+
+    def distance(prior_frames):
+        engine = TrackEngine(geometry(), TrackParams(illum_bias=True, **FAST))
+        engine.photometry.load(**fields, prior_frames=prior_frames)
+        rng = np.random.default_rng(11)
+        for R in turns(FAST["illum_warmup"] + FAST["illum_update_every"] + 5):
+            engine.step(render(geom, texture, R, rng, shade, glow))
+        photo = engine.photometry
+        gap = photo.bias - fields["bias"]
+        return float(np.sqrt((gap[photo.mask] ** 2).mean()))
+
+    kept, dropped = distance(FAST["illum_tau"]), distance(0.0)
+    assert kept < 0.5 * dropped, (kept, dropped)

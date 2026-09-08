@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
@@ -57,7 +58,9 @@ def run_spintrack(
     t_track = 0.0
     t0 = time.perf_counter()
     iters = []
-    sources = {"map": 0, "prev": 0, "lost": 0, "reset": 0}
+    # A Counter, not a fixed dict: `StepResult.source` also reports "global" once a
+    # loaded map has been localized against, and a missing key used to raise.
+    sources: Counter[str] = Counter()
     for frame in src:
         t1 = time.perf_counter()
         res = tracker.process_frame(frame.image, frame.ts_ms)

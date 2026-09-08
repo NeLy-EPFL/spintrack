@@ -37,23 +37,25 @@ class TrackParams:
     w_min: float = 0.1  # map weight below which a cell counts as unseen
     w_sat: float = 3.0
     damping: float = 1e-6
-    # Anti-aliasing blur of the source before the window remap, in units of the decimation
-    # (0 disables; see `sphere.PREFILTER_SIGMA`).
+    # Anti-aliasing blur of the source before the window remap, in units of the
+    # decimation (0 disables; see `sphere.PREFILTER_SIGMA`).
     prefilter: float = 0.5
     norm_win_pc: float = 0.25  # normalization window, fraction of the window size
     norm_floor: float = 2.0  # gray-level floor added to the local std
     # `cube` is an equi-angular cubemap; `equal_area` is the Lambert cylindrical grid
-    # FicTrac uses, kept because a comparison against FicTrac wants the same tessellation.
-    # The cube trades a little resolution at the equator for the 8.6-degree cells the
-    # cylindrical grid puts at its poles, and is the default because it measures better:
-    # see `rust/src/map.rs` and `benchmarks/spintrack_bench/map_grid_sweep.py`.
+    # FicTrac uses, kept because a comparison against FicTrac wants the same
+    # tessellation. The cube trades a little resolution at the equator for the
+    # 8.6-degree cells the cylindrical grid puts at its poles, and is the default
+    # because it measures better: see `rust/src/map.rs` and
+    # `benchmarks/spintrack_bench/map_grid_sweep.py`.
     map_projection: str = "cube"
     map_scale: float = 1.5  # cells = 2 * (map_scale * window size)^2, either projection
     map_lambda: float = 1.0  # forgetting factor of the accumulated map (1 = none)
-    # Body frame the map is stored in, as a rotation vector from the initial window frame.
-    # The identity puts the grid's poles - its one badly shaped region, see `map.rs` - at
-    # the top and bottom of the first frame's view. Nothing depends on the choice, which
-    # is exactly what makes it the control for `spintrack_bench.map_grid_sweep poles`.
+    # Body frame the map is stored in, as a rotation vector from the initial window
+    # frame. The identity puts the grid's poles - its one badly shaped region, see
+    # `map.rs` - at the top and bottom of the first frame's view. Nothing depends on the
+    # choice, which is exactly what makes it the control for
+    # `spintrack_bench.map_grid_sweep poles`.
     map_frame: tuple[float, float, float] = (0.0, 0.0, 0.0)
     map_w_max: float = 50.0
     # Weight the cells of a loaded or handed-over map are capped at: just above `w_min`,
@@ -63,18 +65,18 @@ class TrackParams:
     # animal's shadow change over a recording, and the first pass's drift has displaced
     # its content by about a degree. On trial ANXXX049 003 the second pass of --two-pass
     # opened at 100x the one-pass cost against the uncapped map and matched the y
-    # cross-check 47% worse over its first 300 frames; capped at 3, the weight of a fully
-    # trusted cell, the mixing of stale and fresh content still put 1.8 deg of wobble
-    # into the first ten frames' increments (1.3 at a cap of 1, 0.5 at 0.5); at 0.15 the
-    # opening increments are the one-pass run's frame for frame, and the ball_drop
-    # episode error is unchanged. None keeps the weights as saved.
+    # cross-check 47% worse over its first 300 frames; capped at 3, the weight of a
+    # fully trusted cell, the mixing of stale and fresh content still put 1.8 deg of
+    # wobble into the first ten frames' increments (1.3 at a cap of 1, 0.5 at 0.5); at
+    # 0.15 the opening increments are the one-pass run's frame for frame, and the
+    # ball_drop episode error is unchanged. None keeps the weights as saved.
     map_prior_w_max: float | None = 0.15
     forget_outside_view: bool = False  # FicTrac fork's `accumulate_map: n`
     forget_margin: int = 1
     # Static camera-frame illumination (see `photometry.py`). The arms are independent,
     # and `benchmarks/spintrack_bench/` (`photometry_sweep` on synthetic scenes with
-    # ground truth, `illumination_real` on lab recordings) measures them separately and in
-    # combination; only the bias field earned its default.
+    # ground truth, `illumination_real` on lab recordings) measures them separately and
+    # in combination; only the bias field earned its default.
     illum_bias: bool = True  # additive field, estimated from the map residual
     # Multiplicative field scaling the model. Worth 9% of median and 14% of p95 tracking
     # error on the synthetic shadow scenes, but per-pixel gain and map amplitude are
@@ -118,34 +120,38 @@ class TrackParams:
     min_inlier_frac: float = 0.5
     max_cost: float = float("inf")
     # Reject a solve whose cost exceeds this multiple of the 90th percentile of the last
-    # `cost_gate_history` accepted map solves, so that a wrong local minimum after a jump
-    # the local solve cannot follow falls through to the previous-frame solve or the
-    # global search. Off by default (0): with the pre-filtered window the cost is bimodal
-    # - a still frame's is a tenth of a moving one's (trial 003: median 0.006, p90 0.072)
-    # - so any level learned while the animal stands rejects the frames where it walks. A
-    # running mean rejected 700 of 4000 frames on 003 (cross-check correlation 0.999 ->
-    # 0.95); the percentile still sent 277 to the previous-frame solve there and lost 54
-    # frames of 004's drop, while on the 21 synthetic scenes the gate never fires at all.
-    # The failure it guards against is a rotation of tens of degrees within one frame.
+    # `cost_gate_history` accepted map solves, so that a wrong local minimum after a
+    # jump the local solve cannot follow falls through to the previous-frame solve or
+    # the global search. Off by default (0): with the pre-filtered window the cost is
+    # bimodal
+    # - a still frame's is a tenth of a moving one's (trial 003: median 0.006, p90
+    #   0.072)
+    # - so any level learned while the animal stands rejects the frames where it walks.
+    #   A running mean rejected 700 of 4000 frames on 003 (cross-check correlation 0.999
+    #   -> 0.95); the percentile still sent 277 to the previous-frame solve there and
+    #   lost 54 frames of 004's drop, while on the 21 synthetic scenes the gate never
+    #   fires at all. The failure it guards against is a rotation of tens of degrees
+    #   within one frame.
     cost_gate: float = 0.0
     cost_gate_warmup: int = 10
     cost_gate_history: int = 200
     max_step: float = 0.5  # rad per frame; larger increments are rejected
     velocity_smoothing: float = 0.5  # 0 disables the constant-velocity prediction
-    # Solve on a spatial subsample of about this many window pixels (None = all). The map
-    # is still updated from every pixel. 4000 keeps q_factor 12 under 1 ms/frame with a
-    # small precision cost; set None for maximum precision.
+    # Solve on a spatial subsample of about this many window pixels (None = all). The
+    # map is still updated from every pixel. 4000 keeps q_factor 12 under 1 ms/frame
+    # with a small precision cost; set None for maximum precision.
     max_pixels: int | None = 4000
     fine_first: bool = True  # solve at full resolution first, pyramid only on failure
     level_tol_factor: float = 4.0  # tolerance relaxation per coarser pyramid level
     coarse_max_iter: int = 3
-    # Iterations per level during which robust weights are recomputed (then frozen). With
-    # residual-scaled thresholds, always reweighting converges best; keep it large.
+    # Iterations per level during which robust weights are recomputed (then frozen).
+    # With residual-scaled thresholds, always reweighting converges best; keep it large.
     reweight_iters: int = 1000
     max_bad_frames: int = -1
-    # Re-solve every n-th frame on an inner disc and an outer annulus of the window, as an
-    # independent check that the ball's assumed radius is right (0 disables). It reads the
-    # engine's state and never writes to it, so tracking output is bit-for-bit unchanged.
+    # Re-solve every n-th frame on an inner disc and an outer annulus of the window, as
+    # an independent check that the ball's assumed radius is right (0 disables). It
+    # reads the engine's state and never writes to it, so tracking output is bit-for-bit
+    # unchanged.
     scale_check_stride: int = 10
     # Measure the ball's silhouette on every frame and re-fit the tracking window onto a
     # ball that moves in its holder (see `spintrack.refit`).
@@ -153,7 +159,7 @@ class TrackParams:
     centre_watch_gap: int = (
         100  # frames of stillness that end a "the ball moved" episode
     )
-    # Relocalise against the map when both solves fail (FicTrac's opt_do_global).
+    # Relocalize against the map when both solves fail (FicTrac's opt_do_global).
     global_search: bool = False
     global_candidates: int = 2000
     extra: dict = field(default_factory=dict)
@@ -174,15 +180,17 @@ class StepResult:
     hessian: np.ndarray | None = None
 
 
-# Gauss-Newton budget of the first frame against a loaded map, as a multiple of `max_iter`.
+# Gauss-Newton budget of the first frame against a loaded map, as a multiple of
+# `max_iter`.
 FIRST_FRAME_ITERATIONS = 5
 
 
 def map_shape(projection: str, scale: float, window: int) -> tuple[int, int]:
     """`(h, w)` of the surface map, with the same cell count either way.
 
-    `2 * (scale * window)^2` cells: a `scale * window` by `2 * scale * window` rectangle,
-    or six faces of `scale * window / sqrt(3)` a side stacked into `(6 face, face)`.
+    `2 * (scale * window)^2` cells: a `scale * window` by `2 * scale * window`
+    rectangle, or six faces of `scale * window / sqrt(3)` a side stacked into `(6 face,
+    face)`.
     """
     if projection == "cube":
         face = max(round(scale * window / np.sqrt(3.0)), 1)
@@ -206,7 +214,8 @@ class TrackEngine:
         self._ksize = (k, k)
         self.photometry = Photometry(geometry.mask, self.params)
         # Where the illumination fields were learned: the window's optical axis in the
-        # camera frame, averaged with the fields' own memory (see `_resample_photometry`).
+        # camera frame, averaged with the fields' own memory (see
+        # `_resample_photometry`).
         self._illum_axis = geometry.to_camera[:, 2].copy()
         self._illum_axis_frame = 0
         self.reset()
@@ -220,7 +229,7 @@ class TrackEngine:
         self.core.reset()
         self._have_map = False
         self._frozen = False
-        self._needs_localisation = False
+        self._needs_localization = False
         self.last_obs: np.ndarray | None = None  # normalized window of the last step
         self._costs: deque[float] = deque(maxlen=self.params.cost_gate_history)
 
@@ -245,11 +254,11 @@ class TrackEngine:
         mean: np.ndarray,
         weight: np.ndarray,
         frozen: bool = False,
-        localise: bool = True,
+        localize: bool = True,
     ) -> None:
-        """Start from a saved map; the first frame is localised against it globally.
+        """Start from a saved map; the first frame is localized against it globally.
 
-        `localise=False` says the caller already knows the map is in this engine's body
+        `localize=False` says the caller already knows the map is in this engine's body
         frame - the map of an earlier pass over the same recording, say - so the first
         frame is solved from `R = I` like any other instead of searching all of SO(3).
         """
@@ -265,7 +274,7 @@ class TrackEngine:
         )
         self._have_map = True
         self._frozen = frozen
-        self._needs_localisation = localise
+        self._needs_localization = localize
         self.R = rotvec_to_matrix(self.params.map_frame)
         self.velocity = np.zeros(3)
 
@@ -275,10 +284,11 @@ class TrackEngine:
     def rebuild(self, geometry: WindowGeometry, Q: np.ndarray) -> None:
         """Move to a new tracking window, carrying the map and the current orientation.
 
-        The map lives in the window frame at `R = I`, which is the ball's body frame, so a
-        new window only changes the coordinates the orientation is written in: `Q` maps
-        the old window frame to the new one. The previous-frame map cannot be carried (the
-        new core has never seen a frame), which costs one frame of the `prev` fallback.
+        The map lives in the window frame at `R = I`, which is the ball's body frame, so
+        a new window only changes the coordinates the orientation is written in: `Q`
+        maps the old window frame to the new one. The previous-frame map cannot be
+        carried (the new core has never seen a frame), which costs one frame of the
+        `prev` fallback.
 
         `last_obs` is kept: the frame it came from was tracked, and it is a valid
         observation in the old window frame, exactly like the orientation `Q` is applied
@@ -394,7 +404,7 @@ class TrackEngine:
         )
         self._have_map = True
 
-    def _localise(self, obs: np.ndarray) -> StepResult:
+    def _localize(self, obs: np.ndarray) -> StepResult:
         """First frame against a loaded map: find the absolute orientation globally."""
         p = self.params
         try:
@@ -418,14 +428,15 @@ class TrackEngine:
             return StepResult(False, "lost", np.zeros(3), self.R.copy())
         self.R = np.asarray(res.r, dtype=np.float64)
         self.velocity = np.zeros(3)
-        self._needs_localisation = False
+        self._needs_localization = False
         self._update_maps(obs)
         self._note_cost(res.cost)
         self.n_bad = 0
         self.frames_tracked += 1
         return StepResult(
-            True, "global", np.zeros(3), self.R.copy(), res.cost, res.rms, res.inlier_frac,
-            res.overlap, res.iters, res.converged, np.asarray(res.hessian),
+            True, "global", np.zeros(3), self.R.copy(), res.cost, res.rms,
+            res.inlier_frac, res.overlap, res.iters, res.converged,
+            np.asarray(res.hessian),
         )  # fmt: skip
 
     def _resample_photometry(
@@ -433,25 +444,25 @@ class TrackEngine:
     ) -> None:
         """Carry the illumination fields into the current window.
 
-        Unlike the map, these fields are fixed in the *window*, so a different window is a
-        resampling, not a rotation: each new window pixel takes the value of whichever old
-        window pixel looked in the same direction. `Q` maps the old window frame to the
-        new one; `old_axis` is the old window's optical axis in the camera frame (None for
-        fields loaded from another run, which are always resampled).
+        Unlike the map, these fields are fixed in the *window*, so a different window is
+        a resampling, not a rotation: each new window pixel takes the value of whichever
+        old window pixel looked in the same direction. `Q` maps the old window frame to
+        the new one; `old_axis` is the old window's optical axis in the camera frame
+        (None for fields loaded from another run, which are always resampled).
         """
         geometry = self.geometry
         n = geometry.size
         axis = geometry.to_camera[:, 2]
         if old_axis is not None:
-            # A ball that has moved in its holder is lit differently - shading follows the
-            # surface normal, and translating the ball changes it - so a field measured
-            # before the move is not merely displaced, it is wrong. Past a fraction of a
-            # ball radius, drop it and re-learn rather than carry a shadow to where there
-            # is none. The distance is measured from where the field was *learned*: the
-            # window's axis averaged with the field's own memory, so that a follower moving
-            # the window a pixel per frame still trips the reset once the ball has gone
-            # far enough within a time constant, while a drift the field has had time to
-            # absorb does not.
+            # A ball that has moved in its holder is lit differently - shading follows
+            # the surface normal, and translating the ball changes it - so a field
+            # measured before the move is not merely displaced, it is wrong. Past a
+            # fraction of a ball radius, drop it and re-learn rather than carry a shadow
+            # to where there is none. The distance is measured from where the field was
+            # *learned*: the window's axis averaged with the field's own memory, so that
+            # a follower moving the window a pixel per frame still trips the reset once
+            # the ball has gone far enough within a time constant, while a drift the
+            # field has had time to absorb does not.
             since = self.frames_tracked - self._illum_axis_frame
             decay = np.exp(-since / max(self.params.illum_tau, 1.0))
             learned = normalize(decay * self._illum_axis + (1.0 - decay) * old_axis)
@@ -474,21 +485,25 @@ class TrackEngine:
         self.photometry.push(self.core)
 
     def load_illumination(
-        self, fields: dict, centre: np.ndarray, half_angle: float
+        self,
+        fields: dict,
+        centre: np.ndarray,
+        half_angle: float,
+        prior_frames: float = 0.0,
     ) -> None:
         """Start from illumination fields measured in another run on the same rig.
 
-        They were measured in the window that run aimed at *its* ball centre, so they are
-        resampled into this one. Which is the whole reason the centre and angular radius
-        are stored beside them: applied as they stand, a field measured half a ball radius
-        away would put the holder's shadow somewhere the holder is not.
+        They were measured in the window that run aimed at *its* ball centre, so they
+        are resampled into this one. Which is the whole reason the centre and angular
+        radius are stored beside them: applied as they stand, a field measured half a
+        ball radius away would put the holder's shadow somewhere the holder is not.
         """
         if not fields:
             return
         n = self.geometry.size
         old_cam = EquidistantCamera.from_extent(n, 2.0 * float(half_angle))
         old_to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), normalize(centre))
-        self.photometry.load(**fields)
+        self.photometry.load(**fields, prior_frames=prior_frames)
         self._resample_photometry(
             n, old_cam.rad_per_pixel, self.geometry.to_camera.T @ old_to_camera
         )
@@ -504,8 +519,8 @@ class TrackEngine:
         """Track one remapped grayscale window (uint8, window_size x window_size)."""
         obs = self.observation(window)
         self.last_obs = obs
-        if self._needs_localisation:
-            return self._localise(obs)
+        if self._needs_localization:
+            return self._localize(obs)
         if not self._have_map:
             self.R = rotvec_to_matrix(self.params.map_frame)
             self.velocity = np.zeros(3)
@@ -562,11 +577,14 @@ class TrackEngine:
             self.n_bad += 1
             if p.max_bad_frames >= 0 and self.n_bad > p.max_bad_frames:
                 self.reset()
-            return StepResult(False, "lost", np.zeros(3), self.R.copy(), res.cost, res.rms,
-                              res.inlier_frac, res.overlap, res.iters, res.converged)  # fmt: skip
+            return StepResult(
+                False, "lost", np.zeros(3), self.R.copy(), res.cost, res.rms,
+                res.inlier_frac, res.overlap, res.iters, res.converged,
+            )  # fmt: skip
 
         R_new = np.asarray(res.r, dtype=np.float64)
-        # Increment relative to the previous orientation (global relocalisation may jump).
+        # Increment relative to the previous orientation (global relocalization may
+        # jump).
         w = (
             matrix_to_rotvec(R_new @ self.R.T)
             if source == "global"
@@ -576,9 +594,9 @@ class TrackEngine:
         first = self.frames_tracked == 0
         if first:
             # The first frame against a loaded map fixes where the ball is; an increment
-            # needs a frame before it. Reporting the solve's step here put the 1.9 deg the
-            # second pass of --two-pass snapped onto the first pass's map into frame 0 of
-            # its .dat as a rotation.
+            # needs a frame before it. Reporting the solve's step here put the 1.9 deg
+            # the second pass of --two-pass snapped onto the first pass's map into frame
+            # 0 of its .dat as a rotation.
             w = np.zeros(3)
         self.R = R_new
         a = p.velocity_smoothing
@@ -611,8 +629,8 @@ class TrackEngine:
     def map_coverage(self) -> float:
         """Fraction of map cells seen at least `w_min`.
 
-        Read as a fraction of the surface unweighted, which the equal-area grid makes exact
-        and the cubemap makes true to within the 1.41:1 spread of its cell solid angles.
+        Read as a fraction of the surface unweighted, which the equal-area grid makes
+        exact and the cubemap true to within the 1.41:1 spread of its cell solid angles.
         """
         return float(np.mean(self.core.map_weight() >= self.params.w_min))
 

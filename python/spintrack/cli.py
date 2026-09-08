@@ -54,6 +54,12 @@ def _add_run(sub) -> None:
         "--frozen-map", action="store_true", help="never update the loaded map"
     )
     p.add_argument(
+        "--load-illumination",
+        default=None,
+        metavar="PATH",
+        help="start from the illumination fields of a saved map, without its map",
+    )
+    p.add_argument(
         "--two-pass",
         action="store_true",
         help="map the ball in a first pass, then re-track from that map",
@@ -276,6 +282,8 @@ def cmd_run(args) -> int:
         cfg.sphere_map_fn = args.load_map
     if args.frozen_map:
         cfg.map_frozen = True
+    if args.load_illumination:
+        cfg.illumination_fn = args.load_illumination
     src_spec = args.src if args.src is not None else cfg.src_fn
     if not src_spec:
         log.error("no source: set src_fn in the config or pass --src")
@@ -335,6 +343,11 @@ def cmd_run(args) -> int:
 
     if args.no_illumination:
         cfg.illumination = False
+        if cfg.illumination_fn:
+            log.warning(
+                "--no-illumination: the fields from %s are loaded but not applied",
+                cfg.illumination_fn,
+            )
     tuned = args.all_pixels or args.no_scale_check or args.map_projection
     params = TrackParams() if tuned else None
     if params is not None:
@@ -408,7 +421,8 @@ def cmd_run(args) -> int:
         for rec in recorders:
             rec.close()
     log.info(
-        "done: %d frames, %d tracked, %d dropped, %.1f s (%.0f fps, %.2f ms/frame tracking)",
+        "done: %d frames, %d tracked, %d dropped, %.1f s "
+        "(%.0f fps, %.2f ms/frame tracking)",
         stats.frames, stats.tracked, stats.dropped, stats.wall_s, stats.fps,
         stats.tracking_ms_per_frame,
     )  # fmt: skip

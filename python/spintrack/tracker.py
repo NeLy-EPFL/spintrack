@@ -31,6 +31,15 @@ from spintrack.sphere import (
 
 log = logging.getLogger("spintrack")
 
+# Below this the reported rotation shrinks, and nothing in the run says so: the window
+# is resampled to `q_factor` either way, and the photometric cost stays low because the
+# model fits the pixels it has. Measured on a rendered ball
+# (`notes/session_2026-09-08d/ball_pixels.py`): at a 14 px radius every component is
+# within half a percent as long as the rotation moves the rim by 0.2 px or more, at 7 px
+# the one about the optical axis reads 6% low, and at 4 px the tracker still runs and
+# reports 30-40% low. See `docs/verification.md`.
+MIN_BALL_RADIUS_PX = 15.0
+
 # Move the window when the followed centre has drifted this far from it. Small
 # enough that the ball's own movement is not read as rotation, large enough that a
 # still ball is not re-fitted on detection noise.
@@ -86,6 +95,14 @@ class Tracker:
         else:
             raise ValueError("config must define the ball via roi_c/roi_r or roi_circ")
         self.params = params_from_config(cfg, params)
+        self.ball_radius_px = pixel_circle(self.camera, self.centre, self.half_angle)[2]
+        if self.ball_radius_px < MIN_BALL_RADIUS_PX:
+            log.warning(
+                "the ball is only %.1f px in radius; rotations will be reported low, "
+                "the one about the optical axis first (sideslip, for a camera behind "
+                "the animal). See docs/verification.md",
+                self.ball_radius_px,
+            )
         mask = source_mask(self.camera, self.centre, self.half_angle, cfg.roi_ignr)
         self.geometry = window_geometry(
             self.camera,
@@ -101,19 +118,15 @@ class Tracker:
         self.R_wc0 = self.R_wc
         self.cam_to_lab = self._camera_to_lab(cfg)
         if cfg.sphere_map_fn:
-            self.params.global_search = True  # needed to localise against the template
+            self.params.global_search = True  # needed to localize against the template
         self.engine = TrackEngine(self.geometry, self.params)
         if cfg.sphere_map_fn:
             mean, weight = load_map(cfg.sphere_map_fn, self.engine.map_shape)
             self.engine.load_map(mean, weight, frozen=cfg.map_frozen)
             # The illumination fields describe the rig, so a saved one is a head start.
-            fields, saved = load_illumination(cfg.sphere_map_fn, self.geometry.size)
-            if fields:
-                self.engine.load_illumination(
-                    fields,
-                    saved.get("centre", self.centre),
-                    saved.get("half_angle", self.half_angle),
-                )
+            self._load_illumination(cfg.sphere_map_fn)
+        if cfg.illumination_fn:
+            self._load_illumination(cfg.illumination_fn, asked=True)
         self.path = PathIntegrator()
         self.frame = 0
         self.seq = 0
@@ -182,7 +195,14 @@ class Tracker:
         instead of following the ball for itself.
         """
         mean, weight = other.engine.export_map()
-        self.engine.load_map(mean, weight, frozen=self.cfg.map_frozen, localise=False)
+        self.engine.load_map(mean, weight, frozen=self.cfg.map_frozen, localize=False)
+        # No accumulator weight on the fields, unlike `--load-illumination`: the second
+        # pass sees the same lighting as the first and re-measures it by `illum_warmup`
+        # anyway, and `other`'s field is the *colder* of the two on a short recording.
+        # Weighting it measured as nothing either way - the per-frame error on six seeds
+        # of `holder_shadow_lab` was identical to four decimals, and the four lab
+        # recordings' median cost moved +0.0000, +0.0010, +0.0000, -0.0006 - so this
+        # path keeps the behavior it had.
         self.engine.load_illumination(
             other.engine.photometry.state(), other.centre, other.half_angle
         )
@@ -190,6 +210,34 @@ class Tracker:
             planned = other.watch.replay(other.frame)
             if planned is not None:
                 self.watch = planned
+
+    def _load_illumination(self, path, asked: bool = False) -> bool:
+        """Take the illumination fields out of a map `.npz`, if it carries usable ones.
+
+        The fields are window-shaped, so a file saved for a window of another size has
+        nothing to give this run; when the run asked for the file by name that is worth
+        saying, and when they merely came along with a loaded map it is not.
+        """
+        fields, saved = load_illumination(path, self.geometry.size)
+        if not fields:
+            if asked:
+                log.warning(
+                    "%s carries no illumination fields for a %d px window: "
+                    "this run estimates its own",
+                    path,
+                    self.geometry.size,
+                )
+            return False
+        self.engine.load_illumination(
+            fields,
+            saved.get("centre", self.centre),
+            saved.get("half_angle", self.half_angle),
+            # The fields describe the rig, so they are worth as much as this run's own
+            # memory of it until its own frames outweigh them. A hand-over inside
+            # `--two-pass` gets no such weight (see `prime_from`).
+            prior_frames=self.params.illum_tau,
+        )
+        return True
 
     def save_map(self, path) -> None:
         """Write the current surface map as a spintrack `.npz` template."""

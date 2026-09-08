@@ -66,6 +66,11 @@ class Config:
     # spintrack: separate the rig's static illumination from the ball's texture
     # instead of letting it accumulate in the surface map (see `photometry.py`).
     illumination: bool = True
+    # spintrack: start from illumination fields measured on this rig before, read out of
+    # a map `.npz` (`--save-map` writes them beside the map). Only the fields are taken,
+    # so the rig's lighting can be carried to a new ball without a previous ball's
+    # surface map - which `sphere_map_fn` would load along with them.
+    illumination_fn: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
     comments: list[str] = field(default_factory=list)
 
@@ -116,7 +121,7 @@ class Config:
     def to_text(
         self, header: str = "## spintrack config file (FicTrac compatible)"
     ) -> str:
-        """Serialise in the FicTrac text format; keys are sorted, defaults included."""
+        """Serialize in the FicTrac text format; keys are sorted, defaults included."""
         rows: dict[str, str] = {}
         for f in dataclasses.fields(self):
             if f.name in ("extra", "comments"):
@@ -210,6 +215,7 @@ _FIELD_TYPES: dict[str, str] = {
     "output_fn": "str",
     "map_frozen": "bool",
     "illumination": "bool",
+    "illumination_fn": "str",
 }
 
 
@@ -296,7 +302,7 @@ def _parse_scalar(text: str) -> Any:
 
 
 def _parse_braces(text: str) -> tuple[list[Any], str]:
-    """Parse `{ ... }` (possibly nested) at the start of `text`; return (value, rest)."""
+    """Parse `{ ... }` (nested allowed) at the start of `text`; return (value, rest)."""
     assert text[0] == "{"
     items: list[Any] = []
     rest = text[1:]

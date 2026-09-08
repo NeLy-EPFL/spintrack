@@ -67,7 +67,7 @@ def test_prime_from_carries_the_map_exactly():
     assert weight.max() > PARAMS.map_prior_w_max  # the cap did something
     # The map is in the body frame both passes share, so no global search is needed.
     assert np.array_equal(second.engine.R, np.eye(3))
-    assert not second.engine._needs_localisation
+    assert not second.engine._needs_localization
 
 
 def test_first_frame_against_a_handed_over_map_reports_no_rotation():

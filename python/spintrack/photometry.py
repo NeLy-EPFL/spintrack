@@ -1,14 +1,15 @@
 """Separate the static illumination of the ball from its rotating surface texture.
 
 The ball is lit by fixed lamps and sits in a holder, so the shading at a given window
-pixel is fixed in the *camera* frame while the texture it falls on rotates with the ball.
-Anything camera-fixed that is left in the observation is therefore not texture, and
-splatting it into the ball-fixed map smears it over the surface: on the lab recordings the
-band just above the holder sits about 0.9 low in normalized-intensity units (map values
-span roughly +/-3) and keeps only a third of the texture contrast of the rest of the ball.
+pixel is fixed in the *camera* frame while the texture it falls on rotates with the
+ball. Anything camera-fixed that is left in the observation is therefore not texture,
+and splatting it into the ball-fixed map smears it over the surface: on the lab
+recordings the band just above the holder sits about 0.9 low in normalized-intensity
+units (map values span roughly +/-3) and keeps only a third of the texture contrast of
+the rest of the ball.
 
-Three per-window-pixel fields describe what the lighting does to a pixel, all held in the
-window frame and all inert at their defaults:
+Three per-window-pixel fields describe what the lighting does to a pixel, all held in
+the window frame and all inert at their defaults:
 
     residual = (obs - bias) - gain * map(R^T v)      weighted by  rho * map_conf * wt
     splat      value (obs - bias) / gain             footprint  *= wt * gain^2
@@ -18,21 +19,21 @@ scales the texture contrast), and `wt` is the inverse-noise-variance weight that
 from them, so a pixel whose texture the shadow has buried counts for less instead of
 injecting noise.
 
-The estimator has to go through the map rather than averaging frames directly. A per-pixel
-temporal mean of the frames themselves only separates lighting from texture if the ball
-turns enough for the texture to average away, and it does not: on the lab recordings a
-window pixel sees about three effectively independent patches of surface over two thousand
-frames, so a plain temporal mean is mostly texture and subtracting it would take real
-signal out of the map. Taking the mean of `obs - map(R^T v)` instead removes the texture
-explicitly, and needs no spatial smoothing to be usable.
+The estimator has to go through the map rather than averaging frames directly. A
+per-pixel temporal mean of the frames themselves only separates lighting from texture if
+the ball turns enough for the texture to average away, and it does not: on the lab
+recordings a window pixel sees about three effectively independent patches of surface
+over two thousand frames, so a plain temporal mean is mostly texture and subtracting it
+would take real signal out of the map. Taking the mean of `obs - map(R^T v)` instead
+removes the texture explicitly, and needs no spatial smoothing to be usable.
 
 `flat` is a fourth, independent correction that acts earlier, on the raw window before
 `TrackEngine.normalize` sees it. The local box z-score in `normalize` is itself part of
-the problem: its box straddles the sharp edge of the holder shadow, which is what turns a
-smooth darkening into the overshoot-and-undershoot pattern the map inherits. Dividing the
-raw window by a smoothed temporal flat field removes the edge before the box filter meets
-it. It is the one arm that can repair contrast the normalizer destroyed, and the one whose
-estimate is exposed to the texture leakage above, hence the spatial smoothing.
+the problem: its box straddles the sharp edge of the holder shadow, which is what turns
+a smooth darkening into the overshoot-and-undershoot pattern the map inherits. Dividing
+the raw window by a smoothed temporal flat field removes the edge before the box filter
+meets it. It is the one arm that can repair contrast the normalizer destroyed, and the
+one whose estimate is exposed to the texture leakage above, hence the spatial smoothing.
 """
 
 from __future__ import annotations
@@ -93,8 +94,8 @@ class FlatField:
         var = np.maximum(self.s2 / n - mean * mean, 0.0)
         mean = _smooth(mean, self.mask, self.sigma)
         std = np.sqrt(_smooth(var, self.mask, self.sigma))
-        # A pixel with no measurable temporal contrast carries no texture; the floor keeps
-        # the division from turning its noise into signal.
+        # A pixel with no measurable temporal contrast carries no texture; the floor
+        # keeps the division from turning its noise into signal.
         floor = 0.2 * float(np.median(std[self.mask])) if self.mask.any() else 1.0
         self._mean = mean
         self._std = np.maximum(std, max(floor, EPS))
@@ -117,6 +118,11 @@ class Photometry:
         self.acc_res2 = np.zeros(shape)
         self.acc_om = np.zeros(shape)
         self.acc_mm = np.zeros(shape)
+        # A bias field loaded from another run, and the accumulator weight it carries
+        # (see `load`). Kept apart from `acc_*` so that the prior reaches the field it
+        # describes and not the gain and weight arms' statistics.
+        self.prior_bias = np.zeros(shape)
+        self.prior_n = np.zeros(shape)
         self.frames = 0
         self.seen_frames = 0
         self.frozen = False
@@ -154,8 +160,8 @@ class Photometry:
     def observe(self, core, R: np.ndarray, obs: np.ndarray) -> None:
         """Fold one accepted frame in, before it is splatted into the map.
 
-        `obs` is the corrected window the solve used, so the residual is measured against
-        the model the tracker actually believes.
+        `obs` is the corrected window the solve used, so the residual is measured
+        against the model the tracker actually believes.
         """
         p = self.p
         self.seen_frames += 1
@@ -172,11 +178,12 @@ class Photometry:
         # `illum_tau` is in frames, so a strided sample stands for `stride` of them.
         decay = np.exp(-stride / p.illum_tau)
         self.acc_n = decay * self.acc_n + seen
+        self.prior_n = decay * self.prior_n
         # The residual of the *uncorrected* window, so that the accumulator is the bias
-        # field itself (an exponential mean of what the map cannot explain) and a refresh
-        # reads it off. Stepping the field by a fraction of the corrected residual instead
-        # made a damped oscillator of it: 16% overshoot, 63% of the way only 450 frames
-        # after the warmup, against the first refresh here.
+        # field itself (an exponential mean of what the map cannot explain) and a
+        # refresh reads it off. Stepping the field by a fraction of the corrected
+        # residual instead made a damped oscillator of it: 16% overshoot, 63% of the way
+        # only 450 frames after the warmup, against the first refresh here.
         self.acc_res = decay * self.acc_res + (res + self.bias) * seen
         if p.illum_weight:
             self.acc_res2 = decay * self.acc_res2 + res * res * seen
@@ -218,14 +225,23 @@ class Photometry:
         seen = self.acc_n > 1.0
         ok = mask & seen
         if p.illum_bias:
-            # The accumulator is an exponential mean of the uncorrected residual with the
-            # time constant `illum_tau`, so the field is read off it. The mask mean is
-            # projected out because the field and the map are only separable up to one
-            # additive constant; pixels not seen since the last reset keep their value.
-            field = np.where(ok, self.acc_res / n, 0.0)
-            field = _smooth(field, ok, p.illum_smooth)
-            field = np.where(ok, field - float(field[ok].mean()), 0.0)
-            self.bias = np.where(ok, field, np.where(mask, self.bias, 0.0))
+            # The accumulator is an exponential mean of the uncorrected residual with
+            # the time constant `illum_tau`, so the field is read off it. A loaded field
+            # enters as `prior_frames` of accumulator weight and decays out of it at the
+            # same rate. The mask mean is projected out because the field and the map
+            # are separable only up to one additive constant. Pixels neither seen since
+            # the last reset nor carried by a prior keep theirs.
+            total = self.acc_n + self.prior_n
+            ok_bias = mask & (total > 1.0)
+            field = np.where(
+                ok_bias,
+                (self.acc_res + self.prior_bias * self.prior_n)
+                / np.maximum(total, EPS),
+                0.0,
+            )
+            field = _smooth(field, ok_bias, p.illum_smooth)
+            field = np.where(ok_bias, field - float(field[ok_bias].mean()), 0.0)
+            self.bias = np.where(ok_bias, field, np.where(mask, self.bias, 0.0))
         if p.illum_gain:
             # Regress the observation on the model. Only the shape of the field is
             # identifiable - the overall scale trades off against the map's amplitude -
@@ -269,7 +285,8 @@ class Photometry:
         self.wt = warp(self.wt, 1.0)
         self.mask = mask
         for name, fill in (("acc_n", 0.0), ("acc_res", 0.0), ("acc_res2", 0.0),
-                           ("acc_om", 0.0), ("acc_mm", 0.0)):  # fmt: skip
+                           ("acc_om", 0.0), ("acc_mm", 0.0), ("prior_bias", 0.0),
+                           ("prior_n", 0.0)):  # fmt: skip
             setattr(self, name, warp(getattr(self, name), fill))
         if self.flat is not None:
             self.flat = FlatField(
@@ -286,7 +303,8 @@ class Photometry:
         self.gain[:] = 1.0
         self.wt[:] = 1.0
         self.frames = 0
-        for name in ("acc_n", "acc_res", "acc_res2", "acc_om", "acc_mm"):
+        for name in ("acc_n", "acc_res", "acc_res2", "acc_om", "acc_mm", "prior_bias",
+                     "prior_n"):  # fmt: skip
             getattr(self, name)[:] = 0.0
         if self.flat is not None:
             self.flat = FlatField(
@@ -297,16 +315,17 @@ class Photometry:
             )
 
     def freeze(self) -> None:
-        """Stop learning but keep applying what was learned, and restart the accumulators.
+        """Stop learning but keep applying what was learned; restart the accumulators.
 
-        Scoring the rest of a recording after this is the test of whether an arm separated
-        lighting from texture: a field that has quietly absorbed texture cannot transfer to
-        frames it never saw.
+        Scoring the rest of a recording after this is the test of whether an arm
+        separated lighting from texture: a field that has quietly absorbed texture
+        cannot transfer to frames it never saw.
         """
         self.frozen = True
         if self.flat is not None:
             self.flat.frozen = True
-        for name in ("acc_n", "acc_res", "acc_res2", "acc_om", "acc_mm"):
+        for name in ("acc_n", "acc_res", "acc_res2", "acc_om", "acc_mm", "prior_bias",
+                     "prior_n"):  # fmt: skip
             getattr(self, name)[:] = 0.0
 
     def report(self) -> dict | None:
@@ -324,9 +343,27 @@ class Photometry:
                 "gain": self.gain.astype(np.float32),
                 "wt": self.wt.astype(np.float32)}  # fmt: skip
 
-    def load(self, bias=None, gain=None, wt=None) -> None:
+    def load(self, bias=None, gain=None, wt=None, prior_frames: float = 0.0) -> None:
+        """Install fields measured elsewhere, `prior_frames` deep in the accumulator.
+
+        Without that weight the first refresh throws a loaded bias field away: the field
+        is read off the accumulators, and those start empty, so `illum_warmup` frames
+        into the run a mean of the run's own first frames replaces it wholesale. Given
+        the weight of `prior_frames` of this run's own frames it is a prior instead,
+        which the new observations pull away from with the time constant `illum_tau`.
+        Where a pixel is never seen the prior keeps its whole weight, so the field keeps
+        its value there rather than fading toward zero.
+
+        Only the additive field takes a prior. `gain` and `wt` are installed as they
+        stand and are replaced at the first refresh, since their estimators are not
+        means of an accumulator that a prior can be added to.
+        """
         if bias is not None:
             self.bias = np.where(self.mask, np.asarray(bias, dtype=np.float64), 0.0)
+            if prior_frames > 0.0:
+                weight = prior_frames / max(1, int(self.p.illum_stride))
+                self.prior_bias = self.bias.copy()
+                self.prior_n = np.where(self.mask, weight, 0.0)
         if gain is not None:
             self.gain = np.where(self.mask, np.asarray(gain, dtype=np.float64), 1.0)
         if wt is not None:
