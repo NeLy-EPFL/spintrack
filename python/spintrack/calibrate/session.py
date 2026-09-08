@@ -34,7 +34,7 @@ class CalibrationSession:
     square_points: list[tuple[float, float]] = field(default_factory=list)
     square_plane: str = "xy"
     angles: tuple[float, float, float] | None = None  # elevation, azimuth, twist (deg)
-    centre: np.ndarray | None = None
+    center: np.ndarray | None = None
     half_angle: float | None = None
     cam_to_lab: np.ndarray | None = None
 
@@ -50,7 +50,7 @@ class CalibrationSession:
                 for i in range(0, len(cfg.roi_circ) - 1, 2)
             ]
         if cfg.roi_c is not None and cfg.roi_r is not None:
-            self.centre = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
+            self.center = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
             self.half_angle = float(cfg.roi_r)
         elif len(self.circle_points) >= 3:
             self.fit_circle()
@@ -68,7 +68,7 @@ class CalibrationSession:
     def fit_circle(self) -> bool:
         if len(self.circle_points) < 3:
             return False
-        self.centre, self.half_angle = fit_ball(self.circle_points, self.camera)
+        self.center, self.half_angle = fit_ball(self.circle_points, self.camera)
         return True
 
     # ----- ignore regions -----
@@ -94,10 +94,10 @@ class CalibrationSession:
 
     # ----- readouts -----
     def cursor_angle(self, x: float, y: float) -> float | None:
-        """Angle (deg, counter-clockwise from image +x) of a point about the ball centre."""
-        if self.centre is None:
+        """Angle (deg, counter-clockwise from image +x) of a point about the ball center."""
+        if self.center is None:
             return None
-        cx, cy, _ = self.camera.project(self.centre)
+        cx, cy, _ = self.camera.project(self.center)
         return float(np.degrees(np.arctan2(-(y - cy), x - cx)))
 
     # ----- output -----
@@ -105,8 +105,8 @@ class CalibrationSession:
         cfg = self.config
         if self.circle_points:
             cfg.roi_circ = [round(v) for pt in self.circle_points for v in pt]
-        if self.centre is not None and self.half_angle is not None:
-            cfg.roi_c = [float(v) for v in self.centre]
+        if self.center is not None and self.half_angle is not None:
+            cfg.roi_c = [float(v) for v in self.center]
             cfg.roi_r = float(self.half_angle)
         cfg.roi_ignr = [
             [round(v) for pt in poly for v in pt] for poly in self.ignore_polygons
@@ -136,12 +136,12 @@ class CalibrationSession:
         )
         for pt in self.circle_points:
             cv2.circle(rgb, (int(pt[0]), int(pt[1])), 3, (255, 255, 0), -1, cv2.LINE_AA)
-        if self.centre is not None and self.half_angle is not None:
-            pts = ball_outline(self.camera, self.centre, self.half_angle, 90)
+        if self.center is not None and self.half_angle is not None:
+            pts = ball_outline(self.camera, self.center, self.half_angle, 90)
             cv2.polylines(
                 rgb, [np.round(pts).astype(np.int32)], True, (0, 255, 0), 1, cv2.LINE_AA
             )
-            cx, cy, _ = self.camera.project(self.centre)
+            cx, cy, _ = self.camera.project(self.center)
             cv2.drawMarker(
                 rgb, (int(cx), int(cy)), (0, 255, 0), cv2.MARKER_CROSS, 10, 1
             )
@@ -168,19 +168,19 @@ class CalibrationSession:
         return rgb
 
     def _draw_axes(self, rgb: np.ndarray) -> None:
-        """Lab axes attached to the ball centre: x forward (red), y right (green), z down."""
+        """Lab axes attached to the ball center: x forward (red), y right (green), z down."""
         assert (
-            self.centre is not None
+            self.center is not None
             and self.half_angle is not None
             and self.cam_to_lab is not None
         )
-        cx, cy, _ = self.camera.project(self.centre)
+        cx, cy, _ = self.camera.project(self.center)
         length = 0.8 * np.sin(self.half_angle)
         for i, color in enumerate(AXIS_COLORS):
             axis_cam = self.cam_to_lab.T[
                 :, i
             ]  # lab axis i expressed in camera coordinates
-            tip = normalize(self.centre + length * axis_cam)
+            tip = normalize(self.center + length * axis_cam)
             tx, ty, _ = self.camera.project(tip)
             cv2.arrowedLine(
                 rgb,

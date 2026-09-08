@@ -105,7 +105,7 @@ class DebugCanvas:
         return self.width, self.height
 
     def _project_axis(self, axis_cam: np.ndarray) -> tuple[int, int]:
-        tip = normalize(self.tracker.centre + self.axis_len * axis_cam)
+        tip = normalize(self.tracker.center + self.axis_len * axis_cam)
         x, y, _ = self.tracker.camera.project(tip)
         return int(x * self.scale), int(y * self.scale)
 
@@ -114,10 +114,10 @@ class DebugCanvas:
         tracker, scale = self.tracker, self.scale
         self._geometry_version = tracker.geometry_version
         self.outline = np.round(
-            ball_outline(tracker.camera, tracker.centre, tracker.half_angle, 90) * scale
+            ball_outline(tracker.camera, tracker.center, tracker.half_angle, 90) * scale
         )
-        cx, cy, _ = tracker.camera.project(tracker.centre)
-        self.centre_px = (float(cx) * scale, float(cy) * scale)
+        cx, cy, _ = tracker.camera.project(tracker.center)
+        self.center_px = (float(cx) * scale, float(cy) * scale)
 
     def render(
         self, gray: np.ndarray, result: FrameResult | None, fps: float | None = None
@@ -132,13 +132,13 @@ class DebugCanvas:
         cv2.polylines(
             main, [self.outline.astype(np.int32)], True, (0, 200, 0), 1, cv2.LINE_AA
         )
-        c = (int(self.centre_px[0]), int(self.centre_px[1]))
+        c = (int(self.center_px[0]), int(self.center_px[1]))
         if result is not None:
             # Ball orientation: a gnomon that rotates with the ball (camera frame).
             for i, color in enumerate(AXIS_BGR):
                 tip = self._project_axis(result.R_cam[:, i])
                 cv2.arrowedLine(main, c, tip, color, 2, cv2.LINE_AA, tipLength=0.2)
-        # Lab axes at the ball centre (fixed): thin lines with labels.
+        # Lab axes at the ball center (fixed): thin lines with labels.
         for i, color in enumerate(AXIS_BGR):
             tip = self._project_axis(tr.cam_to_lab.T[:, i])
             cv2.line(main, c, tip, color, 1, cv2.LINE_AA)

@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from spintrack._core import Engine as _Engine
-from spintrack.camera import EquidistantCamera, pixel_centres
+from spintrack.camera import EquidistantCamera, pixel_centers
 from spintrack.geometry import (
     matrix_to_rotvec,
     normalize,
@@ -155,8 +155,8 @@ class TrackParams:
     scale_check_stride: int = 10
     # Measure the ball's silhouette on every frame and re-fit the tracking window onto a
     # ball that moves in its holder (see `spintrack.refit`).
-    centre_watch: bool = True
-    centre_watch_gap: int = (
+    center_watch: bool = True
+    center_watch_gap: int = (
         100  # frames of stillness that end a "the ball moved" episode
     )
     # Relocalize against the map when both solves fail (FicTrac's opt_do_global).
@@ -476,7 +476,7 @@ class TrackEngine:
             self._illum_axis = learned
         old_cam = EquidistantCamera(old_size, old_size, old_rad_per_pixel)
         new_cam = EquidistantCamera(n, n, geometry.rad_per_pixel)
-        xs, ys = pixel_centres(n, n)
+        xs, ys = pixel_centers(n, n)
         dirs_old = new_cam.rays(xs, ys) @ Q  # Q.T applied row-wise
         x, y, _ = old_cam.project(dirs_old)
         self.photometry.resample(
@@ -487,14 +487,14 @@ class TrackEngine:
     def load_illumination(
         self,
         fields: dict,
-        centre: np.ndarray,
+        center: np.ndarray,
         half_angle: float,
         prior_frames: float = 0.0,
     ) -> None:
         """Start from illumination fields measured in another run on the same rig.
 
-        They were measured in the window that run aimed at *its* ball centre, so they
-        are resampled into this one. Which is the whole reason the centre and angular
+        They were measured in the window that run aimed at *its* ball center, so they
+        are resampled into this one. Which is the whole reason the center and angular
         radius are stored beside them: applied as they stand, a field measured half a
         ball radius away would put the holder's shadow somewhere the holder is not.
         """
@@ -502,7 +502,7 @@ class TrackEngine:
             return
         n = self.geometry.size
         old_cam = EquidistantCamera.from_extent(n, 2.0 * float(half_angle))
-        old_to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), normalize(centre))
+        old_to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), normalize(center))
         self.photometry.load(**fields, prior_frames=prior_frames)
         self._resample_photometry(
             n, old_cam.rad_per_pixel, self.geometry.to_camera.T @ old_to_camera

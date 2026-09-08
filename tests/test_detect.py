@@ -13,7 +13,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_engine import make_texture
 
 
-def render(texture, R, rng, size, centre, half, occluders=True):
+def render(texture, R, rng, size, center, half, occluders=True):
     """One frame of a shaded, textured ball; optionally with things over its rim.
 
     The occluders are the two shapes a real rig puts there: a dark blob straddling the
@@ -25,16 +25,16 @@ def render(texture, R, rng, size, centre, half, occluders=True):
     xs, ys = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
     rays = cam.rays(xs, ys)
     radius = np.sin(half)
-    b = rays @ centre
+    b = rays @ center
     disc = b * b - (1 - radius * radius)
     hit = disc >= 0
     t = b - np.sqrt(np.where(hit, disc, 0))
-    normals = normalize(t[..., None] * rays - centre)
+    normals = normalize(t[..., None] * rays - center)
     albedo = texture((normals @ R).reshape(-1, 3)).reshape(h, w)
     shade = 0.4 + 0.6 * np.clip(normals @ normalize(np.array([-0.3, -0.5, -0.8])), 0, 1)
     img = np.where(hit, 30 + 220 * albedo * shade, 40.0) + rng.normal(0, 2, (h, w))
     if occluders:
-        cx, cy, r = ball_circle(cam, centre, half)
+        cx, cy, r = ball_circle(cam, center, half)
         yy, xx = np.mgrid[0:h, 0:w]
         blob = ((xx - cx) / (0.20 * r)) ** 2 + ((yy - (cy - r)) / (0.08 * r)) ** 2 < 1
         img[blob] = 20.0
@@ -43,13 +43,13 @@ def render(texture, R, rng, size, centre, half, occluders=True):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def ball_circle(cam, centre, half):
+def ball_circle(cam, center, half):
     from spintrack.sphere import pixel_circle
 
-    return pixel_circle(cam, centre, half)
+    return pixel_circle(cam, center, half)
 
 
-def sequence(size, centre, half, n=12, seed=0, occluders=True, spin=True):
+def sequence(size, center, half, n=12, seed=0, occluders=True, spin=True):
     rng = np.random.default_rng(seed)
     texture = make_texture(rng, n_blobs=120)
     R = np.eye(3)
@@ -57,7 +57,7 @@ def sequence(size, centre, half, n=12, seed=0, occluders=True, spin=True):
     for i in range(n):
         if spin and i > 0:
             R = rotvec_to_matrix([0.02, 0.05, 0.01]) @ R
-        out.append(render(texture, R, rng, size, centre, half, occluders))
+        out.append(render(texture, R, rng, size, center, half, occluders))
     return out
 
 
@@ -67,19 +67,19 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("size, centre, half", CASES)
-def test_detects_the_ball_through_occluders(size, centre, half):
-    frames = sequence(size, centre, half)
+@pytest.mark.parametrize("size, center, half", CASES)
+def test_detects_the_ball_through_occluders(size, center, half):
+    frames = sequence(size, center, half)
     det = detect_ball(frames)
-    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
     assert abs(det.r / r - 1) < 0.01, (det.r, r)
     assert np.hypot(det.cx - cx, det.cy - cy) < 0.5, (det.cx, det.cy, cx, cy)
 
 
 def test_single_frame_still_works():
-    size, centre, half = CASES[1]
-    det = detect_ball(sequence(size, centre, half, n=1))
-    _, _, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    size, center, half = CASES[1]
+    det = detect_ball(sequence(size, center, half, n=1))
+    _, _, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
     assert abs(det.r / r - 1) < 0.02, (det.r, r)
 
 
@@ -93,15 +93,15 @@ def test_ball_partly_out_of_frame():
     from spintrack.sphere import fit_ball
 
     size, half = (480, 360), 0.21
-    centre = normalize(np.array([0.0, 0.30, 1.0]))
+    center = normalize(np.array([0.0, 0.30, 1.0]))
     cam = PinholeCamera(size[0], size[1], 40.0)
-    _, cy, r = ball_circle(cam, centre, half)
+    _, cy, r = ball_circle(cam, center, half)
     assert cy + r > size[1], "the ball should be cut off at the bottom"
-    det = detect_ball(sequence(size, centre, half))
+    det = detect_ball(sequence(size, center, half))
     points = np.asarray(det.rim_points(16), dtype=float).reshape(-1, 2)
     found, found_half = fit_ball(points, cam)
     assert abs(found_half / half - 1) < 0.015, (found_half, half)
-    assert np.degrees(np.arccos(np.clip(found @ centre, -1, 1))) < 0.2
+    assert np.degrees(np.arccos(np.clip(found @ center, -1, 1))) < 0.2
 
 
 def test_refuses_frames_without_a_ball():
@@ -112,8 +112,8 @@ def test_refuses_frames_without_a_ball():
 
 
 def test_rim_points_are_a_fictrac_roi_circ():
-    size, centre, half = CASES[1]
-    det = detect_ball(sequence(size, centre, half))
+    size, center, half = CASES[1]
+    det = detect_ball(sequence(size, center, half))
     points = det.rim_points(16)
     # Bins with no accepted ray are simply absent, so this is at most 16 points.
     assert 24 <= len(points) <= 32 and len(points) % 2 == 0
@@ -123,12 +123,12 @@ def test_rim_points_are_a_fictrac_roi_circ():
 
 
 def test_relocate_finds_a_known_ball_from_a_seed_a_few_pixels_off():
-    """The cheap look the moved-ball watch follows with: centre only, radius given."""
+    """The cheap look the moved-ball watch follows with: center only, radius given."""
     from spintrack.detect import relocate_ball
 
-    size, centre, half = CASES[1]
-    frames = sequence(size, centre, half, n=4)
-    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    size, center, half = CASES[1]
+    frames = sequence(size, center, half, n=4)
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
     for dx, dy in ((0.0, 0.0), (4.0, -3.0), (-5.0, 5.0)):
         found = relocate_ball(frames, cx + dx, cy + dy, r)
         assert found.ok
@@ -145,9 +145,9 @@ def test_relocate_says_so_when_the_rim_is_not_where_it_was_told():
     """
     from spintrack.detect import relocate_ball
 
-    size, centre, half = CASES[1]
-    frames = sequence(size, centre, half, n=4)
-    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), centre, half)
+    size, center, half = CASES[1]
+    frames = sequence(size, center, half, n=4)
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
     good = relocate_ball(frames, cx, cy, r)
     try:
         bad = relocate_ball(frames, cx, cy, 0.75 * r)

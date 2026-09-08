@@ -14,7 +14,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_engine import make_texture, render_window
 
 CAM = PinholeCamera(320, 240, 40.0)
-CENTRE = normalize(np.array([0.05, -0.03, 1.0]))
+CENTER = normalize(np.array([0.05, -0.03, 1.0]))
 HALF = 0.25
 
 
@@ -33,7 +33,7 @@ def _drifting_run(projection: str, seed: int = 7):
     integrates a random walk, which is the drift refinement exists to undo.
     """
     rng = np.random.default_rng(seed)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, source_mask(CAM, CENTRE, HALF))
+    geom = window_geometry(CAM, CENTER, HALF, 60, source_mask(CAM, CENTER, HALF))
     texture = make_texture(rng)
     engine = TrackEngine(
         geom, TrackParams(forget_outside_view=True, map_projection=projection)

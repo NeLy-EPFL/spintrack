@@ -5,7 +5,7 @@ camera position in the animal frame (x forward, y right, z down) with an azimuth
 around the animal's vertical axis, 0 = in front of the animal, 90 = at its right), an
 elevation (degrees above the animal's horizontal plane) and an optional twist (roll of the
 camera about its optical axis, degrees, positive = clockwise in the image). The camera is
-assumed to look at the ball centre with its image-down axis as aligned with animal-down as
+assumed to look at the ball center with its image-down axis as aligned with animal-down as
 the geometry allows.
 """
 

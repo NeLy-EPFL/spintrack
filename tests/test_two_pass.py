@@ -27,11 +27,11 @@ from spintrack.io.dat import read_dat
 from spintrack.tracker import Tracker
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_cli import CENTRE, HALF, H, W, render_frame
+from test_cli import CENTER, HALF, H, W, render_frame
 from test_engine import make_texture
 from test_tracker_refit import SIZE, STEP, config, sequence, shifted
 
-PARAMS = TrackParams(centre_watch=False)
+PARAMS = TrackParams(center_watch=False)
 
 
 def track(images, primed=None):
@@ -125,7 +125,7 @@ def test_cli_two_pass_runs_the_video_twice(tmp_path):
     writer.release()
 
     cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
     )
     cfg.c2a_r = [0.0, 0.0, 0.0]
     cfg.save(tmp_path / "config.txt")
@@ -140,7 +140,7 @@ def test_cli_two_pass_runs_the_video_twice(tmp_path):
 
 def test_two_pass_needs_a_recording(tmp_path, caplog):
     """A live camera cannot be read twice, so the flag is refused rather than ignored."""
-    cfg = Config(vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF)
+    cfg = Config(vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF)
     cfg.c2a_r = [0.0, 0.0, 0.0]
     cfg.save(tmp_path / "config.txt")
     argv = ["run", str(tmp_path / "config.txt"), "--src", "0", "--two-pass"]
@@ -209,9 +209,9 @@ def test_second_pass_places_the_window_from_the_first_pass_looks():
             )
         return np.array(errors), first_move
 
-    first = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    first = Tracker(config(), *SIZE, TrackParams(center_watch=True))
     online, moved_online = run(first)
-    second = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    second = Tracker(config(), *SIZE, TrackParams(center_watch=True))
     second.prime_from(first)
     assert isinstance(second.watch, ScriptedWatch)
     assert len(second.watch.episodes) == 1, second.watch.episodes

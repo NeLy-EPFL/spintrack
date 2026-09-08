@@ -67,7 +67,7 @@ class Prepared:
         out: dict = {"source": self.ball_source}
         if self.detection is not None:
             out.update(
-                centre_px=[self.detection.cx, self.detection.cy],
+                center_px=[self.detection.cx, self.detection.cy],
                 radius_px=self.detection.r,
                 confidence=self.detection.confidence,
                 rim_fraction=self.detection.rim_fraction,
@@ -139,8 +139,8 @@ def _set_ball_from_points(cfg: Config, width: int, height: int) -> float:
     """Fill `roi_c`/`roi_r` from `roi_circ` at the config's current `vfov`."""
     camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
     points = np.asarray(cfg.roi_circ, dtype=np.float64).reshape(-1, 2)
-    centre, half_angle = fit_ball(points, camera)
-    cfg.roi_c = [float(v) for v in centre]
+    center, half_angle = fit_ball(points, camera)
+    cfg.roi_c = [float(v) for v in center]
     cfg.roi_r = float(half_angle)
     return half_angle
 
@@ -444,7 +444,7 @@ MIN_CHECKED = 50
 # large, because a pattern that does not turn with the ball holds the outer annulus back
 # and the control pair, built from one frame, cannot see that. That is a job for
 # `roi_ignr`, and `occluded`'s own polygon covers the body but not the six legs: scaled
-# by 2.5 about its centre, which drops 22% of the window's pixels, it takes the bias at
+# by 2.5 about its center, which drops 22% of the window's pixels, it takes the bias at
 # three planted errors from +1.8, +2.4 and +1.4 to +0.6, +0.8 and +0.6 pp. The holder
 # shadow does the same thing more gently - `lab_big_shadow` and `lab_big_ball` differ in
 # nothing else, and their corrected ratios differ by 1%, half a point of radius.

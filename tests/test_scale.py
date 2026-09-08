@@ -108,7 +108,7 @@ def track(frames, eps=0.0, c2a=(0.0, 0.0, 0.0), q_factor=8):
         src_fps=100.0,
     )
     cfg.c2a_r = list(c2a)
-    tracker = Tracker(cfg, W, H, TrackParams(centre_watch=False))
+    tracker = Tracker(cfg, W, H, TrackParams(center_watch=False))
     rows = []
     for i, img in enumerate(frames):
         res = tracker.process_frame(img, i * 10.0)

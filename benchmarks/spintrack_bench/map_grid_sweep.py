@@ -21,7 +21,7 @@ handed over, so there is nothing else for a difference to come from. If the pole
 anything, the error varies with where they are pointed.
 
 An earlier version of this arm rotated a finished map instead. It does not work: the
-identity rotation reads cell centres exactly and every other one blurs the map by about a
+identity rotation reads cell centers exactly and every other one blurs the map by about a
 cell, which swamps the effect being measured.
 
 `projection` is the head-to-head that follows from the other two: the same cell count as

@@ -17,7 +17,7 @@ from test_engine import make_texture
 
 W, H = 160, 120
 CAM = PinholeCamera(W, H, 40.0)
-CENTRE = normalize(np.array([0.0, 0.0, 1.0]))
+CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 HALF = 0.28
 
 
@@ -25,11 +25,11 @@ def render_frame(texture, R, rng):
     xs, ys = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
     rays = CAM.rays(xs, ys)
     radius = np.sin(HALF)
-    b = rays @ CENTRE
+    b = rays @ CENTER
     disc = b * b - (1 - radius * radius)
     hit = disc >= 0
     t = b - np.sqrt(np.where(hit, disc, 0))
-    normals = normalize(t[..., None] * rays - CENTRE)
+    normals = normalize(t[..., None] * rays - CENTER)
     albedo = texture((normals @ R).reshape(-1, 3)).reshape(H, W)
     shade = 0.4 + 0.6 * np.clip(normals @ normalize(np.array([-0.3, -0.5, -0.8])), 0, 1)
     img = np.where(hit, 30 + 220 * albedo * shade, 40.0) + rng.normal(0, 2, (H, W))
@@ -53,7 +53,7 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
     writer.release()
 
     cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
     )
     cfg.c2a_r = [0.0, 0.0, 0.0]
     cfg.save(tmp_path / "config.txt")
@@ -82,7 +82,7 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
 def test_cli_run_refuses_a_config_without_c2a(tmp_path):
     """Without c2a_r the lab-frame columns would silently be camera-frame values."""
     cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
     )
     cfg.save(tmp_path / "config.txt")
     out = tmp_path / "out.dat"
@@ -114,7 +114,7 @@ def test_cli_debug_video_and_refinement(tmp_path):
         writer.write(cv2.cvtColor(render_frame(texture, R, rng), cv2.COLOR_GRAY2BGR))
     writer.release()
     cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTRE), roi_r=HALF
+        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
     )
     cfg.c2a_r = [0.0, 0.0, 0.0]
     cfg.save(tmp_path / "config.txt")

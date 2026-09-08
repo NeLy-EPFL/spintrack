@@ -24,7 +24,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_engine import make_texture, render_window
 
 CAM = PinholeCamera(320, 240, 40.0)
-CENTRE = normalize(np.array([0.05, -0.03, 1.0]))
+CENTER = normalize(np.array([0.05, -0.03, 1.0]))
 HALF = 0.25
 
 
@@ -41,7 +41,7 @@ def test_fictrac_template_conversion_flips_and_scales():
 
 def test_saved_map_localises_a_fresh_engine(tmp_path):
     rng = np.random.default_rng(4)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, source_mask(CAM, CENTRE, HALF))
+    geom = window_geometry(CAM, CENTER, HALF, 60, source_mask(CAM, CENTER, HALF))
     texture = make_texture(rng)
     a = TrackEngine(geom, TrackParams())
     R = np.eye(3)
@@ -70,7 +70,7 @@ def test_saved_map_localises_a_fresh_engine(tmp_path):
     assert np.array_equal(b.export_map()[0], mean2)
 
 
-def test_sample_map_reads_cell_centres_exactly():
+def test_sample_map_reads_cell_centers_exactly():
     """`sample_map` inverts `map_directions`, so both agree with `Map::project` in Rust."""
     rng = np.random.default_rng(0)
     mean = rng.standard_normal((18, 36)).astype(np.float32)
@@ -84,7 +84,7 @@ def test_cube_faces_meet_at_their_seams():
     """The net is an unfolded dice: neighboring faces have to line up along their edge."""
     n = 32
     faces = cube_directions(n)
-    texel = 0.5 * np.pi / n  # angular size of a face-centre texel
+    texel = 0.5 * np.pi / n  # angular size of a face-center texel
     band = ["-x", "+z", "+x", "-z"]
     for left, right in zip(band, band[1:] + band[:1], strict=True):
         gap = np.arccos(

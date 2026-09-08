@@ -107,17 +107,17 @@ def _parse_log(text: str, result: RunResult) -> None:
         result.tracking_ms_per_frame = float(m.group(2)) + float(m.group(3))
 
 
-def window_to_camera_frame(dat: np.ndarray, centre) -> np.ndarray:
+def window_to_camera_frame(dat: np.ndarray, center) -> np.ndarray:
     """Re-express FicTrac's "camera" rotation vectors in the true camera frame.
 
     FicTrac reports its delta and absolute rotation vectors (columns 1-3 and 8-10) in its
-    tracking-window frame, whose z axis points at the ball centre, but labels them as camera
+    tracking-window frame, whose z axis points at the ball center, but labels them as camera
     coordinates. For an on-axis ball the two frames coincide; for an off-axis ball they differ
-    by the rotation taking +z onto the ball centre direction, which this undoes.
+    by the rotation taking +z onto the ball center direction, which this undoes.
     """
     out = np.array(dat, dtype=np.float64, copy=True)
     R = rotation_between(
-        np.array([0.0, 0.0, 1.0]), np.asarray(centre, dtype=np.float64)
+        np.array([0.0, 0.0, 1.0]), np.asarray(center, dtype=np.float64)
     )
     for sl in (slice(1, 4), slice(8, 11)):
         out[:, sl] = dat[:, sl] @ R.T

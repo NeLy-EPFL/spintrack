@@ -1,7 +1,7 @@
 //! The ball surface map: a grid of normalized intensities with confidences.
 //!
 //! Two tessellations, both addressed by a continuous `(u, v)` into one row-major `(H, W)`
-//! array, so everything above this file sees the same thing. Cell `(i, j)` is centred at
+//! array, so everything above this file sees the same thing. Cell `(i, j)` is centerd at
 //! `(j + 0.5, i + 0.5)`.
 //!
 //! `EqualArea`: `u = W * (atan2(px, pz) + pi) / (2 pi)` wraps around in longitude and
@@ -23,7 +23,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 ///
 /// `Cube` is equi-angular: `s' = tan(pi s / 4)` on each face, one `tan` more than a plain
 /// gnomonic cube, which brings the solid angle per cell from a 5.2:1 spread between face
-/// centre and corner down to 1.41:1 and makes every cell 0.87 degrees square at the same
+/// center and corner down to 1.41:1 and makes every cell 0.87 degrees square at the same
 /// texel budget. `benchmarks/spintrack_bench/map_grid_sweep.py` measures what that buys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Projection {
@@ -495,7 +495,7 @@ impl Map {
         let h2 = out.h;
         for y in 0..h2 {
             for x in 0..w2 {
-                // Sample the blurred field at the centre of each decimated block; on a cube
+                // Sample the blurred field at the center of each decimated block; on a cube
                 // each face decimates on its own, so the row is taken within the face.
                 let yy = if cube {
                     (y / w2) * self.w + ((y % w2) * factor + factor / 2).min(self.w - 1)
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn cube_projection_is_consistent_with_jacobian() {
         let m = Map::cube(64);
-        // The centre of each face, an edge, a corner, and a point either side of a seam.
+        // The center of each face, an edge, a corner, and a point either side of a seam.
         for (f, r, u) in FACES {
             check_jacobian(&m, f);
             check_jacobian(&m, face_direction_of(f, r, u, 0.4, -0.7));
@@ -739,7 +739,7 @@ mod tests {
     fn cube_seams_join_neighboring_faces() {
         let n = 32;
         let m = Map::cube(n);
-        // A texel at the face centre spans pi/2 / n; the seam neighbor of an edge cell
+        // A texel at the face center spans pi/2 / n; the seam neighbor of an edge cell
         // must be its actual neighbor on the sphere, not a clamp back onto the same cell.
         let limit = 1.5 * FRAC_PI_2 / n as f32;
         for face in 0..6 {

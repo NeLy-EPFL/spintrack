@@ -1,7 +1,7 @@
 """Ball geometry: fit the ball outline, mask it, and build the tracking window.
 
-The tracking window is the view of a virtual fisheye camera pointed at the ball centre.
-Every window pixel that sees the ball gets a unit vector from the ball centre to the
+The tracking window is the view of a virtual fisheye camera pointed at the ball center.
+Every window pixel that sees the ball gets a unit vector from the ball center to the
 surface point it observes (`WindowGeometry.surface`, in the window frame); rotating the
 ball rotates these vectors, which is what the solver estimates.
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 import cv2
 import numpy as np
 
-from spintrack.camera import Camera, EquidistantCamera, pixel_centres
+from spintrack.camera import Camera, EquidistantCamera, pixel_centers
 from spintrack.geometry import normalize, rotation_between, rotvec_to_matrix
 
 # Anti-aliasing of the window remap, as the standard deviation of a Gaussian in units of
@@ -45,9 +45,9 @@ def tangent_basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def fit_ball(
     points_xy, camera: Camera, iterations: int = 20
 ) -> tuple[np.ndarray, float]:
-    """Fit the ball outline: unit direction to the centre and angular radius (radians).
+    """Fit the ball outline: unit direction to the center and angular radius (radians).
 
-    Rays through the clicked rim points lie on a cone about the ball centre. The axis is
+    Rays through the clicked rim points lie on a cone about the ball center. The axis is
     initialized from the plane through the ray tips (SVD) and both axis and half-angle
     are refined by Gauss-Newton on the residuals `angle(ray_i, axis) - half_angle`.
     """
@@ -78,10 +78,10 @@ def fit_ball(
 
 
 def ball_outline(
-    camera: Camera, centre, half_angle: float, n_points: int = 180, shrink: float = 1.0
+    camera: Camera, center, half_angle: float, n_points: int = 180, shrink: float = 1.0
 ) -> np.ndarray:
-    """Image polygon (K, 2) of the outline at `shrink * half_angle` from the centre."""
-    c = normalize(np.asarray(centre, dtype=np.float64))
+    """Image polygon (K, 2) of the outline at `shrink * half_angle` from the center."""
+    c = normalize(np.asarray(center, dtype=np.float64))
     e1, e2 = tangent_basis(c)
     a = shrink * half_angle
     phi = np.linspace(0.0, 2.0 * np.pi, n_points, endpoint=False)
@@ -93,17 +93,17 @@ def ball_outline(
 
 
 def pixel_circle(
-    camera: Camera, centre, half_angle: float
+    camera: Camera, center, half_angle: float
 ) -> tuple[float, float, float]:
     """Image circle `(cx, cy, r)` of the ball outline, in continuous pixel coordinates.
 
     The silhouette of a sphere under a pinhole camera is exactly a circle, so this is
     the inverse of `fit_ball` there; under a fisheye it is the best-fit circle of the
     outline. The circle is fitted rather than summarized: for a ball far off the optical
-    axis the outline points crowd one side, and their centroid misses the centre by a
+    axis the outline points crowd one side, and their centroid misses the center by a
     few pixels.
     """
-    outline = ball_outline(camera, centre, half_angle, 180)
+    outline = ball_outline(camera, center, half_angle, 180)
     a = np.stack([2.0 * outline[:, 0], 2.0 * outline[:, 1], np.ones(len(outline))], 1)
     sol, *_ = np.linalg.lstsq(a, (outline**2).sum(axis=1), rcond=None)
     return (
@@ -113,14 +113,14 @@ def pixel_circle(
     )
 
 
-def centre_from_pixel_circle(
+def center_from_pixel_circle(
     camera: Camera, target_px, half_angle: float, seed, iterations: int = 3
 ) -> np.ndarray:
     """The ball direction whose `pixel_circle` sits at `target_px`; inverts that.
 
-    The centre of the silhouette is not the projection of the ball's centre. It sits
+    The center of the silhouette is not the projection of the ball's center. It sits
     farther from the principal point, and by more the farther off axis the ball is, so
-    reading a fitted circle's centre as a direction under-reports how far a ball has
+    reading a fitted circle's center as a direction under-reports how far a ball has
     moved: on `ball_drop` (11 degree ball, 71 px of movement) by 5% of the movement, and
     on the real trials (1.2 degree ball) by 0.2 px over 284 px, which is nothing.
 
@@ -128,18 +128,18 @@ def centre_from_pixel_circle(
     correction moves with the projected direction almost one for one.
     """
     target = np.asarray(target_px, dtype=np.float64)
-    centre = normalize(np.asarray(seed, dtype=np.float64))
+    center = normalize(np.asarray(seed, dtype=np.float64))
     for _ in range(iterations):
-        cx, cy, _ = pixel_circle(camera, centre, half_angle)
-        px, py, _ = camera.project(centre)
-        centre = normalize(
+        cx, cy, _ = pixel_circle(camera, center, half_angle)
+        px, py, _ = camera.project(center)
+        center = normalize(
             camera.rays(float(px) + target[0] - cx, float(py) + target[1] - cy)
         )
-    return centre
+    return center
 
 
 def source_mask(
-    camera: Camera, centre, half_angle: float, ignore_polygons=(), shrink: float = 0.975
+    camera: Camera, center, half_angle: float, ignore_polygons=(), shrink: float = 0.975
 ) -> np.ndarray:
     """uint8 mask of the source image: 255 on the ball (slightly shrunk), 0 elsewhere.
 
@@ -147,7 +147,7 @@ def source_mask(
     covering the animal and other occluders; they are cut out of the mask.
     """
     mask = np.zeros((camera.height, camera.width), np.uint8)
-    outline = ball_outline(camera, centre, half_angle, shrink=shrink)
+    outline = ball_outline(camera, center, half_angle, shrink=shrink)
     cv2.fillPoly(mask, [np.round(outline).astype(np.int32)], 255)
     for poly in ignore_polygons:
         pts = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
@@ -168,7 +168,7 @@ class WindowGeometry:
     mask: np.ndarray  # (n, n) bool: window pixels that see un-ignored ball surface
     surface: (
         np.ndarray
-    )  # (N, 3) float32 unit ball-centre-to-surface vectors, window frame
+    )  # (N, 3) float32 unit ball-center-to-surface vectors, window frame
     index: np.ndarray  # (N,) int64 flat row-major indices of the masked pixels
     decimation: float = 1.0  # source pixels per window pixel, median over the window
     # The pre-filter (see `PREFILTER_SIGMA`): `cv2.pyrDown` halvings, then a Gaussian of
@@ -261,23 +261,23 @@ def prefilter_plan(decimation: float, sigma: float) -> tuple[int, float]:
 
 def window_geometry(
     camera: Camera,
-    centre,
+    center,
     half_angle: float,
     size: int,
     mask: np.ndarray,
     prefilter: float = PREFILTER_SIGMA,
 ) -> WindowGeometry:
-    """Build the tracking window for a ball at `centre` (unit) with `half_angle` (rad).
+    """Build the tracking window for a ball at `center` (unit) with `half_angle` (rad).
 
-    The window frame has +z along `centre`; the ball centre sits at distance 1 and the
+    The window frame has +z along `center`; the ball center sits at distance 1 and the
     ball radius is `sin(half_angle)`. `mask` is the source-image mask from
     `source_mask`. `prefilter` is the anti-aliasing blur in units of the decimation (0
     for none).
     """
-    c = normalize(np.asarray(centre, dtype=np.float64))
+    c = normalize(np.asarray(center, dtype=np.float64))
     to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), c)
     window_cam = EquidistantCamera.from_extent(size, 2.0 * half_angle)
-    xs, ys = pixel_centres(size, size)
+    xs, ys = pixel_centers(size, size)
     dirs_w = window_cam.rays(xs, ys)
     dirs_c = dirs_w @ to_camera.T
     x, y, valid = camera.project(dirs_c)

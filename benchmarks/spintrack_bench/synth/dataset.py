@@ -40,7 +40,7 @@ class SceneSpec:
     vfov_deg: float = 30.0
     fisheye: bool = False
     ball_azimuth_deg: float = (
-        3.0  # ball centre direction in the camera frame (+ = right)
+        3.0  # ball center direction in the camera frame (+ = right)
     )
     ball_elevation_deg: float = -2.0  # (+ = up in the image)
     half_angle_deg: float = 11.0  # angular radius of the ball
@@ -51,7 +51,7 @@ class SceneSpec:
     motion: MotionSpec = field(default_factory=MotionSpec)
     # Optional movement of the ball itself in its holder, as
     # `{"kind": "bump", "start": int, "end": int, "amplitude_radii": float,
-    #   "direction_deg": float}`: between `start` and `end` the centre slides
+    #   "direction_deg": float}`: between `start` and `end` the center slides
     # `amplitude_radii` ball radii along `direction_deg` (90 = down the image) and comes
     # back, following a raised cosine. The animal does not move with it.
     ball_path: dict | None = None
@@ -84,7 +84,7 @@ class SceneSpec:
             self.texture = BlobTextureSpec(**self.texture)
         self.motion.fps = self.fps
 
-    def ball_centre(self) -> np.ndarray:
+    def ball_center(self) -> np.ndarray:
         az, el = np.radians([self.ball_azimuth_deg, self.ball_elevation_deg])
         c = np.array([np.sin(az) * np.cos(el), -np.sin(el), np.cos(az) * np.cos(el)])
         return c / np.linalg.norm(c)
@@ -160,7 +160,7 @@ def build_renderer(spec: SceneSpec, rng: np.random.Generator) -> Renderer:
     texture = spec.texture.build(rng)
     return Renderer(
         camera,
-        spec.ball_centre(),
+        spec.ball_center(),
         np.radians(spec.half_angle_deg),
         texture,
         spec.lighting,
@@ -181,11 +181,11 @@ def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> Conf
     cfg.thr_ratio = float(spec.thr_ratio)
     cfg.thr_win_pc = float(spec.thr_win_pc)
     cfg.do_display = False
-    centre = spec.ball_centre()
+    center = spec.ball_center()
     half = float(np.radians(spec.half_angle_deg))
-    cfg.roi_c = [float(v) for v in centre]
+    cfg.roi_c = [float(v) for v in center]
     cfg.roi_r = half
-    rim = ball_outline(renderer.camera, centre, half, n_points=8)
+    rim = ball_outline(renderer.camera, center, half, n_points=8)
     cfg.roi_circ = [round(v) for v in rim.ravel()]
     body = renderer.body_polygon()
     cfg.roi_ignr = [body] if body else []
@@ -194,10 +194,10 @@ def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> Conf
     return cfg
 
 
-def centre_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
-    """Per-frame ball centre direction (n_frames, 3); constant unless `ball_path` is set."""
-    centre = spec.ball_centre()
-    path = np.repeat(centre[None, :], spec.n_frames, axis=0)
+def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
+    """Per-frame ball center direction (n_frames, 3); constant unless `ball_path` is set."""
+    center = spec.ball_center()
+    path = np.repeat(center[None, :], spec.n_frames, axis=0)
     if not spec.ball_path:
         return path
     kind = spec.ball_path.get("kind", "bump")
@@ -207,7 +207,7 @@ def centre_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
     end = int(spec.ball_path["end"])
     amplitude = float(spec.ball_path["amplitude_radii"]) * renderer.radius_px
     angle = np.radians(float(spec.ball_path.get("direction_deg", 90.0)))
-    cx, cy = renderer.centre_px
+    cx, cy = renderer.center_px
     index = np.arange(start, min(end, spec.n_frames))
     phase = 2.0 * np.pi * (index - start) / max(end - start, 1)
     offset = amplitude * 0.5 * (1.0 - np.cos(phase))
@@ -236,11 +236,11 @@ def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
     writer = FfmpegWriter(
         video, spec.width, spec.height, spec.fps, spec.codec, spec.crf
     )
-    path = centre_path(spec, renderer)
+    path = center_path(spec, renderer)
     R_prev = np.eye(3)
     for i in range(spec.n_frames):
         if i > 0 and not np.array_equal(path[i], path[i - 1]):
-            renderer.set_centre(path[i])
+            renderer.set_center(path[i])
         frame = renderer.render(R_prev, R[i], i, spec.n_frames)
         writer.write(frame)
         R_prev = R[i]
@@ -260,8 +260,8 @@ def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
         w_lab=w_lab,
         ts_ms=ts_ms,
         cam_to_lab=cam_to_lab,
-        centre=spec.ball_centre(),
-        centre_path=path,
+        center=spec.ball_center(),
+        center_path=path,
         half_angle=np.radians(spec.half_angle_deg),
         fps=spec.fps,
     )

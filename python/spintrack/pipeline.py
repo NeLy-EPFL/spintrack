@@ -225,7 +225,7 @@ def run(
         )
         stats.quality.checks.update(checks or {})
         if tracker.refits:
-            stats.quality.checks["ball centre"] = (
+            stats.quality.checks["ball center"] = (
                 f"followed a moving ball over {len(tracker.refits)} stretch(es): "
                 + ", ".join(
                     f"frames {e.start}-{e.end}, up to {e.max_shift_px:.0f} px"
@@ -233,7 +233,7 @@ def run(
                 )
             )
         elif tracker.watch is not None:
-            stats.quality.checks["ball centre"] = "stable"
+            stats.quality.checks["ball center"] = "stable"
         if first is not None:
             note = (
                 f"first pass mapped {100.0 * first.engine.map_coverage():.0f}% of the "
@@ -251,16 +251,16 @@ def run(
             stats.quality.checks["rotation scale"] = verdict.line()
             scale_report = verdict.report()
         if summary_out:
-            cx, cy, r = pixel_circle(tracker.camera, tracker.centre, tracker.half_angle)
+            cx, cy, r = pixel_circle(tracker.camera, tracker.center, tracker.half_angle)
             geometry = {
-                "centre_px": [cx, cy],
+                "center_px": [cx, cy],
                 "radius_px": r,
                 "half_angle_deg": float(np.degrees(tracker.half_angle)),
                 "window_size": tracker.geometry.size,
             }
             if scale_report is not None:
                 geometry["scale_check"] = scale_report
-            geometry["centre_initial"] = [float(v) for v in tracker.centre_initial]
+            geometry["center_initial"] = [float(v) for v in tracker.center_initial]
             geometry["refits"] = [e.as_dict() for e in tracker.refits]
             write_sidecar(
                 summary_out, stats.quality, {**(provenance or {}), "geometry": geometry}

@@ -8,17 +8,17 @@ from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
 from spintrack.sphere import source_mask, window_geometry
 
 CAM = PinholeCamera(320, 240, 40.0)
-CENTRE = normalize(np.array([0.05, -0.03, 1.0]))
+CENTER = normalize(np.array([0.05, -0.03, 1.0]))
 HALF = 0.25
 
 
 def make_texture(rng, n_blobs=120):
-    centres = rng.normal(size=(n_blobs, 3))
-    centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+    centers = rng.normal(size=(n_blobs, 3))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
     radii = rng.uniform(0.06, 0.16, n_blobs)
 
     def sample(dirs):
-        cos = dirs @ centres.T
+        cos = dirs @ centers.T
         ang = np.arccos(np.clip(cos, -1, 1))
         dark = np.clip((radii + 0.02 - ang) / 0.04, 0, 1)
         return 0.92 * np.prod(1 - 0.9 * dark, axis=1)
@@ -38,8 +38,8 @@ def render_window(geom, texture, R, rng):
 
 def test_engine_recovers_known_rotations():
     rng = np.random.default_rng(0)
-    mask = source_mask(CAM, CENTRE, HALF)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
+    mask = source_mask(CAM, CENTER, HALF)
+    geom = window_geometry(CAM, CENTER, HALF, 60, mask)
     texture = make_texture(rng)
     engine = TrackEngine(geom, TrackParams())
     R = np.eye(3)
@@ -66,8 +66,8 @@ def test_engine_recovers_known_rotations():
 
 def test_engine_forget_outside_view_tracks_too():
     rng = np.random.default_rng(1)
-    mask = source_mask(CAM, CENTRE, HALF)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
+    mask = source_mask(CAM, CENTER, HALF)
+    geom = window_geometry(CAM, CENTER, HALF, 60, mask)
     texture = make_texture(rng)
     engine = TrackEngine(geom, TrackParams(forget_outside_view=True))
     R = np.eye(3)
@@ -91,8 +91,8 @@ def test_global_search_relocalises_after_a_large_jump():
     is off by default because a walking animal's cost trips it (see `TrackParams`).
     """
     rng = np.random.default_rng(2)
-    mask = source_mask(CAM, CENTRE, HALF)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
+    mask = source_mask(CAM, CENTER, HALF)
+    geom = window_geometry(CAM, CENTER, HALF, 60, mask)
     texture = make_texture(rng)
     engine = TrackEngine(
         geom, TrackParams(global_search=True, max_step=0.3, cost_gate=3.0)
@@ -119,8 +119,8 @@ def test_equal_area_map_recovers_known_rotations():
     scene is short enough that matching is the honest assertion.
     """
     rng = np.random.default_rng(0)
-    mask = source_mask(CAM, CENTRE, HALF)
-    geom = window_geometry(CAM, CENTRE, HALF, 60, mask)
+    mask = source_mask(CAM, CENTER, HALF)
+    geom = window_geometry(CAM, CENTER, HALF, 60, mask)
     texture = make_texture(rng)
     engine = TrackEngine(geom, TrackParams(map_projection="equal_area"))
     assert engine.map_shape == (90, 180), engine.map_shape

@@ -78,12 +78,12 @@ class Texture:
         return top * (1 - fv) + bot * fv
 
     def paint_cap(
-        self, centre: np.ndarray, radius: float, darkness: float, soft: float
+        self, center: np.ndarray, radius: float, darkness: float, soft: float
     ):
         """Multiply the albedo by `1 - darkness` inside a soft-edged spherical cap."""
         _h, w = self.data.shape
         lon_g, lat_g = self._grid()
-        lon_c, lat_c = dirs_to_lonlat(centre)
+        lon_c, lat_c = dirs_to_lonlat(center)
         outer = radius + soft
         lat_lo = max(lat_c - outer, -np.pi / 2)
         lat_hi = min(lat_c + outer, np.pi / 2)
@@ -99,7 +99,7 @@ class Texture:
         if cols.size == 0:
             return
         sub = lonlat_to_dirs(lon_g[cols][None, :], lat_g[rows][:, None])
-        theta = np.arccos(np.clip(sub @ centre, -1.0, 1.0))
+        theta = np.arccos(np.clip(sub @ center, -1.0, 1.0))
         # 1 inside radius - soft, 0 outside radius + soft, smooth in between.
         x = np.clip((radius + soft - theta) / (2.0 * soft), 0.0, 1.0)
         weight = x * x * (3.0 - 2.0 * x)
@@ -127,8 +127,8 @@ class BlobTextureSpec:
                 c, np.radians(rng.uniform(15, 40)), self.shading_darkness, 0.3
             )
         r_lo, r_hi = np.radians(self.radius_deg)
-        centres = poisson_disk_sphere(rng, self.n_blobs, 0.9 * (r_lo + r_hi))
-        for c in centres:
+        centers = poisson_disk_sphere(rng, self.n_blobs, 0.9 * (r_lo + r_hi))
+        for c in centers:
             radius = rng.uniform(r_lo, r_hi)
             darkness = rng.uniform(*self.darkness)
             tex.paint_cap(c, radius, darkness, np.radians(self.soft_deg))

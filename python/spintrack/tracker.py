@@ -22,7 +22,7 @@ from spintrack.io.sources import ms_since_midnight
 from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.path import PathIntegrator
 from spintrack.sphere import (
-    centre_from_pixel_circle,
+    center_from_pixel_circle,
     fit_ball,
     pixel_circle,
     source_mask,
@@ -40,7 +40,7 @@ log = logging.getLogger("spintrack")
 # reports 30-40% low. See `docs/verification.md`.
 MIN_BALL_RADIUS_PX = 15.0
 
-# Move the window when the followed centre has drifted this far from it. Small
+# Move the window when the followed center has drifted this far from it. Small
 # enough that the ball's own movement is not read as rotation, large enough that a
 # still ball is not re-fitted on detection noise.
 FOLLOW_TOL_PX = 0.25
@@ -87,15 +87,15 @@ class Tracker:
         self.width, self.height = int(width), int(height)
         self.camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
         if cfg.roi_c is not None and cfg.roi_r is not None and len(cfg.roi_c) == 3:
-            self.centre = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
+            self.center = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
             self.half_angle = float(cfg.roi_r)
         elif len(cfg.roi_circ) >= 6:
             pts = np.asarray(cfg.roi_circ, dtype=np.float64).reshape(-1, 2)
-            self.centre, self.half_angle = fit_ball(pts, self.camera)
+            self.center, self.half_angle = fit_ball(pts, self.camera)
         else:
             raise ValueError("config must define the ball via roi_c/roi_r or roi_circ")
         self.params = params_from_config(cfg, params)
-        self.ball_radius_px = pixel_circle(self.camera, self.centre, self.half_angle)[2]
+        self.ball_radius_px = pixel_circle(self.camera, self.center, self.half_angle)[2]
         if self.ball_radius_px < MIN_BALL_RADIUS_PX:
             log.warning(
                 "the ball is only %.1f px in radius; rotations will be reported low, "
@@ -103,10 +103,10 @@ class Tracker:
                 "the animal). See docs/verification.md",
                 self.ball_radius_px,
             )
-        mask = source_mask(self.camera, self.centre, self.half_angle, cfg.roi_ignr)
+        mask = source_mask(self.camera, self.center, self.half_angle, cfg.roi_ignr)
         self.geometry = window_geometry(
             self.camera,
-            self.centre,
+            self.center,
             self.half_angle,
             cfg.window_size(),
             mask,
@@ -137,15 +137,15 @@ class Tracker:
         # `process_frame` steps `geometry_version` past it, so anything kept alongside a
         # result - a normalized window, an orientation - must be tagged with this.
         self.tracked_version = 0
-        self.centre_initial = self.centre.copy()
+        self.center_initial = self.center.copy()
         self.refits: list = []
         self._moves: list = []  # one Q per window move, for the offline refinement
         self.watch = None
-        if self.params.centre_watch:
-            from spintrack.refit import CentreWatch
+        if self.params.center_watch:
+            from spintrack.refit import CenterWatch
 
-            cx, cy, radius = pixel_circle(self.camera, self.centre, self.half_angle)
-            self.watch = CentreWatch((cx, cy), radius)
+            cx, cy, radius = pixel_circle(self.camera, self.center, self.half_angle)
+            self.watch = CenterWatch((cx, cy), radius)
         self.scale_check = None
         if self.params.scale_check_stride > 0:
             from spintrack.autofit import ScaleCheck
@@ -191,7 +191,7 @@ class Tracker:
         `TrackEngine.rebuild`). The illumination fields are fixed in the *window*, so
         they do come from wherever `other` ended up and are resampled into this one.
         When `other` watched the ball, this tracker's window follows the trajectory
-        `other` measured, planned from all of its looks at once (`CentreWatch.replay`),
+        `other` measured, planned from all of its looks at once (`CenterWatch.replay`),
         instead of following the ball for itself.
         """
         mean, weight = other.engine.export_map()
@@ -204,7 +204,7 @@ class Tracker:
         # recordings' median cost moved +0.0000, +0.0010, +0.0000, -0.0006 - so this
         # path keeps the behavior it had.
         self.engine.load_illumination(
-            other.engine.photometry.state(), other.centre, other.half_angle
+            other.engine.photometry.state(), other.center, other.half_angle
         )
         if self.watch is not None and other.watch is not None:
             planned = other.watch.replay(other.frame)
@@ -230,7 +230,7 @@ class Tracker:
             return False
         self.engine.load_illumination(
             fields,
-            saved.get("centre", self.centre),
+            saved.get("center", self.center),
             saved.get("half_angle", self.half_angle),
             # The fields describe the rig, so they are worth as much as this run's own
             # memory of it until its own frames outweigh them. A hand-over inside
@@ -248,7 +248,7 @@ class Tracker:
             mean,
             weight,
             window_size=self.geometry.size,
-            centre=self.centre,
+            center=self.center,
             half_angle=self.half_angle,
             illum_bias=illum["bias"],
             illum_gain=illum["gain"],
@@ -260,7 +260,7 @@ class Tracker:
     ) -> FrameResult | None:
         """Track one grayscale frame (2-D uint8); None if the frame was dropped."""
         self.tracked_version = self.geometry_version
-        # The window this frame is tracked in; `_watch_centre` below may move it, and
+        # The window this frame is tracked in; `_watch_center` below may move it, and
         # the increment and orientation the step returns belong to this one.
         R_wc = self.R_wc
         window = self.geometry.remap(gray)
@@ -268,7 +268,7 @@ class Tracker:
         r_prev, velocity = self.engine.R, self.engine.velocity
         step = self.engine.step(window)
         self._check_scale(gray, step, r_prev, velocity)
-        self._watch_centre(gray, step)
+        self._watch_center(gray, step)
         frame = self.frame
         self.frame += 1
         if not step.ok:
@@ -299,18 +299,18 @@ class Tracker:
             frame, int(values[22]), ts_ms, w_cam, w_lab, R_cam, R_lab, step, values
         )
 
-    def refit_centre(self, new_centre) -> np.ndarray:
-        """Point the tracking window at a new ball centre, keeping the surface map.
+    def refit_center(self, new_center) -> np.ndarray:
+        """Point the tracking window at a new ball center, keeping the surface map.
 
         Returns the rotation `Q` from the old window frame to the new one, which the
         caller must apply to any orientation it recorded in the old frame. The ignore
         polygons are image-fixed (the animal has not moved), so they are not translated.
         """
-        centre = normalize(np.asarray(new_centre, dtype=np.float64))
-        mask = source_mask(self.camera, centre, self.half_angle, self.cfg.roi_ignr)
+        center = normalize(np.asarray(new_center, dtype=np.float64))
+        mask = source_mask(self.camera, center, self.half_angle, self.cfg.roi_ignr)
         geometry = window_geometry(
             self.camera,
-            centre,
+            center,
             self.half_angle,
             self.cfg.window_size(),
             mask,
@@ -320,7 +320,7 @@ class Tracker:
         self.engine.rebuild(geometry, Q)
         self.geometry = geometry
         self.R_wc = geometry.to_camera
-        self.centre = centre
+        self.center = center
         self.geometry_version += 1
         self._moves.append(Q)
         self._prev_obs = None
@@ -345,22 +345,22 @@ class Tracker:
                 self.scale_check = None
         return Q
 
-    def _watch_centre(self, gray: np.ndarray, step) -> None:
+    def _watch_center(self, gray: np.ndarray, step) -> None:
         """Keep the tracking window on a ball that is moving in its holder."""
         if self.watch is None:
             return
         target = self.watch.update(self.frame, gray)
         if target is None:
             return
-        cx, cy, _ = pixel_circle(self.camera, self.centre, self.half_angle)
+        cx, cy, _ = pixel_circle(self.camera, self.center, self.half_angle)
         if float(np.hypot(target[0] - cx, target[1] - cy)) < FOLLOW_TOL_PX:
             return
         # The radius is left alone: a ball only changes apparent size by moving along
         # the optical axis, and translation on its own is much better conditioned. The
         # target is where the silhouette's circle should sit, which is not where the
-        # ball's centre projects, so it is inverted rather than read as a direction.
-        self.refit_centre(
-            centre_from_pixel_circle(self.camera, target, self.half_angle, self.centre)
+        # ball's center projects, so it is inverted rather than read as a direction.
+        self.refit_center(
+            center_from_pixel_circle(self.camera, target, self.half_angle, self.center)
         )
         self._record_refit(target)
 
@@ -387,7 +387,7 @@ class Tracker:
 
         origin = tuple(self.watch.origin_px)
         last = self.refits[-1] if self.refits else None
-        if last is not None and self.frame - last.end <= self.params.centre_watch_gap:
+        if last is not None and self.frame - last.end <= self.params.center_watch_gap:
             last.extend(self.frame, (target[0], target[1]), self.watch.rim_fraction)
             return
         here = (float(target[0]), float(target[1]))

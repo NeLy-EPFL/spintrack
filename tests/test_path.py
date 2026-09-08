@@ -25,8 +25,8 @@ def test_turning_while_walking_traces_a_circle():
     turn = -(2 * np.pi / n)  # dr_lab z; heading increases each frame, one lap total
     path = integrate_path(np.tile([0.0, 0.02, turn], (n, 1)))
     radius = 0.02 / (2 * np.pi / n)
-    centre = np.array([0.0, radius])
-    dist = np.hypot(path[:, 0] - centre[0], path[:, 1] - centre[1])
+    center = np.array([0.0, radius])
+    dist = np.hypot(path[:, 0] - center[0], path[:, 1] - center[1])
     assert np.allclose(dist, radius, atol=1e-9)
     assert np.allclose(path[-1, :2], 0.0, atol=1e-6)  # back at the start after one lap
     assert 0.0 <= path[:, 2].max() < 2 * np.pi

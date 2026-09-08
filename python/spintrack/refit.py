@@ -57,7 +57,7 @@ never an absolute position, so a systematic difference between the look and what
 fitted the config's circle (3.5 px on 004) does not move a still ball's window. The map
 is not thrown away when the window moves: it is stored in the window frame at `R = I`,
 which is the ball's own body frame, so changing the window only re-expresses the current
-orientation. See `Tracker.refit_centre`.
+orientation. See `Tracker.refit_center`.
 
 The delay that remains online is structural: the confirmation that keeps a still ball's
 window still, and the filter's lag on a fast drop. With two passes over a recording
@@ -227,9 +227,9 @@ class RefitEvent:
     farthest_px: tuple[float, float]
     rim_fraction: float  # of the last look that placed the window
 
-    def extend(self, frame: int, centre, rim_fraction: float) -> None:
+    def extend(self, frame: int, center, rim_fraction: float) -> None:
         self.end = frame
-        self.last_px = (float(centre[0]), float(centre[1]))
+        self.last_px = (float(center[0]), float(center[1]))
         if self._distance(self.last_px) > self._distance(self.farthest_px):
             self.farthest_px = self.last_px
         self.rim_fraction = rim_fraction
@@ -254,7 +254,7 @@ class RefitEvent:
         }
 
 
-class CentreWatch:
+class CenterWatch:
     """Follow a ball that moves in its holder, and say where the window should be.
 
     A rim look per frame feeds an alpha-beta filter on the ball's displacement from
@@ -570,7 +570,7 @@ def plan_window_trajectory(
 ) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:
     """Where the window should have been on every frame, from all the looks at once.
 
-    `looks` are `(frame, position, rim fraction)` as `CentreWatch` records them. They
+    `looks` are `(frame, position, rim fraction)` as `CenterWatch` records them. They
     are interpolated over the frames without one, cleaned with a `PLAN_MEDIAN`-frame
     median and smoothed with a zero-phase Gaussian of `sigma` frames. The window then
     holds the ball's resting level - `reference_px` to begin with - until the smoothed
@@ -654,9 +654,9 @@ def plan_window_trajectory(
 
 
 class ScriptedWatch:
-    """`CentreWatch`'s interface for a window trajectory planned in advance.
+    """`CenterWatch`'s interface for a window trajectory planned in advance.
 
-    Built by `CentreWatch.replay` for the second of two passes over a recording: the
+    Built by `CenterWatch.replay` for the second of two passes over a recording: the
     first pass measured the ball on every frame, so the second can put the window where
     the ball was on each frame, from the frame it left its resting place, without the
     confirmation delay and the filter lag an online follower pays to keep a still ball's
@@ -672,7 +672,7 @@ class ScriptedWatch:
         self.rim_fraction = 0.0
 
     def update(self, frame: int, gray) -> np.ndarray | None:
-        """Where to center the window on `frame`, as `CentreWatch.update` says it."""
+        """Where to center the window on `frame`, as `CenterWatch.update` says it."""
         if frame >= len(self.trajectory):
             return None
         if np.isfinite(self._rim[frame]):

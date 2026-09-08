@@ -19,19 +19,19 @@ from test_engine import make_texture
 SIZE = (240, 180)
 VFOV = 40.0
 HALF = 0.15
-CENTRE = normalize(np.array([0.0, 0.0, 1.0]))
+CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 CAMERA = PinholeCamera(SIZE[0], SIZE[1], VFOV)
 STEP = (0.02, 0.05, 0.01)
 
 
 def config() -> Config:
-    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTRE), roi_r=HALF)
+    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=HALF)
     cfg.c2a_r = [0.0, 0.0, 0.0]
     return cfg
 
 
 def shifted(dy: float):
-    cx, cy, _ = pixel_circle(CAMERA, CENTRE, HALF)
+    cx, cy, _ = pixel_circle(CAMERA, CENTER, HALF)
     return normalize(CAMERA.rays(cx, cy + dy))
 
 
@@ -44,8 +44,8 @@ def sequence(n, drift=None, seed=0):
     for i in range(n):
         if i > 0:
             R = rotvec_to_matrix(STEP) @ R
-        centre = CENTRE if drift is None else drift(i)
-        out.append((render(texture, R, rng, SIZE, centre, HALF, occluders=False), R))
+        center = CENTER if drift is None else drift(i)
+        out.append((render(texture, R, rng, SIZE, center, HALF, occluders=False), R))
     return out, texture, rng
 
 
@@ -60,13 +60,13 @@ def test_refit_carries_the_map_projection(projection, shape):
     rather than failing where the mistake was made. Both directions are worth pinning,
     since a run can be either projection.
     """
-    params = TrackParams(centre_watch=False, map_projection=projection)
+    params = TrackParams(center_watch=False, map_projection=projection)
     tracker = Tracker(config(), *SIZE, params)
     images, texture, rng = sequence(20)
     for image, _ in images:
         tracker.process_frame(image)
     assert tracker.engine.map_shape == shape, tracker.engine.map_shape
-    tracker.refit_centre(shifted(5.0))
+    tracker.refit_center(shifted(5.0))
     # The same ball, moved 5 px and followed, keeps turning at the same rate.
     R = images[-1][1]
     for _ in range(5):
@@ -79,7 +79,7 @@ def test_refit_carries_the_map_projection(projection, shape):
 
 def test_refit_is_a_change_of_coordinates():
     """The map and the ball's orientation in the camera survive a window move exactly."""
-    tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=False))
+    tracker = Tracker(config(), *SIZE, TrackParams(center_watch=False))
     images, texture, rng = sequence(20)
     for image, _ in images:
         tracker.process_frame(image)
@@ -87,7 +87,7 @@ def test_refit_is_a_change_of_coordinates():
     mean, weight = (a.copy() for a in tracker.engine.export_map())
     cost_before = float(np.median(tracker.engine._costs))
 
-    tracker.refit_centre(shifted(5.0))
+    tracker.refit_center(shifted(5.0))
     after_mean, after_weight = tracker.engine.export_map()
     assert np.array_equal(mean, after_mean)
     assert np.array_equal(weight, after_weight)
@@ -112,7 +112,7 @@ def test_watch_follows_a_moving_ball():
     images, _, _ = sequence(start + over + 20, drift=drift)
     errors = {}
     for watch in (False, True):
-        tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=watch))
+        tracker = Tracker(config(), *SIZE, TrackParams(center_watch=watch))
         wrong = []
         for image, _ in images:
             result = tracker.process_frame(image)
@@ -141,7 +141,7 @@ def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
         return shifted(move * float(np.clip((i - start) / over, 0.0, 1.0)))
 
     images, _, _ = sequence(start + over + 20, drift=drift)
-    tracker = Tracker(config(), *SIZE, TrackParams(centre_watch=True))
+    tracker = Tracker(config(), *SIZE, TrackParams(center_watch=True))
     kept = []  # (R_win, the version it was tracked in, the camera-frame orientation)
     moved_frames = 0
     for image, _ in images:

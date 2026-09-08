@@ -31,7 +31,7 @@ class LightingSpec:
     drift_amp: float = 0.0  # slow fractional gain drift over the clip
     # Shadow cast by the holder the ball sits in: the surface is progressively occluded
     # from the lamps below `holder_elevation` (as a fraction of the ball radius, measured
-    # down the image from the centre), losing up to `holder_shadow` of its illumination
+    # down the image from the center), losing up to `holder_shadow` of its illumination
     # over `holder_softness` radii. Fixed in the camera frame, like the rest of the
     # shading, so it darkens the texture that rotates past it rather than moving with it.
     holder_shadow: float = 0.0
@@ -66,7 +66,7 @@ class Renderer:
     def __init__(
         self,
         camera: Camera,
-        centre,
+        center,
         half_angle: float,
         texture: Texture,
         lighting: LightingSpec,
@@ -84,10 +84,10 @@ class Renderer:
         self.rng = rng
         h, w = camera.height, camera.width
 
-        self.set_centre(centre, half_angle)
+        self.set_center(center, half_angle)
         # The animal is tethered above the ball, so it stays where it was even if the
         # ball moves: its anchor and size are frozen at the first frame's geometry.
-        self.body_anchor_px = self.centre_px
+        self.body_anchor_px = self.center_px
         self.body_radius_px = self.radius_px
 
         yy, xx = np.mgrid[0:h, 0:w]
@@ -108,27 +108,27 @@ class Renderer:
             spot = np.exp(-((xx - dx) ** 2 + (yy - dy) ** 2) / (2 * rad**2))
             self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
 
-    def set_centre(self, centre, half_angle: float | None = None) -> None:
-        """Point the ball at `centre`, rebuilding everything that depends on where it is.
+    def set_center(self, center, half_angle: float | None = None) -> None:
+        """Point the ball at `center`, rebuilding everything that depends on where it is.
 
         Costs about 0.1 s at 3x supersampling, so scenes call it only on the frames where
         the ball has actually moved.
         """
         camera, sensor = self.camera, self.sensor
         h, w = camera.height, camera.width
-        self.centre = normalize(np.asarray(centre, dtype=np.float64))
+        self.center = normalize(np.asarray(center, dtype=np.float64))
         if half_angle is not None:
             self.half_angle = float(half_angle)
 
-        outline = ball_outline(camera, self.centre, self.half_angle, 90)
+        outline = ball_outline(camera, self.center, self.half_angle, 90)
         margin = int(np.ceil(4 * sensor.blur_sigma + 2))
         x0 = max(0, int(np.floor(outline[:, 0].min())) - margin)
         y0 = max(0, int(np.floor(outline[:, 1].min())) - margin)
         x1 = min(w, int(np.ceil(outline[:, 0].max())) + margin)
         y1 = min(h, int(np.ceil(outline[:, 1].max())) + margin)
         self.bbox = (x0, y0, x1, y1)
-        cx, cy, _ = camera.project(self.centre)
-        self.centre_px = (float(cx), float(cy))
+        cx, cy, _ = camera.project(self.center)
+        self.center_px = (float(cx), float(cy))
         self.radius_px = float(np.max(np.hypot(outline[:, 0] - cx, outline[:, 1] - cy)))
 
         ss = sensor.supersample
@@ -137,12 +137,12 @@ class Renderer:
         X, Y = np.meshgrid(xs, ys)
         rays = camera.rays(X, Y)
         radius = np.sin(self.half_angle)
-        b = rays @ self.centre
+        b = rays @ self.center
         disc = b * b - (1.0 - radius * radius)
         self.hit = disc >= 0.0
         t = b - np.sqrt(np.where(self.hit, disc, 0.0))
         points = t[..., None] * rays
-        normals = normalize(points - self.centre)
+        normals = normalize(points - self.center)
         normals[~self.hit] = 0.0
         self.normals = normals.astype(np.float32)
 
@@ -171,7 +171,7 @@ class Renderer:
         horizontal band fixed in the camera frame: the texture rotates through it.
         """
         lt = self.lighting
-        c = np.asarray(self.centre, dtype=np.float64)
+        c = np.asarray(self.center, dtype=np.float64)
         down = normalize(np.cross(c, np.cross([0.0, 1.0, 0.0], c)))
         h = normals @ down
         t = (h - lt.holder_elevation) / max(lt.holder_softness, 1e-6)
@@ -237,12 +237,12 @@ class Renderer:
         """FicTrac-style flat polygon of the body silhouette, or None."""
         if not self.occluders.body:
             return None
-        cx, cy = self._body_centre()
+        cx, cy = self._body_center()
         axes = (int(0.38 * self.body_radius_px), int(0.22 * self.body_radius_px))
         pts = cv2.ellipse2Poly((int(cx), int(cy)), axes, 0, 0, 360, 20)
         return [int(v) for v in pts.ravel()]
 
-    def _body_centre(self) -> tuple[float, float]:
+    def _body_center(self) -> tuple[float, float]:
         cx, cy = self.body_anchor_px
         return cx, cy - 0.78 * self.body_radius_px
 
@@ -251,11 +251,11 @@ class Renderer:
         cx, cy = self.body_anchor_px
         r = self.body_radius_px
         if occ.body:
-            bx, by = self._body_centre()
+            bx, by = self._body_center()
             axes = (int(0.38 * r), int(0.22 * r))
             cv2.ellipse(img, (int(bx), int(by)), axes, 0, 0, 360, 28.0, -1, cv2.LINE_AA)
         if occ.legs > 0:
-            bx, by = self._body_centre()
+            bx, by = self._body_center()
             thick = max(1, round(occ.leg_thickness_px * r))
             for k in range(occ.legs):
                 side = -1.0 if k % 2 == 0 else 1.0

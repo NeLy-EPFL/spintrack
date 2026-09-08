@@ -1,6 +1,6 @@
 """Where does the photometric cost put the ball's radius, and where does truth put it?
 
-Scales a scene's `roi_circ` about its own centre and reports, per scale, the median cost
+Scales a scene's `roi_circ` about its own center and reports, per scale, the median cost
 and the rotation gain against ground truth. The question it answers is whether the cost
 minimum can be used as evidence about the radius at all: if it sits at the true radius on
 scenes where the truth is known, then a disagreement on real data is about the real data.
@@ -29,8 +29,8 @@ def scaled_points(points: np.ndarray, scale: float) -> list[int]:
     """`roi_circ` scaled about the circle its points describe."""
     a = np.stack([2.0 * points[:, 0], 2.0 * points[:, 1], np.ones(len(points))], 1)
     sol, *_ = np.linalg.lstsq(a, (points**2).sum(axis=1), rcond=None)
-    centre = np.array([sol[0], sol[1]])
-    return [round(float(v)) for xy in centre + (points - centre) * scale for v in xy]
+    center = np.array([sol[0], sol[1]])
+    return [round(float(v)) for xy in center + (points - center) * scale for v in xy]
 
 
 def track(scene: str, points: list[int], n_frames: int):

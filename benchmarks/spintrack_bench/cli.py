@@ -78,7 +78,7 @@ def run_system(system: str, dataset: Path, workdir: Path, overrides: dict) -> tu
     n = len(truth["w_cam"])
     if system in BINARIES:
         res = run_fictrac(BINARIES[system], dataset, workdir, overrides, system=system)
-        dat = window_to_camera_frame(res.dat, truth["centre"])
+        dat = window_to_camera_frame(res.dat, truth["center"])
         frames = dat[:, 0].astype(int)
         est = np.full((n, 3), np.nan)
         ok = (frames >= 0) & (frames < n)

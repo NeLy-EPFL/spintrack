@@ -3,7 +3,7 @@ import numpy as np
 from spintrack.camera import (
     EquidistantCamera,
     PinholeCamera,
-    pixel_centres,
+    pixel_centers,
     source_camera,
 )
 
@@ -20,10 +20,10 @@ def _round_trip(cam):
 def test_pinhole_round_trip_and_fov():
     cam = PinholeCamera(640, 480, 45.0)
     _round_trip(cam)
-    centre = cam.rays(320.0, 240.0)
-    assert np.allclose(centre, [0, 0, 1])
+    center = cam.rays(320.0, 240.0)
+    assert np.allclose(center, [0, 0, 1])
     top = cam.rays(320.0, 0.0)
-    assert np.isclose(np.degrees(np.arccos(top @ centre)), 22.5)
+    assert np.isclose(np.degrees(np.arccos(top @ center)), 22.5)
 
 
 def test_equidistant_round_trip_and_linear_angle():
@@ -32,7 +32,7 @@ def test_equidistant_round_trip_and_linear_angle():
     for r in (10.0, 100.0, 200.0):
         d = cam.rays(320.0 + r, 240.0)
         assert np.isclose(np.arccos(d[2]), r * cam.rad_per_pixel)
-    assert np.allclose(np.linalg.norm(cam.rays(*pixel_centres(4, 5)), axis=-1), 1.0)
+    assert np.allclose(np.linalg.norm(cam.rays(*pixel_centers(4, 5)), axis=-1), 1.0)
 
 
 def test_source_camera_selects_model():

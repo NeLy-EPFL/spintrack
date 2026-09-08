@@ -26,7 +26,7 @@ UNSEEN = 128  # the mid-gray FicTrac uses for a tile it has never looked at
 CONTRAST = 40.0  # normalized intensity per gray level, shared by every map rendering
 
 # The six cube faces the map is stored on, as (forward, right, up): `forward` is the
-# face centre, `right` and `up` span it. The poles of the equal-area grid are at +/-y,
+# face center, `right` and `up` span it. The poles of the equal-area grid are at +/-y,
 # so they land in the middle of two faces.
 _FACES = {
     "-x": ((-1, 0, 0), (0, 0, 1), (0, 1, 0)),
@@ -116,7 +116,7 @@ def load_illumination(
 
     The fields live in window pixels, so a map saved for a different window size cannot
     supply them; that is not an error, the run just learns its own. `geometry` carries
-    the `centre` and `half_angle` they were measured at, which the caller needs in order
+    the `center` and `half_angle` they were measured at, which the caller needs in order
     to resample them into its own window.
     """
     path = Path(path)
@@ -124,7 +124,7 @@ def load_illumination(
         return {}, {}
     with np.load(path) as z:
         fields = {k: z[k].astype(np.float32) for k in ILLUM_KEYS if k in z.files}
-        geometry = {k: z[k] for k in ("centre", "half_angle") if k in z.files}
+        geometry = {k: z[k] for k in ("center", "half_angle") if k in z.files}
     fields = {
         k.removeprefix("illum_"): v
         for k, v in fields.items()
@@ -270,7 +270,7 @@ def _tile_directions(face: int, forward, right, up) -> np.ndarray:
 
     Equi-angular (`s' = tan(pi s / 4)`) rather than the plain gnomonic `s'= s`: it costs
     one `tan` and brings the solid angle per texel from a 5.2:1 spread between face
-    centre and corner down to 1.41:1, with near-square texels throughout.
+    center and corner down to 1.41:1, with near-square texels throughout.
     """
     s = np.tan(0.25 * np.pi * (2.0 * (np.arange(face) + 0.5) / face - 1.0))
     right_s, up_s = np.meshgrid(s, -s)

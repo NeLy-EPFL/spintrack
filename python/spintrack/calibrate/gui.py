@@ -4,7 +4,7 @@ Keys: `c` mark ball rim points (Enter fits the circle), `i` draw an ignore polyg
 closes it), `s` mark the four corners of a calibration square (TL, TR, BR, BL; Enter solves;
 `p` cycles the plane xy/yz/xz), `a` set the camera position with sliders, `u` undo the last
 point, `w` write the config, `q` quit. The status bar shows the cursor angle about the ball
-centre (a protractor).
+center (a protractor).
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ class CalibrationApp:
         x, y = self._img_xy(event)
         ang = self.session.cursor_angle(x, y)
         extra = (
-            f"  cursor angle about ball centre: {ang:+.1f} deg"
+            f"  cursor angle about ball center: {ang:+.1f} deg"
             if ang is not None
             else ""
         )
@@ -111,7 +111,7 @@ class CalibrationApp:
         if self.mode == "circle":
             ok = s.fit_circle()
             msg = (
-                f"ball: centre {np.round(s.centre, 4)} half-angle {np.degrees(s.half_angle):.2f} deg"
+                f"ball: center {np.round(s.center, 4)} half-angle {np.degrees(s.half_angle):.2f} deg"
                 if ok
                 else "need 3+ points"
             )

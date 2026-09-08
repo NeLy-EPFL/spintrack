@@ -16,11 +16,11 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_detect import render
 from test_engine import make_texture
 
-CENTRE = normalize(np.array([0.0, 0.0, 1.0]))
+CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 
 
 def write_video(
-    path, size, centre, half, n, vfov=40.0, seed=0, step=(0.02, 0.05, 0.01)
+    path, size, center, half, n, vfov=40.0, seed=0, step=(0.02, 0.05, 0.01)
 ):
     """A rotating textured ball, as a temporary video file."""
     rng = np.random.default_rng(seed)
@@ -32,7 +32,7 @@ def write_video(
     for i in range(n):
         if i > 0:
             R = rotvec_to_matrix(step) @ R
-        frame = render(texture, R, rng, size, centre, half, occluders=False)
+        frame = render(texture, R, rng, size, center, half, occluders=False)
         writer.write(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
     writer.release()
     return path
@@ -46,21 +46,21 @@ def base_config(**kwargs) -> Config:
 
 def test_prepare_fills_a_config_that_has_no_ball(tmp_path):
     size, half = (320, 240), 0.15
-    video = write_video(tmp_path / "ball.mp4", size, CENTRE, half, 40)
+    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
     cfg = base_config(vfov=40.0)
     assert not cfg.has_ball()
     prepared = prepare_config(cfg, str(video))
     assert prepared.ball_source == "detected"
     assert cfg.has_ball() and len(cfg.roi_circ) >= 24
     assert abs(cfg.roi_r / half - 1) < 0.02, cfg.roi_r
-    assert np.allclose(cfg.roi_c, CENTRE, atol=2e-3)
+    assert np.allclose(cfg.roi_c, CENTER, atol=2e-3)
 
 
 def test_prepare_reports_disagreement_but_keeps_the_config_ball(tmp_path):
     size, half = (320, 240), 0.15
-    video = write_video(tmp_path / "ball.mp4", size, CENTRE, half, 40)
+    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
     camera = PinholeCamera(size[0], size[1], 40.0)
-    cx, cy, r = pixel_circle(camera, CENTRE, half)
+    cx, cy, r = pixel_circle(camera, CENTER, half)
     angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
     wrong = 0.85 * r  # a hand-fitted circle 15% too small
     cfg = base_config(vfov=40.0)
@@ -86,12 +86,12 @@ def test_prepare_refuses_a_live_camera():
 def test_vfov_is_fitted_when_the_ball_fills_the_frame(tmp_path):
     """A 16 deg half-angle: perspective across the ball pins the field of view down."""
     size, half, vfov = (160, 120), 0.28, 40.0
-    video = write_video(tmp_path / "wide.mp4", size, CENTRE, half, 200, vfov=vfov)
+    video = write_video(tmp_path / "wide.mp4", size, CENTER, half, 200, vfov=vfov)
     camera = PinholeCamera(size[0], size[1], vfov)
     fit = fit_vfov(
         str(video),
         base_config(vfov=vfov),
-        pixel_circle(camera, CENTRE, half),
+        pixel_circle(camera, CENTER, half),
         n_frames=200,
         grid=(10.0, 120.0, 5),
     )
@@ -102,12 +102,12 @@ def test_vfov_is_fitted_when_the_ball_fills_the_frame(tmp_path):
 def test_vfov_is_not_identifiable_on_a_near_orthographic_view(tmp_path):
     """A ball spanning a degree: any vfov in the flat region gives the same rotation."""
     size, half, vfov = (160, 120), 0.02, 3.0
-    video = write_video(tmp_path / "small.mp4", size, CENTRE, half, 200, vfov=vfov)
+    video = write_video(tmp_path / "small.mp4", size, CENTER, half, 200, vfov=vfov)
     camera = PinholeCamera(size[0], size[1], vfov)
     fit = fit_vfov(
         str(video),
         base_config(vfov=vfov),
-        pixel_circle(camera, CENTRE, half),
+        pixel_circle(camera, CENTER, half),
         n_frames=200,
         grid=(1.0, 30.0, 5),
     )
@@ -122,8 +122,8 @@ def test_scale_check_does_not_change_tracking(tmp_path):
     from spintrack.tracker import Tracker
 
     size, half = (160, 120), 0.28
-    video = write_video(tmp_path / "ball.mp4", size, CENTRE, half, 60)
-    cfg = base_config(vfov=40.0, roi_c=list(CENTRE), roi_r=half)
+    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 60)
+    cfg = base_config(vfov=40.0, roi_c=list(CENTER), roi_r=half)
     runs = []
     for stride in (0, 5):
         source = VideoSource(video)
@@ -148,10 +148,10 @@ def test_scale_check_reads_a_wrong_radius_on_a_rotating_ball(tmp_path):
     from spintrack.tracker import Tracker
 
     size, half = (160, 120), 0.28
-    video = write_video(tmp_path / "ball.mp4", size, CENTRE, half, 120)
+    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 120)
     read = {}
     for scale in (1.0, 0.9, 1.1):
-        cfg = base_config(vfov=40.0, roi_c=list(CENTRE), roi_r=half * scale)
+        cfg = base_config(vfov=40.0, roi_c=list(CENTER), roi_r=half * scale)
         source = VideoSource(video)
         tracker = Tracker(
             cfg, source.width, source.height, TrackParams(scale_check_stride=1)

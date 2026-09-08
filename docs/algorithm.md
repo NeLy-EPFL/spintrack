@@ -173,7 +173,7 @@ at a correct radius; the three real trials of one rig, whose radii the detector 
 control pair). Anything image-fixed in the outer annulus is what remains: it holds that region
 back, and a control pair built from one frame cannot see it. `occluded`, whose `roi_ignr`
 covers the animal's body but not its six legs, reads 1.1-2.9% too large; scaling that
-polygon by 2.5 about its own centre - 22% of the window's pixels - leaves 0.6-0.8. So the
+polygon by 2.5 about its own center - 22% of the window's pixels - leaves 0.6-0.8. So the
 mask wants to cover the legs, not just the body. The holder shadow does the same thing more
 gently: `lab_big_shadow` and `lab_big_ball` differ in nothing else, and their corrected
 ratios differ by 1%, which is half a percentage point of radius.

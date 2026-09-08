@@ -17,7 +17,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_engine import make_texture
 
 CAM = PinholeCamera(320, 240, 40.0)
-CENTRE = normalize(np.array([0.05, -0.03, 1.0]))
+CENTER = normalize(np.array([0.05, -0.03, 1.0]))
 HALF = 0.25
 SIZE = 60
 # Fast enough to converge inside a test; the shipped defaults are ten times slower.
@@ -37,8 +37,8 @@ def shading(size: int, start: float = 0.68, amp: float = 0.7, glow: float = 0.08
 
 
 def geometry():
-    mask = source_mask(CAM, CENTRE, HALF)
-    return window_geometry(CAM, CENTRE, HALF, SIZE, mask)
+    mask = source_mask(CAM, CENTER, HALF)
+    return window_geometry(CAM, CENTER, HALF, SIZE, mask)
 
 
 def render(geom, texture, R, rng, shade=None, glow=None):
@@ -155,7 +155,7 @@ def test_window_move_carries_the_field_with_the_window():
     band_before = before[geom.mask & edge].mean()
     # A window aimed slightly differently: the field follows the window, so the shadow
     # must still sit at the bottom of it, not be rotated away with the map.
-    moved = normalize(CENTRE + np.array([0.0, 0.004, 0.0]))
+    moved = normalize(CENTER + np.array([0.0, 0.004, 0.0]))
     new_geom = window_geometry(CAM, moved, HALF, SIZE, source_mask(CAM, moved, HALF))
     Q = new_geom.to_camera.T @ geom.to_camera
     engine.rebuild(new_geom, Q)
@@ -173,7 +173,7 @@ def test_a_ball_that_moved_in_its_holder_forgets_the_field():
     """
     engine, geom, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
     assert np.abs(engine.photometry.bias).max() > 0.1  # there is something to lose
-    moved = normalize(CENTRE + np.array([0.0, 0.05, 0.0]))  # ~0.05 rad, HALF is 0.25
+    moved = normalize(CENTER + np.array([0.0, 0.05, 0.0]))  # ~0.05 rad, HALF is 0.25
     new_geom = window_geometry(CAM, moved, HALF, SIZE, source_mask(CAM, moved, HALF))
     engine.rebuild(new_geom, new_geom.to_camera.T @ geom.to_camera)
     assert np.array_equal(engine.photometry.bias, np.zeros((SIZE, SIZE)))
@@ -206,14 +206,14 @@ def test_illumination_fn_loads_the_fields_and_leaves_the_map_alone(tmp_path):
     state = engine.photometry.state()
     mean, weight = engine.export_map()
     path = save_map(
-        tmp_path / "m.npz", mean, weight, window_size=SIZE, centre=CENTRE,
+        tmp_path / "m.npz", mean, weight, window_size=SIZE, center=CENTER,
         half_angle=HALF, illum_bias=state["bias"], illum_gain=state["gain"],
         illum_wt=state["wt"],
     )  # fmt: skip
-    cfg = Config(vfov=CAM.vfov_deg, q_factor=SIZE // 10, roi_c=list(CENTRE), roi_r=HALF)
+    cfg = Config(vfov=CAM.vfov_deg, q_factor=SIZE // 10, roi_c=list(CENTER), roi_r=HALF)
     cfg.c2a_r = [0.0, 0.0, 0.0]
     cfg.illumination_fn = str(path)
-    tracker = Tracker(cfg, CAM.width, CAM.height, TrackParams(centre_watch=False))
+    tracker = Tracker(cfg, CAM.width, CAM.height, TrackParams(center_watch=False))
     photo = tracker.engine.photometry
     got, want = photo.bias[photo.mask], state["bias"][photo.mask]
     assert np.corrcoef(got, want)[0, 1] > 0.99

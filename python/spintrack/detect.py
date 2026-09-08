@@ -85,7 +85,7 @@ class DetectionError(RuntimeError):
 class BallDetection:
     """The ball's image circle, in the continuous pixel coordinates `camera.rays` takes.
 
-    Pixel `(i, j)` of the array has its centre at `(x, y) = (j + 0.5, i + 0.5)`, and the
+    Pixel `(i, j)` of the array has its center at `(x, y) = (j + 0.5, i + 0.5)`, and the
     principal point sits at `(width / 2, height / 2)`. This is the convention of
     `spintrack.camera` and of FicTrac's `roi_circ`, and it differs by half a pixel from
     raw numpy indices: mixing the two biases `fit_ball`.
@@ -106,7 +106,7 @@ class BallDetection:
 
     @property
     def arc_fraction(self) -> float:
-        """Fraction of the directions around the centre that carry a rim point.
+        """Fraction of the directions around the center that carry a rim point.
 
         Support spread all the way around conditions the fit; support on one short arc
         does not, whether the rest of the rim is out of frame or merely hidden.
@@ -120,7 +120,7 @@ class BallDetection:
         pinhole camera the silhouette of a sphere is an ellipse, and off-axis that
         matters. On `offaxis` (8 deg half-angle, 16 deg off the axis, less than half the
         rim in frame) resampling the fitted circle costs 3.7% of radius and 0.46 deg of
-        centre, while the measured rim is exact. Each point is the median of the
+        center, while the measured rim is exact. Each point is the median of the
         accepted rays in its angular bin, so it is also quieter than any single ray.
         """
         if self.rim_theta is None or len(self.rim_theta) < 3:
@@ -276,7 +276,7 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     if not contours:
         raise DetectionError("foreground component has no contour")
     hull = cv2.convexHull(max(contours, key=cv2.contourArea))[:, 0, :]
-    pts = hull.astype(np.float64) + 0.5  # cv2 gives pixel indices, we want centres
+    pts = hull.astype(np.float64) + 0.5  # cv2 gives pixel indices, we want centers
     inside = (
         (pts[:, 0] > 3.5) & (pts[:, 0] < w - 3.5)
         & (pts[:, 1] > 3.5) & (pts[:, 1] < h - 3.5)
@@ -400,7 +400,7 @@ class RimFit:
     rim_fraction: float  # accepted rays over the rays that stay inside the image
     residual_px: float
     strength: float  # median edge strength of the accepted rays
-    theta: np.ndarray  # accepted ray angles about the fitted centre
+    theta: np.ndarray  # accepted ray angles about the fitted center
     radius: np.ndarray  # measured rim radius along each of those rays
 
 
@@ -414,7 +414,7 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
             raise DetectionError("too few rim points survived the edge search")
         keep_r, keep_a = edge_r[ok], angles[ok]
         pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
-        # IRLS with Tukey weights on the radial residual, started from the RANSAC centre
+        # IRLS with Tukey weights on the radial residual, started from the RANSAC center
         # and the median measured radius rather than from an unweighted fit: something
         # bright lying across one sector of the rim (a holder, a leg) pulls an
         # unweighted fit far enough that the offending rays stop looking like outliers,
@@ -447,7 +447,7 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
     cx, cy, r = _fit_circle(pts, weights)
     d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
     residual = float(np.sqrt(np.average(d**2, weights=weights)))
-    # Re-express the kept rim about the final centre, which the polar grid was not on.
+    # Re-express the kept rim about the final center, which the polar grid was not on.
     dx, dy = pts[:, 0] - cx, pts[:, 1] - cy
     return RimFit(
         cx=cx,
@@ -468,7 +468,7 @@ class BallRelocation:
     cx: float
     cy: float
     rim_fraction: float  # accepted rays, over the rays that stay inside the image
-    arc_fraction: float  # directions about the centre that carry an accepted ray
+    arc_fraction: float  # directions about the center that carry an accepted ray
     residual_px: float
     n_frames: int
     polarity: float  # +1 when the ball is brighter than what surrounds it
@@ -488,7 +488,7 @@ def relocate_ball(
     min_rim_fraction: float = 0.4,
     min_arc_fraction: float = 0.25,
 ) -> BallRelocation:
-    """Re-measure the centre of a ball whose radius is already known.
+    """Re-measure the center of a ball whose radius is already known.
 
     This is `detect_ball`'s job stripped to what following a moving ball needs, and it
     is two orders of magnitude cheaper: the temporal quantile is taken on the polar rim
@@ -499,13 +499,13 @@ def relocate_ball(
 
     Holding the radius fixed is not only cheaper but better conditioned. On the real
     trials the ball is cut off at the top and bottom of the frame, so the rim is two
-    side arcs; those pin a free circle's centre badly in y (4.3 px of scatter) and a
+    side arcs; those pin a free circle's center badly in y (4.3 px of scatter) and a
     known-radius circle's well (1.4-2.5 px).
 
     `polarity` may be left out, in which case it is read off the profile: the rim band
-    is centred on the silhouette, so its inner quarter is ball and its outer quarter is
+    is centerd on the silhouette, so its inner quarter is ball and its outer quarter is
     whatever surrounds it. `cut` fixes the fit's outlier cut in pixels (see
-    `_fit_centre`).
+    `_fit_center`).
 
     Rays through the config's `roi_ignr` are deliberately *not* left out. With the
     animal at the top of the ball that removes the rim's upper arc, and a circle of
@@ -541,19 +541,19 @@ def relocate_ball(
         raise DetectionError("too few rim points survived the edge search")
     keep_r, keep_a = edge_r[ok], angles[ok]
     pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
-    centre, weights, d = _fit_centre(pts, np.array([cx, cy]), r, cut=cut, band=band)
+    center, weights, d = _fit_center(pts, np.array([cx, cy]), r, cut=cut, band=band)
     residual = _weighted_rms(d, weights)
     keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
     if keep.sum() >= 8:
-        centre, weights, d = _fit_centre(pts[keep], centre, r, cut=cut)
+        center, weights, d = _fit_center(pts[keep], center, r, cut=cut)
         pts = pts[keep]
         residual = _weighted_rms(d, weights)
-    theta = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])
+    theta = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
     rim_fraction = len(pts) / max(usable.sum(), 1)
     arc_fraction = _theta_coverage(theta)
     return BallRelocation(
-        cx=float(centre[0]),
-        cy=float(centre[1]),
+        cx=float(center[0]),
+        cy=float(center[1]),
         rim_fraction=float(rim_fraction),
         arc_fraction=arc_fraction,
         residual_px=residual,
@@ -588,7 +588,7 @@ def _weighted_rms(d, weights) -> float:
     return float(np.sqrt(float(np.sum(weights * d * d)) / total))
 
 
-def _fit_centre(pts, centre, r, rounds: int = 8, cut=None, band=None):
+def _fit_center(pts, center, r, rounds: int = 8, cut=None, band=None):
     """Robust least-squares center of a circle of known radius `r` through `pts`.
 
     Minimizing `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
@@ -605,7 +605,7 @@ def _fit_centre(pts, centre, r, rounds: int = 8, cut=None, band=None):
     weights = np.ones(len(pts))
     d = np.zeros(len(pts))
     for k in range(rounds):
-        delta = pts - centre
+        delta = pts - center
         dist = np.hypot(delta[:, 0], delta[:, 1])
         d = dist - r
         if cut is not None:
@@ -623,8 +623,8 @@ def _fit_centre(pts, centre, r, rounds: int = 8, cut=None, band=None):
         total = float(weights.sum())
         if total <= 0:
             break
-        centre = (weights[:, None] * (pts - r * unit)).sum(0) / total
-    return centre, weights, d
+        center = (weights[:, None] * (pts - r * unit)).sum(0) / total
+    return center, weights, d
 
 
 def _confidence(

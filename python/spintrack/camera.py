@@ -1,7 +1,7 @@
 """Central camera models mapping between pixels and view directions.
 
 Conventions (shared with FicTrac so its configs stay valid): camera axes x right, y
-down, z forward; pixel coordinates are continuous with the centre of pixel `(i, j)` at
+down, z forward; pixel coordinates are continuous with the center of pixel `(i, j)` at
 `(i + 0.5, j + 0.5)`. All methods are vectorized over leading dimensions.
 """
 
@@ -27,12 +27,12 @@ class PinholeCamera:
         return (self.height / 2.0) / np.tan(np.radians(self.vfov_deg) / 2.0)
 
     @property
-    def centre(self) -> tuple[float, float]:
+    def center(self) -> tuple[float, float]:
         return self.width / 2.0, self.height / 2.0
 
     def rays(self, x, y) -> np.ndarray:
         """Unit view directions (..., 3) for continuous pixel coordinates."""
-        cx, cy = self.centre
+        cx, cy = self.center
         f = self.focal_px
         x = np.asarray(x, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
@@ -42,7 +42,7 @@ class PinholeCamera:
     def project(self, v) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Directions (..., 3) -> continuous pixel coords `(x, y, valid)`."""
         v = np.asarray(v, dtype=np.float64)
-        cx, cy = self.centre
+        cx, cy = self.center
         z = v[..., 2]
         with np.errstate(divide="ignore", invalid="ignore"):
             x = cx + self.focal_px * v[..., 0] / z
@@ -70,11 +70,11 @@ class EquidistantCamera:
         return cls(size, size, extent_rad / size)
 
     @property
-    def centre(self) -> tuple[float, float]:
+    def center(self) -> tuple[float, float]:
         return self.width / 2.0, self.height / 2.0
 
     def rays(self, x, y) -> np.ndarray:
-        cx, cy = self.centre
+        cx, cy = self.center
         dx = np.asarray(x, dtype=np.float64) - cx
         dy = np.asarray(y, dtype=np.float64) - cy
         r = np.hypot(dx, dy)
@@ -85,7 +85,7 @@ class EquidistantCamera:
 
     def project(self, v) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         v = normalize(v)
-        cx, cy = self.centre
+        cx, cy = self.center
         theta = np.arccos(np.clip(v[..., 2], -1.0, 1.0))
         rxy = np.hypot(v[..., 0], v[..., 1])
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -102,8 +102,8 @@ def _inside(x, y, width: int, height: int) -> np.ndarray:
     return (x >= 0) & (x <= width) & (y >= 0) & (y <= height)
 
 
-def pixel_centres(height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
-    """Continuous coordinates `(x, y)` of every pixel centre, each of shape (h, w)."""
+def pixel_centers(height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """Continuous coordinates `(x, y)` of every pixel center, each of shape (h, w)."""
     ys, xs = np.mgrid[0:height, 0:width]
     return xs + 0.5, ys + 0.5
 
