@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: spintrack
+message: If you use this software, please cite it using these metadata.
+type: software
+authors:
+  - given-names: Thomas
+    family-names: Lam
+    email: thomas.lam@epfl.ch
+    affiliation: "Neuroengineering Laboratory (Ramdya lab), EPFL"
+repository-code: "https://github.com/NeLy-EPFL/spintrack"
+abstract: >-
+  Track the 3D rotation of a spherical treadmill (trackball) from video and
+  reconstruct fictive paths. spintrack reads FicTrac configuration files and
+  writes FicTrac's output format, and estimates rotation photometrically against
+  an accumulated surface map of the ball.
+keywords:
+  - trackball
+  - spherical treadmill
+  - fictive path
+  - drosophila
+  - tracking
+license: Apache-2.0
+version: 0.1.0
