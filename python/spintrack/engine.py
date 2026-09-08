@@ -490,12 +490,16 @@ class TrackEngine:
             n, old_cam.rad_per_pixel, self.geometry.to_camera.T @ old_to_camera
         )
 
-    def step(self, window: np.ndarray) -> StepResult:
-        """Track one remapped grayscale window (uint8, window_size x window_size)."""
+    def observation(self, window: np.ndarray) -> np.ndarray:
+        """The normalized, illumination-corrected window the solver compares."""
         photo = self.photometry
         if photo.flat is not None:
             window = photo.flat.apply(window)
-        obs = photo.correct(self.normalize(window))
+        return photo.correct(self.normalize(window))
+
+    def step(self, window: np.ndarray) -> StepResult:
+        """Track one remapped grayscale window (uint8, window_size x window_size)."""
+        obs = self.observation(window)
         self.last_obs = obs
         if self._needs_localisation:
             return self._localise(obs)

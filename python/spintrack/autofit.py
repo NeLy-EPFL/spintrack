@@ -17,7 +17,7 @@ import numpy as np
 from spintrack.camera import source_camera
 from spintrack.config import Config
 from spintrack.detect import BallDetection, detect_ball, sample_frames
-from spintrack.sphere import fit_ball, pixel_circle
+from spintrack.sphere import fit_ball, pixel_circle, rotated_window
 
 log = logging.getLogger("spintrack")
 
@@ -422,43 +422,77 @@ INNER_MAX = 0.55  # window pixels with theta below this fraction of alpha are "i
 OUTER_MIN = 0.70  # and above this, "outer"
 MIN_INPLANE_DEG = 0.2  # a smaller in-plane increment carries no usable signal
 MIN_CHECKED = 50
-# Outer/inner rotation ratio against relative radius error, measured on `clean_fly`,
-# `offaxis`, `occluded`, `lab_small_ball` and `sparse` with `roi_r` scaled, a check every
-# second frame (300-360 per run) and the window pre-filter on, which flattens the
-# over-large branch (0.918 at +5% against 0.893 without it) and leaves the under-large
-# one alone; each entry is the mean over the five. The zero-error entry is 1.005 rather
-# than 1, and `radius_error_from_ratio` divides the curve by it: 1.005 is the ratio a
-# correct radius actually produces, so reading it as a ratio of 1 would bias the check at
-# its own zero. At a correct radius the five scenes spread from 0.971 (`lab_small_ball`)
-# to 1.031 (`offaxis`), about two percentage points of radius either way, which is this
-# check's noise floor; the near-orthographic `lab_small_ball` sits on the same curve as
-# the 11-degree `clean_fly` to that precision, so one curve serves both regimes.
+# How the outer/inner ratio responds to a relative radius error, and what a *correct*
+# radius reads. The two are separate because the reading at a correct radius is not 1
+# and is not universal: it is set by the geometry (see `RATIO_ZERO`), while the response
+# to a radius error is nearly the same everywhere.
 #
-# The near-orthographic prediction (a point at normalised offset t sits at depth
-# sqrt(1 - t^2) and moves by omega times that depth, so a solver assuming radius 1 + eps
-# reports omega sqrt(1 - t^2) / sqrt((1 + eps)^2 - t^2)) has the right shape but is far too
-# steep: it wants a ratio of 1.6 at -10% where the measurement says 1.12. The window is
-# resampled at the assumed radius, which flattens the difference between the two regions,
-# so the calibration is measured rather than derived.
-RATIO_CALIBRATION = (
-    (-0.10, 1.121),
-    (-0.05, 1.068),
-    (0.00, 1.005),
-    (0.05, 0.918),
-    (0.10, 0.811),
+# Both are measured on the ratio each recording's own control pair has divided out
+# (`ScaleCheck.step`), which is what makes the response scene-independent. Measured over
+# 18 synthetic scenes with `roi_r` scaled, a check every second frame (300-480 per run)
+# and the shipped pre-filter: each entry is the mean of the per-scene ratio over that
+# scene's own reading at a correct radius, and the scenes agree on it to 0.4-1.5%. The
+# raw ratio does not behave that way - over the same scenes it reads 0.962 to 1.062 at a
+# correct radius, which is 6 percentage points of radius, because how much of each
+# region's motion the solver recovers depends on the recording's own texture and on
+# which way the ball turns. With the control pair and these two tables the reading is
+# within 0.65 pp of radius (rms over 126 scene-error pairs, each scene left out of the
+# response in turn) and within 0.5 pp at a correct radius; the exception is `occluded`,
+# where the animal's body and legs stand over the ball and the check reads 1.1-2.9% too
+# large, because a pattern that does not turn with the ball holds the outer annulus back
+# and the control pair, built from one frame, cannot see that.
+#
+# The near-orthographic prediction (a point at normalised offset t sits at depth sqrt(1
+# - t^2) and moves by omega times that depth, so a solver assuming radius 1 + eps
+# reports omega sqrt(1 - t^2) / sqrt((1 + eps)^2 - t^2)) has the right shape but is far
+# too steep: it wants a ratio of 1.6 at -10% where the measurement says 1.13. The window
+# is resampled at the assumed radius, which flattens the difference between the two
+# regions, so the calibration is measured rather than derived.
+RATIO_RESPONSE = (
+    (-0.10, 1.1326),
+    (-0.05, 1.0719),
+    (-0.02, 1.0282),
+    (0.00, 1.0000),
+    (0.02, 0.9650),
+    (0.05, 0.9080),
+    (0.10, 0.8056),
+)
+# The corrected ratio a correct radius produces, against the ball's half-angle in
+# degrees (`lab_small_ball`, `lab_big_ball`, `offaxis`, `clean_fly`; interpolated in the
+# log of the half-angle, held flat outside). It falls away from 1 as the ball gets
+# smaller because the rim of a near-orthographic ball is where the outer annulus lives
+# and where the surface is most foreshortened: at a 0.31 degree half-angle the outermost
+# ring of the window sees the surface almost edge-on, at 11 degrees the silhouette is
+# already 11 degrees short of edge-on. Between the calibrated half-angles the
+# interpolation is worth about half a percentage point of radius; the window size moves
+# it by another 0.2-0.5% of ratio between `q_factor` 6 and 24, which is not calibrated
+# for.
+RATIO_ZERO = (
+    (0.31, 0.9665),
+    (1.20, 0.9815),
+    (8.00, 1.0024),
+    (11.00, 1.0032),
 )
 
 
-def radius_error_from_ratio(ratio: float) -> float:
-    """Relative radius error implied by an outer/inner rotation ratio.
+def ratio_at_correct_radius(half_angle: float) -> float:
+    """`RATIO_ZERO` at a half-angle in radians."""
+    degrees = np.degrees(max(float(half_angle), 1e-9))
+    knots = np.log(np.array([a for a, _ in RATIO_ZERO]))
+    values = np.log(np.array([r for _, r in RATIO_ZERO]))
+    return float(np.exp(np.interp(np.log(degrees), knots, values)))
 
-    Interpolates `RATIO_CALIBRATION` (monotone decreasing), extrapolating linearly in the
-    log of the ratio beyond the calibrated range so that a gross error still reads gross.
+
+def radius_error_from_ratio(ratio: float, half_angle: float) -> float:
+    """Relative radius error implied by a corrected outer/inner rotation ratio.
+
+    Interpolates `RATIO_RESPONSE` (monotone decreasing) against the ratio as a fraction
+    of what a correct radius reads at this half-angle, extrapolating linearly in the log
+    beyond the calibrated range so that a gross error still reads gross.
     """
-    zero = RATIO_CALIBRATION[2][1]
-    eps = np.array([e for e, _ in RATIO_CALIBRATION])
-    curve = np.log(np.array([r for _, r in RATIO_CALIBRATION]) / zero)
-    value = np.log(max(ratio, 1e-6) / zero)
+    eps = np.array([e for e, _ in RATIO_RESPONSE])
+    curve = np.log(np.array([r for _, r in RATIO_RESPONSE]))
+    value = np.log(max(ratio, 1e-6) / ratio_at_correct_radius(half_angle))
     if value >= curve[0]:
         slope = (eps[1] - eps[0]) / (curve[1] - curve[0])
         return float(eps[0] + (value - curve[0]) * slope)
@@ -472,8 +506,8 @@ def radius_error_from_ratio(ratio: float) -> float:
 class ScaleVerdict:
     """What the inner and outer parts of the window say about the assumed radius."""
 
-    # Outer gain / inner gain; `RATIO_CALIBRATION`'s zero entry when the assumed
-    # radius is right, which is 1.005 rather than 1.
+    # Outer gain over inner gain, divided by what the same recording reads on a pair it
+    # cannot disagree about; `RATIO_ZERO` at this half-angle when the radius is right.
     ratio: float
     radius_err_pct: float
     ci_pct: tuple[float, float]
@@ -493,8 +527,8 @@ class ScaleVerdict:
         if self.verdict == "insufficient motion":
             return f"not enough in-plane rotation to check (n={self.n_checked})"
         return (
-            f"inner/outer ratio {self.ratio:.3f} (n={self.n_checked}) -> assumed radius "
-            f"{self.radius_err_pct:+.1f}% "
+            f"outer/inner ratio {self.ratio:.3f} against its control "
+            f"(n={self.n_checked}) -> assumed radius {self.radius_err_pct:+.1f}% "
             f"[{self.ci_pct[0]:+.1f}, {self.ci_pct[1]:+.1f}], {self.verdict}"
         )
 
@@ -502,21 +536,42 @@ class ScaleVerdict:
 class ScaleCheck:
     """Independent check that the ball's assumed radius is right, run while tracking.
 
-    Solving the same frame-to-frame increment on an inner disc and on an outer annulus of
-    the tracking window gives two estimates of the same rotation. They agree exactly when
-    the assumed radius is the true one, whatever that radius is, because the two regions
-    see the surface at different depths and the depth is what the assumed radius sets.
-    Rotation about the line of sight carries no depth information, so only the in-plane
-    components are compared.
+    Solving the same frame-to-frame increment on an inner disc and on an outer annulus
+    of the tracking window gives two estimates of the same rotation. They agree exactly
+    when the assumed radius is the true one, whatever that radius is, because the two
+    regions see the surface at different depths and the depth is what the assumed radius
+    sets. Rotation about the line of sight carries no depth information, so only the
+    in-plane components are compared.
+
+    They agree exactly only for a perfect solver. What the two regions actually recover
+    of a given motion also depends on the recording - on how much of each region's
+    texture the source resolves, on which way the ball turns, on what is fixed in the
+    image and does not move with the ball - and over the benchmark scenes that alone
+    moves the ratio by 5 percentage points of radius, more than the errors worth
+    reporting. So every check also solves a *control* pair: the same source frame
+    remapped twice, once as it is and once through `sphere.rotated_window`, which turns
+    the surface by the increment the frame just measured. That pair differs by exactly
+    the rotation the assumed geometry describes, so whatever the two regions disagree
+    about on it is the solver and the recording, not the radius, and the reading is
+    divided by it (`RATIO_RESPONSE`, `RATIO_ZERO`).
     """
 
-    def __init__(self, geometry, params, half_angle: float, max_checks: int = 1000):
+    def __init__(
+        self, geometry, params, half_angle: float, camera, observation, max_checks=1000
+    ):
         from spintrack._core import Engine as _Engine
 
         size = geometry.size
         rows, cols = np.divmod(geometry.index, size)
         offset = np.hypot(cols + 0.5 - size / 2.0, rows + 0.5 - size / 2.0)
         theta = geometry.rad_per_pixel * offset / max(half_angle, 1e-12)
+        self.geometry = geometry
+        self.camera = camera
+        # `TrackEngine.observation`: what the solver compares, normalization and
+        # illumination correction included, so the control pair is prepared exactly as
+        # the real one was.
+        self.observation = observation
+        self.half_angle = half_angle
         self.params = params
         self.max_checks = max_checks
         self.cores = {}
@@ -532,23 +587,22 @@ class ScaleCheck:
                 1,
                 None,
             )
+        # One entry per checked frame: the window's own increment and each region's, for
+        # the measured pair and for the control pair.
         self.rows: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        self.controls: list[tuple[np.ndarray, np.ndarray]] = []
 
     @property
     def enabled(self) -> bool:
         return len(self.cores) == 2
 
-    def step(self, obs_prev, obs, r_prev, w_win, velocity) -> None:
-        """Re-solve one frame-to-frame increment on each region and record the result."""
-        if not self.enabled or len(self.rows) >= self.max_checks:
-            return
-        if np.degrees(np.linalg.norm(w_win[:2])) < MIN_INPLANE_DEG:
-            return
+    def _solve_pair(self, first, second, r_prev, velocity) -> dict | None:
+        """Each region's increment between two observations, None if a solve fails."""
         p = self.params
         out = {}
         for name, core in self.cores.items():
             core.update(
-                obs_prev,
+                first,
                 r_prev,
                 lambda_=1.0,
                 w_max=1e6,
@@ -557,7 +611,7 @@ class ScaleCheck:
                 update_main=False,
             )
             res = core.solve(
-                obs,
+                second,
                 r_prev,
                 [float(v) for v in velocity],
                 use_prev=True,
@@ -571,12 +625,31 @@ class ScaleCheck:
                 damping=p.damping,
             )
             if not res.converged or res.inlier_frac < 0.5:
-                return
+                return None
             out[name] = np.asarray(res.w, dtype=np.float64)
-        self.rows.append((np.asarray(w_win, dtype=np.float64), out["in"], out["out"]))
+        return out
+
+    def step(self, obs_prev, obs, r_prev, w_win, velocity, gray) -> None:
+        """Re-solve one increment on each region, and the control pair's."""
+        if not self.enabled or len(self.rows) >= self.max_checks:
+            return
+        if np.degrees(np.linalg.norm(w_win[:2])) < MIN_INPLANE_DEG:
+            return
+        measured = self._solve_pair(obs_prev, obs, r_prev, velocity)
+        if measured is None:
+            return
+        turned = rotated_window(self.geometry, self.camera, self.half_angle, w_win)
+        control = self._solve_pair(
+            obs, self.observation(turned.remap(gray)), r_prev, velocity
+        )
+        if control is None:
+            return
+        w = np.asarray(w_win, dtype=np.float64)
+        self.rows.append((w, measured["in"], measured["out"]))
+        self.controls.append((control["in"], control["out"]))
 
     def result(self, rng=None) -> ScaleVerdict:
-        """Robust gains, their ratio, and what that implies about the assumed radius."""
+        """Robust gains, their ratio against the control's, and what that implies."""
         if len(self.rows) < MIN_CHECKED:
             return ScaleVerdict(
                 float("nan"), float("nan"), (float("nan"),) * 2, len(self.rows),
@@ -585,16 +658,22 @@ class ScaleCheck:
         full = np.array([r[0][:2] for r in self.rows])
         inner = np.array([r[1][:2] for r in self.rows])
         outer = np.array([r[2][:2] for r in self.rows])
-        ratio = _gain_ratio(full, inner, outer)
+        c_inner = np.array([c[0][:2] for c in self.controls])
+        c_outer = np.array([c[1][:2] for c in self.controls])
+
+        def corrected(pick):
+            measured = _gain_ratio(full[pick], inner[pick], outer[pick])
+            control = _gain_ratio(full[pick], c_inner[pick], c_outer[pick])
+            return measured / control if control else float("nan")
+
+        every = np.arange(len(full))
+        ratio = corrected(every)
         rng = rng or np.random.default_rng(0)
-        draws = []
-        for _ in range(200):
-            pick = rng.integers(0, len(full), len(full))
-            draws.append(_gain_ratio(full[pick], inner[pick], outer[pick]))
-        estimate = 100.0 * radius_error_from_ratio(ratio)
+        draws = [corrected(rng.integers(0, len(full), len(full))) for _ in range(200)]
+        estimate = 100.0 * radius_error_from_ratio(ratio, self.half_angle)
         low, high = (
-            100.0 * radius_error_from_ratio(float(v))
-            for v in np.percentile(draws, [97.5, 2.5])
+            100.0 * radius_error_from_ratio(float(v), self.half_angle)
+            for v in np.nanpercentile(draws, [97.5, 2.5])
         )
         size = abs(estimate)
         verdict = "ok" if size < 3.0 else "warn" if size < 8.0 else "fail"

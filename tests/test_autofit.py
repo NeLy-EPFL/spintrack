@@ -141,19 +141,72 @@ def test_scale_check_does_not_change_tracking(tmp_path):
     assert np.array_equal(runs[0], runs[1])
 
 
-def test_radius_error_inversion_is_monotone_and_unbiased_at_its_zero():
-    from spintrack.autofit import RATIO_CALIBRATION, radius_error_from_ratio
+def test_scale_check_reads_a_wrong_radius_on_a_rotating_ball(tmp_path):
+    """End to end: a ball tracked at its own radius, then 10% off either way."""
+    from spintrack.engine import TrackParams
+    from spintrack.io.sources import VideoSource
+    from spintrack.tracker import Tracker
 
-    # The curve's own zero-error entry must read exactly zero, not the -0.3% that
-    # taking it as a ratio of 1 gives.
-    assert radius_error_from_ratio(RATIO_CALIBRATION[2][1]) == pytest.approx(
-        0.0, abs=1e-9
+    size, half = (160, 120), 0.28
+    video = write_video(tmp_path / "ball.mp4", size, CENTRE, half, 120)
+    read = {}
+    for scale in (1.0, 0.9, 1.1):
+        cfg = base_config(vfov=40.0, roi_c=list(CENTRE), roi_r=half * scale)
+        source = VideoSource(video)
+        tracker = Tracker(
+            cfg, source.width, source.height, TrackParams(scale_check_stride=1)
+        )
+        while (frame := source.read()) is not None:
+            tracker.process_frame(frame.image, frame.ts_ms)
+        source.close()
+        read[scale] = tracker.scale_check.result()
+    # This renderer is not one of the calibration scenes and its ball is larger than any
+    # of them, so the tolerances are the check's own noise floor plus that.
+    assert read[1.0].verdict == "ok", read[1.0].line()
+    assert abs(read[1.0].radius_err_pct) < 2.0, read[1.0].line()
+    for scale, sign in ((0.9, -1.0), (1.1, 1.0)):
+        estimate = read[scale].radius_err_pct
+        assert read[scale].verdict == "fail", read[scale].line()
+        assert sign * estimate == pytest.approx(10.0, abs=4.0), read[scale].line()
+
+
+def test_radius_error_inversion_is_monotone_and_unbiased_at_its_zero():
+    from spintrack.autofit import (
+        RATIO_RESPONSE,
+        RATIO_ZERO,
+        radius_error_from_ratio,
+        ratio_at_correct_radius,
     )
-    ratios = np.linspace(0.6, 1.3, 40)
-    estimates = [radius_error_from_ratio(float(r)) for r in ratios]
-    assert np.all(np.diff(estimates) < 0), (
-        "a larger outer/inner ratio is a smaller ball"
-    )
-    # The calibration points must come back as the errors they were measured at.
-    assert radius_error_from_ratio(1.121) == pytest.approx(-0.10, abs=0.005)
-    assert radius_error_from_ratio(0.811) == pytest.approx(0.10, abs=0.005)
+
+    for degrees, _ in RATIO_ZERO:
+        half_angle = np.radians(degrees)
+        zero = ratio_at_correct_radius(half_angle)
+        # What a correct radius reads at this half-angle must read exactly zero error,
+        # not the 0.4-3.6% that taking it as a ratio of 1 would give.
+        assert radius_error_from_ratio(zero, half_angle) == pytest.approx(0.0, abs=1e-9)
+        estimates = [
+            radius_error_from_ratio(float(r), half_angle)
+            for r in np.linspace(0.6, 1.3, 40)
+        ]
+        assert np.all(np.diff(estimates) < 0), (
+            "a larger outer/inner ratio is a smaller ball"
+        )
+        # The calibration points must come back as the errors they were measured at.
+        for error, response in RATIO_RESPONSE:
+            assert radius_error_from_ratio(
+                response * zero, half_angle
+            ) == pytest.approx(error, abs=5e-4)
+
+
+def test_the_ratio_a_correct_radius_reads_follows_the_half_angle():
+    from spintrack.autofit import RATIO_ZERO, ratio_at_correct_radius
+
+    knots = [np.radians(a) for a, _ in RATIO_ZERO]
+    values = [ratio_at_correct_radius(a) for a in knots]
+    assert values == pytest.approx([r for _, r in RATIO_ZERO], rel=1e-6)
+    # Held flat outside the calibrated half-angles, monotone within them, and worth a
+    # few percent of ratio over the range: a 0.3 deg ball is not a 11 deg one.
+    assert ratio_at_correct_radius(np.radians(0.05)) == pytest.approx(values[0])
+    assert ratio_at_correct_radius(np.radians(40.0)) == pytest.approx(values[-1])
+    middle = ratio_at_correct_radius(np.radians(3.0))
+    assert values[1] < middle < values[2]

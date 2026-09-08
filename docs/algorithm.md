@@ -128,8 +128,26 @@ increment is solved again on an inner disc and an outer annulus of the tracking 
 two regions see the surface at different depths, and the depth is exactly what the assumed
 radius sets, so their ratio is fixed when the radius is right and moves monotonically when it
 is not - independently of the cost, which cannot tell an over-large ball from an under-large
-one. The fixed value is the measured 1.005 rather than exactly 1, and the inversion is
-normalized by it so that a correct radius reads zero error.
+one.
+
+Fixed for a perfect solver, that is. What each region actually recovers of a given motion
+also depends on the recording, and over the benchmark scenes that alone moves the raw ratio
+from 0.96 to 1.06 at a *correct* radius, which is six percentage points of radius - more
+than the errors worth reporting. So each check also solves a control pair: one source frame
+remapped twice, once as it is and once through `sphere.rotated_window`, which turns the ball
+by the increment that frame just measured. The pair differs by exactly the rotation the
+assumed geometry describes, so what the two regions disagree about on it is the solver and
+the recording rather than the radius, and the reading is divided by it. What is left is a
+response to the radius error that the scenes agree on to about a percent (`RATIO_RESPONSE`)
+and a zero point that depends on the ball's angular size (`RATIO_ZERO`: 0.967 at a 0.31
+degree half-angle, 1.003 at 11 degrees, because the outer annulus of a near-orthographic
+ball sits where the surface is most foreshortened). Together they read a planted radius
+error to 0.6 percentage points rms over 18 scenes and 7 errors each, and within half a point
+at a correct radius; the three real trials of one rig, whose radii the detector puts within
+0.2% of each other, read -0.8%, +0.3% and -0.8% (they read -1.1%, +2.4% and +1.1% before the
+control pair). An animal that stands over the ball is what remains: on `occluded` the check
+reads 1.1-2.9% too large, because a pattern that does not turn with the ball holds the outer
+annulus back and a control pair built from one frame cannot see that.
 
 ## Following a ball that moves
 

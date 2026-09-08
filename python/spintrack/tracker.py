@@ -137,7 +137,13 @@ class Tracker:
         if self.params.scale_check_stride > 0:
             from spintrack.autofit import ScaleCheck
 
-            check = ScaleCheck(self.geometry, self.params, self.half_angle)
+            check = ScaleCheck(
+                self.geometry,
+                self.params,
+                self.half_angle,
+                self.camera,
+                self.engine.observation,
+            )
             self.scale_check = check if check.enabled else None
 
     def _camera_to_lab(self, cfg: Config) -> np.ndarray:
@@ -213,7 +219,7 @@ class Tracker:
         # Captured before the step, which overwrites both.
         r_prev, velocity = self.engine.R, self.engine.velocity
         step = self.engine.step(window)
-        self._check_scale(step, r_prev, velocity)
+        self._check_scale(gray, step, r_prev, velocity)
         self._watch_centre(gray, step)
         frame = self.frame
         self.frame += 1
@@ -273,12 +279,19 @@ class Tracker:
         if self.scale_check is not None:
             from spintrack.autofit import ScaleCheck
 
-            check = ScaleCheck(geometry, self.params, self.half_angle)
+            check = ScaleCheck(
+                geometry,
+                self.params,
+                self.half_angle,
+                self.camera,
+                self.engine.observation,
+            )
             if check.enabled:
                 # The statistic is a ratio of projections within each frame, so rows
                 # taken in the old window frame stay comparable with rows taken in the
                 # new one.
                 check.rows = self.scale_check.rows
+                check.controls = self.scale_check.controls
                 self.scale_check = check
             else:
                 self.scale_check = None
@@ -335,7 +348,7 @@ class Tracker:
         )
         self.refits.append(event)
 
-    def _check_scale(self, step, r_prev, velocity) -> None:
+    def _check_scale(self, gray, step, r_prev, velocity) -> None:
         """Feed one frame-to-frame increment to the radius check, if one is due."""
         previous, self._prev_obs = self._prev_obs, self.engine.last_obs
         if self.scale_check is None or previous is None or not step.ok:
@@ -343,7 +356,7 @@ class Tracker:
         if self.frame % self.params.scale_check_stride:
             return
         self.scale_check.step(
-            previous, self.engine.last_obs, r_prev, step.w_win, velocity
+            previous, self.engine.last_obs, r_prev, step.w_win, velocity, gray
         )
 
     def _values(

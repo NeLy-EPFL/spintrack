@@ -8,13 +8,13 @@ ball rotates these vectors, which is what the solver estimates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
 
 from spintrack.camera import Camera, EquidistantCamera, pixel_centres
-from spintrack.geometry import normalize, rotation_between
+from spintrack.geometry import normalize, rotation_between, rotvec_to_matrix
 
 # Anti-aliasing of the window remap, as the standard deviation of a Gaussian in units of
 # the decimation (source pixels per window pixel: 5.8 on the synthetic scenes, 8.6 on the
@@ -204,6 +204,42 @@ class WindowGeometry:
             cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
         )
+
+
+def rotated_window(
+    geometry: WindowGeometry, camera: Camera, half_angle: float, increment
+) -> WindowGeometry:
+    """A copy of `geometry` whose remap reads the ball's surface turned by `increment`.
+
+    Remapping one source frame through both gives a pair of windows that differ by
+    exactly the rotation `increment` *as the assumed geometry describes it*, with the
+    same decimation, aliasing and pre-filter as any real pair. `autofit.ScaleCheck`
+    solves that pair to measure what it reads when the radius is right by construction.
+
+    The texture at window-frame surface direction `v` turns to `dR v`, so the window
+    that shows the turned ball samples the source where the surface is `dR^T v`; the
+    sliver of surface that turns out of view is left out of the mask.
+    """
+    size = geometry.size
+    radius = np.sin(half_angle)
+    surface = geometry.surface.astype(np.float64)
+    turned = surface @ rotvec_to_matrix(np.asarray(increment, dtype=np.float64))
+    point = radius * turned + np.array([0.0, 0.0, 1.0])
+    x, y, valid = camera.project(point @ geometry.to_camera.T)
+    seen = valid & ((turned * point).sum(axis=1) < 0.0)
+    map_x = np.full(size * size, -1.0, dtype=np.float32)
+    map_y = np.full(size * size, -1.0, dtype=np.float32)
+    map_x[geometry.index[seen]] = (x[seen] - 0.5).astype(np.float32)
+    map_y[geometry.index[seen]] = (y[seen] - 0.5).astype(np.float32)
+    map_x, map_y = map_x.reshape(size, size), map_y.reshape(size, size)
+    scale = np.float32(2.0**geometry.levels)
+    return replace(
+        geometry,
+        map_x=map_x,
+        map_y=map_y,
+        map_x_small=map_x / scale,
+        map_y_small=map_y / scale,
+    )
 
 
 def prefilter_plan(decimation: float, sigma: float) -> tuple[int, float]:

@@ -136,7 +136,7 @@ spintrack ~2.5 ms with every check on, ~1.7 ms with the ball follower and the ra
 off (~2 ms and ~1.4 ms at FicTrac's default 60x60 window). On six real 60 s trials
 (1600x1008 HEVC, 100 fps) spintrack agrees with FicTrac to a median 0.1 deg per frame and
 runs at ~240 fps including decoding (~3.5 ms of tracking per frame, of which the silhouette
-measurement that follows a moving ball is about 1.2).
+measurement that follows a moving ball is about 1.2 and the radius check about 0.2).
 
 ## Develop
 
