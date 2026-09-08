@@ -178,6 +178,8 @@ impl Engine {
     #[new]
     #[pyo3(signature = (surface, index, window_size, map_w, map_h, levels=3,
                         max_pixels=None, projection="equal_area"))]
+    // A PyO3 constructor mirrors the Python signature, so its arity is the API's.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         surface: PyReadonlyArray2<f32>,
         index: PyReadonlyArray1<i64>,
@@ -198,9 +200,7 @@ impl Engine {
             }
         };
         if projection == Projection::Cube && map_h != 6 * map_w {
-            return Err(PyValueError::new_err(
-                "a cube map must be (6 * face, face)",
-            ));
+            return Err(PyValueError::new_err("a cube map must be (6 * face, face)"));
         }
         let s = surface.as_array();
         let idx = index.as_array();
@@ -431,7 +431,7 @@ impl Engine {
         })
     }
 
-    /// Photometric cost and overlap of `obs` at orientation `r` (no optimisation).
+    /// Photometric cost and overlap of `obs` at orientation `r` (no optimization).
     #[pyo3(signature = (obs, r, use_prev=false, level=0, huber=1.345, tukey=4.685, w_min=0.1, w_sat=3.0))]
     #[allow(clippy::too_many_arguments)]
     fn cost(

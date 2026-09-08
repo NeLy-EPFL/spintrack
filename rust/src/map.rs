@@ -208,10 +208,7 @@ impl Map {
                 let n = self.w as f32;
                 let s = eac(dot(p, r) / d);
                 let t = eac(dot(p, up) / d);
-                (
-                    0.5 * (s + 1.0) * n,
-                    (face as f32) * n + 0.5 * (1.0 - t) * n,
-                )
+                (0.5 * (s + 1.0) * n, (face as f32) * n + 0.5 * (1.0 - t) * n)
             }
         }
     }
@@ -260,7 +257,7 @@ impl Map {
     /// The out-of-range case re-projects the direction of the cell it was asked for instead
     /// of consulting an edge table: it cannot disagree with `project`, and it costs a `tan`
     /// and an `atan2` on the few per cent of taps that fall on a seam. At a cube corner the
-    /// fourth neighbour does not exist and this lands on one of the other three, which is
+    /// fourth neighbor does not exist and this lands on one of the other three, which is
     /// the usual way to handle the eight cells where that happens.
     #[inline]
     fn cube_cell(&self, face: usize, col: i32, row: i32) -> usize {
@@ -333,7 +330,7 @@ impl Map {
     /// The cell `(dcol, drow)` away, or `None` where the grid genuinely ends (the two
     /// polar rows of the equal-area grid; the cube has no edges).
     #[inline]
-    fn neighbour(&self, idx: usize, dcol: i32, drow: i32) -> Option<usize> {
+    fn neighbor(&self, idx: usize, dcol: i32, drow: i32) -> Option<usize> {
         match self.projection {
             Projection::EqualArea => {
                 let row = (idx / self.w) as i32 + drow;
@@ -351,7 +348,7 @@ impl Map {
         }
     }
 
-    /// Central-difference gradient of the mean at `idx`, one-sided at unseen neighbours;
+    /// Central-difference gradient of the mean at `idx`, one-sided at unseen neighbors;
     /// the cell itself is known to be seen.
     #[inline]
     fn cell_gradient(&self, idx: usize, w_min: f32) -> (f32, f32) {
@@ -360,15 +357,15 @@ impl Map {
             Some(i) if self.weight[i] >= w_min => self.mean[i],
             _ => m,
         };
-        let ml = seen(self.neighbour(idx, -1, 0));
-        let mr = seen(self.neighbour(idx, 1, 0));
+        let ml = seen(self.neighbor(idx, -1, 0));
+        let mr = seen(self.neighbor(idx, 1, 0));
         let gx = if ml == m || mr == m {
             mr - ml
         } else {
             0.5 * (mr - ml)
         };
-        let mu = seen(self.neighbour(idx, 0, -1));
-        let md = seen(self.neighbour(idx, 0, 1));
+        let mu = seen(self.neighbor(idx, 0, -1));
+        let md = seen(self.neighbor(idx, 0, 1));
         let gy = if mu == m || md == m {
             md - mu
         } else {
@@ -377,9 +374,9 @@ impl Map {
         (gx, gy)
     }
 
-    /// Bilinear sample with a smooth gradient; `None` unless all four neighbouring cells
+    /// Bilinear sample with a smooth gradient; `None` unless all four neighboring cells
     /// have weight >= `w_min`. The gradient interpolates central differences of the
-    /// neighbouring cells, which keeps the alignment Jacobian continuous across cells.
+    /// neighboring cells, which keeps the alignment Jacobian continuous across cells.
     #[inline]
     pub fn sample(&self, u: f32, v: f32, w_min: f32, w_sat: f32) -> Option<Sample> {
         let ([i00, i10, i01, i11], fu, fv) = self.cell_indices(u, v);
@@ -477,7 +474,7 @@ impl Map {
         let cube = self.projection == Projection::Cube;
         // A cube blurs face by face, clamping at their edges. A seam-correct blur would
         // mean resampling the whole map, for a pyramid whose only job is to widen the
-        // basin of attraction; a one-cell artefact along twelve edges does not affect that.
+        // basin of attraction; a one-cell artifact along twelve edges does not affect that.
         let (sum_wm, sum_w) = if cube {
             (
                 self.per_face(&wm, |src, n| box_blur(src, n, n, radius, false)),
@@ -739,11 +736,11 @@ mod tests {
     }
 
     #[test]
-    fn cube_seams_join_neighbouring_faces() {
+    fn cube_seams_join_neighboring_faces() {
         let n = 32;
         let m = Map::cube(n);
-        // A texel at the face centre spans pi/2 / n; the seam neighbour of an edge cell
-        // must be its actual neighbour on the sphere, not a clamp back onto the same cell.
+        // A texel at the face centre spans pi/2 / n; the seam neighbor of an edge cell
+        // must be its actual neighbor on the sphere, not a clamp back onto the same cell.
         let limit = 1.5 * FRAC_PI_2 / n as f32;
         for face in 0..6 {
             for k in 0..n {
@@ -754,14 +751,10 @@ mod tests {
                     (k as i32, n as i32 - 1, 0, 1),
                 ] {
                     let idx = (face * n + row as usize) * n + col as usize;
-                    let other = m.neighbour(idx, dcol, drow).expect("cube has no edges");
+                    let other = m.neighbor(idx, dcol, drow).expect("cube has no edges");
                     assert_ne!(other, idx, "face {face} cell ({col}, {row})");
                     let a = unproject(&m, col as f32 + 0.5, (face * n) as f32 + row as f32 + 0.5);
-                    let b = unproject(
-                        &m,
-                        (other % n) as f32 + 0.5,
-                        (other / n) as f32 + 0.5,
-                    );
+                    let b = unproject(&m, (other % n) as f32 + 0.5, (other / n) as f32 + 0.5);
                     let gap = dot(a, b).clamp(-1.0, 1.0).acos();
                     assert!(gap < limit, "face {face} ({col}, {row}) gap {gap}");
                 }
@@ -772,7 +765,13 @@ mod tests {
     #[test]
     fn cube_splat_conserves_weight_over_a_seam() {
         let n = 16;
-        for (u, v) in [(8.5f32, 8.5f32), (0.0, 8.5), (16.0, 8.5), (8.5, 16.0), (0.0, 0.0)] {
+        for (u, v) in [
+            (8.5f32, 8.5f32),
+            (0.0, 8.5),
+            (16.0, 8.5),
+            (8.5, 16.0),
+            (0.0, 0.0),
+        ] {
             let mut m = Map::cube(n);
             m.splat(u, v, 1.0, 1.0, 1e6, 1.0, None);
             let total: f32 = m.weight.iter().sum();
