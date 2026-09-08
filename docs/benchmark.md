@@ -9,8 +9,43 @@ mapped to camera coordinates before scoring). `spintrack` is the default configu
 from the ball's texture); `spintrack-full` solves on every pixel. Errors are
 per-frame rotation errors in degrees; drift is the slope of the accumulated
 orientation error; endpoint error is the fictive-path endpoint discrepancy as a
-percentage of the true path length; tracking time excludes video decoding and was
-measured pinned to one core.
+percentage of the true path length, and reads `nan` on a scene whose animal does
+not go anywhere (`constant_turn` turns in place, `static` does not move at all);
+tracking time excludes video decoding and was measured pinned to one core.
+
+The rotation scale is the one thing the error angles cannot show: a tracker that
+reported every rotation 2% small would score the same median as one that is right on
+average and noisy. It is the least-squares factor between the reported rotation and
+the true one, pooled over the three camera-frame components, and it reads `nan` on
+`static`, which does not turn. A wrong assumed ball radius is what moves it (about
+twice the relative radius error, on the components about axes in the image plane -
+see `tests/test_scale.py`), and `motion_blur` shows the other way it can move: at an
+exposure of 0.8 of the frame period the per-frame rotation is the average over that
+exposure rather than the instantaneous one, which is 3% small here while leaving the
+integrated path exact (`scale_path` in the parquet reads 1.0000 there).
+
+These scenes are rendered with spintrack's own camera and sphere code, so they
+cannot see an error in either; `docs/verification.md` says what closes that gap and
+what the scale numbers rest on.
+
+Reproducing the synthetic tables from a clone: the scenes are not committed
+(`benchmarks/data/` is gitignored) but regenerate from the seeds in `families.py`, and
+every number is read back from `benchmarks/results/results.parquet` without rerunning a
+tracker, so only the timing columns depend on the machine. The scenes were rendered and
+scored, and this file written, with
+
+    uv run --group bench python benchmarks/bench.py synth
+    uv run --group bench python benchmarks/bench.py run \
+        --systems fictrac fictrac-fork spintrack spintrack-full spintrack-noillum \
+        --pin-cpu 2
+    uv run --group bench python benchmarks/bench.py report --out docs/benchmark.md
+
+FicTrac is compiled from its own sources - upstream 2.1.2 (`github.com/rjdmoore/fictrac`)
+and the NeLy-EPFL fork, which agree to five decimals here - and
+`benchmarks/spintrack_bench/runners/fictrac_cpp.py` points at the two binaries. Timings
+were measured on an Intel Core i9-14900K with tracking pinned to one core and are
+relative to that machine; the error and scale columns are not. The six real recordings
+in the last table are lab data and are not distributed with the repository.
 
 ## median err (deg)
 
@@ -118,29 +153,29 @@ measured pinned to one core.
 
 ## endpoint err (%)
 
-| dataset           |             fictrac |        fictrac-fork |          spintrack |     spintrack-full |
-|:------------------|--------------------:|--------------------:|-------------------:|-------------------:|
-| ball_drop         |             nan     |             nan     |              0.442 |              0.442 |
-| clean_fly         |               0.085 |               0.085 |              0.039 |              0.039 |
-| constant_forward  |               0.903 |               0.903 |              0.078 |              0.078 |
-| constant_side     |               0.906 |               0.906 |              0.170 |              0.170 |
-| constant_turn     | 214141060928959.250 | 214141060928959.250 | 96518056638879.062 | 96518056638879.062 |
-| fast_forward      |               6.656 |               6.656 |              1.216 |              1.216 |
-| holder_shadow     |             nan     |             nan     |              0.107 |              0.107 |
-| holder_shadow_cut |             nan     |             nan     |              0.055 |              0.060 |
-| holder_shadow_lab |             nan     |             nan     |              0.090 |              0.105 |
-| lab_small_ball    |               0.188 |               0.188 |              0.043 |              0.049 |
-| lighting          |               0.024 |               0.024 |              0.027 |              0.027 |
-| low_contrast      |               0.135 |               0.135 |              0.051 |              0.051 |
-| motion_blur       |               0.835 |               0.835 |              0.851 |              0.851 |
-| noisy             |               0.237 |               0.237 |              0.041 |              0.041 |
-| occluded          |               0.084 |               0.084 |              0.026 |              0.026 |
-| offaxis           |               0.438 |               0.438 |              0.096 |              0.096 |
-| random_walk       |               0.065 |               0.065 |              0.086 |              0.086 |
-| saccades          |               0.108 |               0.108 |              0.039 |              0.039 |
-| sparse            |               0.210 |               0.210 |              1.255 |              1.255 |
-| speckle           |            1017.106 |            1017.106 |              0.229 |              0.229 |
-| static            |             nan     |             nan     |            nan     |            nan     |
+| dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
+|:------------------|----------:|---------------:|------------:|-----------------:|
+| ball_drop         |   nan     |        nan     |       0.442 |            0.442 |
+| clean_fly         |     0.085 |          0.085 |       0.039 |            0.039 |
+| constant_forward  |     0.903 |          0.903 |       0.078 |            0.078 |
+| constant_side     |     0.906 |          0.906 |       0.170 |            0.170 |
+| constant_turn     |   nan     |        nan     |     nan     |          nan     |
+| fast_forward      |     6.656 |          6.656 |       1.216 |            1.216 |
+| holder_shadow     |   nan     |        nan     |       0.107 |            0.107 |
+| holder_shadow_cut |   nan     |        nan     |       0.055 |            0.060 |
+| holder_shadow_lab |   nan     |        nan     |       0.090 |            0.105 |
+| lab_small_ball    |     0.188 |          0.188 |       0.043 |            0.049 |
+| lighting          |     0.024 |          0.024 |       0.027 |            0.027 |
+| low_contrast      |     0.135 |          0.135 |       0.051 |            0.051 |
+| motion_blur       |     0.835 |          0.835 |       0.851 |            0.851 |
+| noisy             |     0.237 |          0.237 |       0.041 |            0.041 |
+| occluded          |     0.084 |          0.084 |       0.026 |            0.026 |
+| offaxis           |     0.438 |          0.438 |       0.096 |            0.096 |
+| random_walk       |     0.065 |          0.065 |       0.086 |            0.086 |
+| saccades          |     0.108 |          0.108 |       0.039 |            0.039 |
+| sparse            |     0.210 |          0.210 |       1.255 |            1.255 |
+| speckle           |  1017.106 |       1017.106 |       0.229 |            0.229 |
+| static            |   nan     |        nan     |     nan     |          nan     |
 
 ## tracking ms/frame
 
@@ -168,6 +203,119 @@ measured pinned to one core.
 | speckle           |     2.200 |          2.200 |       3.010 |            2.786 |
 | static            |     2.000 |          2.000 |       1.614 |            1.438 |
 
+## rotation scale (reported / true)
+
+| dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
+|:------------------|----------:|---------------:|------------:|-----------------:|
+| ball_drop         | nan       |      nan       |     0.99983 |          0.99983 |
+| clean_fly         |   1.00134 |        1.00134 |     0.99950 |          0.99950 |
+| constant_forward  |   1.00027 |        1.00027 |     0.99992 |          0.99992 |
+| constant_side     |   0.99998 |        0.99998 |     1.00001 |          1.00001 |
+| constant_turn     |   1.00034 |        1.00034 |     1.00000 |          1.00000 |
+| fast_forward      |   0.99999 |        0.99999 |     0.99999 |          0.99999 |
+| holder_shadow     | nan       |      nan       |     0.99980 |          0.99980 |
+| holder_shadow_cut | nan       |      nan       |     0.99863 |          0.99855 |
+| holder_shadow_lab | nan       |      nan       |     0.99872 |          0.99854 |
+| lab_small_ball    |   0.99920 |        0.99920 |     0.99890 |          0.99889 |
+| lighting          |   1.00050 |        1.00050 |     0.99951 |          0.99951 |
+| low_contrast      |   1.00178 |        1.00178 |     0.99857 |          0.99857 |
+| motion_blur       |   0.96850 |        0.96850 |     0.96913 |          0.96913 |
+| noisy             |   0.99845 |        0.99845 |     0.99956 |          0.99956 |
+| occluded          |   1.00137 |        1.00137 |     0.99956 |          0.99956 |
+| offaxis           |   1.00257 |        1.00257 |     0.99890 |          0.99890 |
+| random_walk       |   1.00000 |        1.00000 |     0.99991 |          0.99991 |
+| saccades          |   1.00080 |        1.00080 |     1.00004 |          1.00004 |
+| sparse            |   1.00307 |        1.00307 |     0.99878 |          0.99878 |
+| speckle           | -38.42291 |      -38.42291 |     1.00009 |          1.00009 |
+| static            | nan       |      nan       |   nan       |        nan       |
+
+## Scale of each reported component (animal frame)
+
+The same factor fitted per component, on the forward, turning and sideslip rotations
+a user reads (`spintrack.path`), with a moving-block bootstrap error that carries the
+autocorrelation of the tracking residual. Sideslip is the slack one: these scenes give
+it a tenth of the amplitude they give turning, so its error bars are ten times wider
+and a reading near 0.98 there is not evidence of a 2% deficit. A dash means the scene
+does not turn about that axis at all.
+
+### forward walking
+
+| dataset           | fictrac             | fictrac-fork        | spintrack        | spintrack-full   |
+|:------------------|:--------------------|:--------------------|:-----------------|:-----------------|
+| ball_drop         | nan                 | nan                 | 1.0003 +- 0.0060 | 1.0003 +- 0.0060 |
+| clean_fly         | 0.9988 +- 0.0012    | 0.9988 +- 0.0012    | 0.9999 +- 0.0002 | 0.9999 +- 0.0002 |
+| constant_forward  | 1.0003 +- 0.0009    | 1.0003 +- 0.0009    | 0.9999 +- 0.0001 | 0.9999 +- 0.0001 |
+| constant_side     | -                   | -                   | -                | -                |
+| constant_turn     | -                   | -                   | -                | -                |
+| fast_forward      | 1.0000 +- 0.0001    | 1.0000 +- 0.0001    | 1.0000 +- 0.0000 | 1.0000 +- 0.0000 |
+| holder_shadow     | nan                 | nan                 | 0.9997 +- 0.0003 | 0.9997 +- 0.0003 |
+| holder_shadow_cut | nan                 | nan                 | 0.9990 +- 0.0006 | 0.9989 +- 0.0006 |
+| holder_shadow_lab | nan                 | nan                 | 0.9994 +- 0.0003 | 0.9994 +- 0.0003 |
+| lab_small_ball    | 0.9986 +- 0.0009    | 0.9986 +- 0.0009    | 0.9998 +- 0.0002 | 0.9997 +- 0.0002 |
+| lighting          | 0.9978 +- 0.0014    | 0.9978 +- 0.0014    | 1.0001 +- 0.0002 | 1.0001 +- 0.0002 |
+| low_contrast      | 0.9977 +- 0.0018    | 0.9977 +- 0.0018    | 0.9995 +- 0.0004 | 0.9995 +- 0.0004 |
+| motion_blur       | 0.9969 +- 0.0020    | 0.9969 +- 0.0020    | 0.9969 +- 0.0013 | 0.9969 +- 0.0013 |
+| noisy             | 0.9985 +- 0.0011    | 0.9985 +- 0.0011    | 1.0001 +- 0.0002 | 1.0001 +- 0.0002 |
+| occluded          | 1.0002 +- 0.0011    | 1.0002 +- 0.0011    | 1.0000 +- 0.0002 | 1.0000 +- 0.0002 |
+| offaxis           | 1.0039 +- 0.0029    | 1.0039 +- 0.0029    | 1.0001 +- 0.0004 | 1.0001 +- 0.0004 |
+| random_walk       | 1.0009 +- 0.0017    | 1.0009 +- 0.0017    | 0.9994 +- 0.0003 | 0.9994 +- 0.0003 |
+| saccades          | 0.9974 +- 0.0035    | 0.9974 +- 0.0035    | 0.9996 +- 0.0005 | 0.9996 +- 0.0005 |
+| sparse            | 0.9995 +- 0.0010    | 0.9995 +- 0.0010    | 0.9993 +- 0.0014 | 0.9993 +- 0.0014 |
+| speckle           | -69.7670 +- 12.2002 | -69.7670 +- 12.2002 | 1.0000 +- 0.0002 | 1.0000 +- 0.0002 |
+| static            | -                   | -                   | -                | -                |
+
+### turning
+
+| dataset           | fictrac           | fictrac-fork      | spintrack        | spintrack-full   |
+|:------------------|:------------------|:------------------|:-----------------|:-----------------|
+| ball_drop         | nan               | nan               | 0.9998 +- 0.0006 | 0.9998 +- 0.0006 |
+| clean_fly         | 1.0024 +- 0.0021  | 1.0024 +- 0.0021  | 0.9993 +- 0.0005 | 0.9993 +- 0.0005 |
+| constant_forward  | -                 | -                 | -                | -                |
+| constant_side     | -                 | -                 | -                | -                |
+| constant_turn     | 1.0003 +- 0.0010  | 1.0003 +- 0.0010  | 1.0000 +- 0.0002 | 1.0000 +- 0.0002 |
+| fast_forward      | -                 | -                 | -                | -                |
+| holder_shadow     | nan               | nan               | 0.9999 +- 0.0006 | 0.9999 +- 0.0006 |
+| holder_shadow_cut | nan               | nan               | 0.9986 +- 0.0011 | 0.9985 +- 0.0011 |
+| holder_shadow_lab | nan               | nan               | 0.9985 +- 0.0007 | 0.9983 +- 0.0009 |
+| lab_small_ball    | 0.9997 +- 0.0012  | 0.9997 +- 0.0012  | 0.9987 +- 0.0005 | 0.9987 +- 0.0005 |
+| lighting          | 1.0022 +- 0.0021  | 1.0022 +- 0.0021  | 0.9992 +- 0.0005 | 0.9992 +- 0.0005 |
+| low_contrast      | 1.0039 +- 0.0040  | 1.0039 +- 0.0040  | 0.9982 +- 0.0009 | 0.9982 +- 0.0009 |
+| motion_blur       | 0.9560 +- 0.0100  | 0.9560 +- 0.0100  | 0.9565 +- 0.0103 | 0.9565 +- 0.0103 |
+| noisy             | 0.9987 +- 0.0028  | 0.9987 +- 0.0028  | 0.9993 +- 0.0005 | 0.9993 +- 0.0005 |
+| occluded          | 1.0018 +- 0.0018  | 1.0018 +- 0.0018  | 0.9995 +- 0.0005 | 0.9995 +- 0.0005 |
+| offaxis           | 1.0025 +- 0.0034  | 1.0025 +- 0.0034  | 0.9984 +- 0.0007 | 0.9984 +- 0.0007 |
+| random_walk       | 1.0005 +- 0.0011  | 1.0005 +- 0.0011  | 0.9999 +- 0.0002 | 0.9999 +- 0.0002 |
+| saccades          | 1.0014 +- 0.0013  | 1.0014 +- 0.0013  | 1.0001 +- 0.0002 | 1.0001 +- 0.0002 |
+| sparse            | 1.0071 +- 0.0045  | 1.0071 +- 0.0045  | 0.9982 +- 0.0011 | 0.9982 +- 0.0011 |
+| speckle           | -3.8058 +- 2.6384 | -3.8058 +- 2.6384 | 1.0002 +- 0.0002 | 1.0002 +- 0.0002 |
+| static            | -                 | -                 | -                | -                |
+
+### sideslip
+
+| dataset           | fictrac            | fictrac-fork       | spintrack        | spintrack-full   |
+|:------------------|:-------------------|:-------------------|:-----------------|:-----------------|
+| ball_drop         | nan                | nan                | 0.9768 +- 0.0143 | 0.9768 +- 0.0143 |
+| clean_fly         | 1.0201 +- 0.0182   | 1.0201 +- 0.0182   | 0.9988 +- 0.0035 | 0.9988 +- 0.0035 |
+| constant_forward  | -                  | -                  | -                | -                |
+| constant_side     | 1.0000 +- 0.0010   | 1.0000 +- 0.0010   | 1.0000 +- 0.0001 | 1.0000 +- 0.0001 |
+| constant_turn     | -                  | -                  | -                | -                |
+| fast_forward      | -                  | -                  | -                | -                |
+| holder_shadow     | nan                | nan                | 0.9999 +- 0.0041 | 0.9999 +- 0.0041 |
+| holder_shadow_cut | nan                | nan                | 0.9827 +- 0.0066 | 0.9801 +- 0.0065 |
+| holder_shadow_lab | nan                | nan                | 0.9818 +- 0.0080 | 0.9773 +- 0.0072 |
+| lab_small_ball    | 0.9758 +- 0.0215   | 0.9758 +- 0.0215   | 0.9776 +- 0.0070 | 0.9768 +- 0.0065 |
+| lighting          | 0.9415 +- 0.0305   | 0.9415 +- 0.0305   | 1.0010 +- 0.0029 | 1.0010 +- 0.0029 |
+| low_contrast      | 0.9737 +- 0.0323   | 0.9737 +- 0.0323   | 0.9938 +- 0.0054 | 0.9938 +- 0.0054 |
+| motion_blur       | 0.8808 +- 0.0251   | 0.8808 +- 0.0251   | 0.9420 +- 0.0103 | 0.9420 +- 0.0103 |
+| noisy             | 0.9578 +- 0.0291   | 0.9578 +- 0.0291   | 1.0044 +- 0.0030 | 1.0044 +- 0.0030 |
+| occluded          | 1.0131 +- 0.0282   | 1.0131 +- 0.0282   | 0.9840 +- 0.0068 | 0.9840 +- 0.0068 |
+| offaxis           | 0.9227 +- 0.0524   | 0.9227 +- 0.0524   | 0.9890 +- 0.0081 | 0.9890 +- 0.0081 |
+| random_walk       | 0.9988 +- 0.0016   | 0.9988 +- 0.0016   | 1.0003 +- 0.0002 | 1.0003 +- 0.0002 |
+| saccades          | 0.9413 +- 0.0290   | 0.9413 +- 0.0290   | 0.9947 +- 0.0033 | 0.9947 +- 0.0033 |
+| sparse            | 1.0208 +- 0.0205   | 1.0208 +- 0.0205   | 0.9970 +- 0.0032 | 0.9970 +- 0.0032 |
+| speckle           | 46.4192 +- 73.2758 | 46.4192 +- 73.2758 | 1.0010 +- 0.0012 | 1.0010 +- 0.0012 |
+| static            | -                  | -                  | -                | -                |
+
 ## Agreement with FicTrac on real recordings
 
 Six 60 s trials (1600x1008 HEVC, 100 fps, `q_factor 12`, `accumulate_map: n`) tracked
@@ -175,11 +323,44 @@ with spintrack and compared with the lab fork's FicTrac output for the same vide
 There is no ground truth here; differences are per-frame angles between the two
 trackers' lab-frame rotation increments.
 
-|   trial |   frames |   dropped |   median diff (deg) |   p95 diff (deg) |   turn corr |   heading diff (deg) |   endpoint diff (%) |   tracking ms/frame |   fps incl. decode |
-|--------:|---------:|----------:|--------------------:|-----------------:|------------:|---------------------:|--------------------:|--------------------:|-------------------:|
-|     005 |     6015 |         0 |               0.090 |            0.257 |       0.919 |               -1.925 |               0.125 |               3.353 |            244.190 |
-|     006 |     6015 |         0 |               0.114 |            0.307 |       0.952 |                0.726 |               0.256 |               3.521 |            232.849 |
-|     007 |     6012 |         0 |               0.084 |            0.282 |       0.942 |               -0.200 |               0.173 |               3.331 |            244.623 |
-|     008 |     6010 |         0 |               0.106 |            0.504 |       0.784 |               -3.093 |               6.031 |               3.836 |            217.545 |
-|     009 |    12015 |         0 |               0.087 |            0.266 |       0.898 |                3.129 |               0.375 |               3.339 |            245.179 |
-|     012 |     6010 |         0 |               0.216 |            0.508 |       0.961 |               18.713 |               2.294 |               3.610 |            227.415 |
+The scale columns are spintrack's reported amplitude over FicTrac's, per component,
+by the lagged instrument in `spintrack_bench.agreement.scale_ratio` - which the
+synthetic scenes, where both systems' gains against truth are known, put within 0.3%
+(`notes/session_2026-09-08d/scale_estimator.py`; the statistics one reaches for first,
+a regression either way or a ratio of standard deviations, are diluted by the noisier
+series and read 0.78 to 0.99 there where the answer is 1.00). On a scene built with
+these recordings' own geometry it reads the known forward and turning ratios within
+0.7%, and the known *sideslip* ratio 4 to 6 points low - so the side column carries
+an error bar this comparison has not pinned down, rather than agreement to a percent.
+
+Forward agrees to about a percent. **spintrack reports 1.5 to 4% less turning than
+FicTrac on the five trials the animal walked through, and 9% less on 008**, whose
+correlations are the worst of the six and whose forward column the estimator refuses
+outright for want of a low-frequency signal to instrument. Nothing here says which
+tracker is right - that needs truth these recordings do not have - but it is
+systematic and it is on the component most of these experiments report.
+
+It is a **slow-turning** effect. Binned into 6 s windows by how fast the animal was
+actually turning, the ratio runs 0.933 +- 0.011 below 0.08 deg/frame and 0.971 to
+0.977 above 0.12. That is not, however, why no scene here shows it: re-rendering
+this geometry with `fly_walk` scaled down to the real trials' own rate leaves
+spintrack within 0.2% of truth and FicTrac within 1.2%, with the ratio moving the
+wrong way (1.010, spintrack the higher). See `docs/verification.md`.
+
+What is worth knowing about every table above: **these scenes have one activity
+level.** The families vary the optics, the lighting, the occluders, the noise and the
+codec, but all of them drive the ball with the same seeded `fly_walk`, so 14 of the
+17 scenes with an identified turn gain turn at exactly 0.871 deg/frame and the other
+three at 0.87 to 1.39 - 5 to 12 times more active than these recordings, whose
+animals turn at 0.07 to 0.16 deg/frame and walk at 0.04 to 0.09. Read the gains as
+one operating point rather than a range that covers a real experiment.
+`docs/verification.md` has the rate table and what is ruled out.
+
+|   trial |   frames |   dropped |   median diff (deg) |   p95 diff (deg) |   turn corr |   forward scale |   turn scale |   side scale |   heading diff (deg) |   endpoint diff (%) |   tracking ms/frame |   fps incl. decode |
+|--------:|---------:|----------:|--------------------:|-----------------:|------------:|----------------:|-------------:|-------------:|---------------------:|--------------------:|--------------------:|-------------------:|
+|     005 |     6015 |         0 |               0.090 |            0.257 |       0.919 |           0.974 |        0.970 |        1.001 |               -1.925 |               0.125 |               3.362 |            238.516 |
+|     006 |     6015 |         0 |               0.114 |            0.307 |       0.952 |           1.000 |        0.985 |        1.004 |                0.726 |               0.256 |               3.544 |            229.435 |
+|     007 |     6012 |         0 |               0.084 |            0.282 |       0.942 |           1.004 |        0.978 |        1.006 |               -0.200 |               0.173 |               3.418 |            235.425 |
+|     008 |     6010 |         0 |               0.106 |            0.504 |       0.784 |         nan     |        0.911 |        0.960 |               -3.093 |               6.031 |               3.935 |            209.072 |
+|     009 |    12015 |         0 |               0.087 |            0.266 |       0.898 |           1.014 |        0.959 |        1.010 |                3.129 |               0.375 |               3.417 |            235.813 |
+|     012 |     6010 |         0 |               0.216 |            0.508 |       0.961 |           0.995 |        0.983 |        1.005 |               18.713 |               2.294 |               3.882 |            209.901 |

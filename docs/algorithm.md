@@ -10,16 +10,16 @@ iterations and analytic derivatives.
 
 - **Camera.** Pinhole from the vertical field of view (`vfov`, degrees), or an equidistant
   fisheye (`fisheye: y`). Camera axes: x right, y down, z forward.
-- **Ball.** A unit direction to the ball centre and its angular radius (`roi_c`, `roi_r`), or a
+- **Ball.** A unit direction to the ball center and its angular radius (`roi_c`, `roi_r`), or a
   least-squares cone fit through the rim points (`roi_circ`). Pixels inside `roi_ignr`
   polygons are ignored.
-- **Tracking window.** A virtual fisheye camera aimed at the ball centre samples the source
+- **Tracking window.** A virtual fisheye camera aimed at the ball center samples the source
   image into an `n x n` window (`n = 10 * q_factor`) with `cv2.remap`. A window pixel covers
   6-9 source pixels on these rigs, and bilinear sampling at that decimation aliases the
   texture, so the source is pre-filtered first: one `pyrDown` and a Gaussian on the half-size
   frame, a total blur of half the decimation (`sphere.PREFILTER_SIGMA`), which halves the
   per-frame error on the synthetic scenes. Each window pixel that sees the ball gets a unit
-  vector `v_k` from the ball centre to the surface point it observes (window frame: z toward
+  vector `v_k` from the ball center to the surface point it observes (window frame: z toward
   the ball). These vectors are fixed; rotating the ball rotates them.
 - **Surface map.** A float32 grid over the ball surface storing a running weighted mean of
   normalized intensity plus a weight per cell (0 = never seen). Two tessellations, both
@@ -52,11 +52,11 @@ iterations and analytic derivatives.
    the frames where the animal starts to walk.
 5. **Update.** The corrected window is splatted into the map (bilinear footprint, running
    mean with optional forgetting). `accumulate_map: n` keeps only a one-cell dilation of the
-   current view, reproducing the lab fork's behaviour.
+   current view, reproducing the lab fork's behavior.
 6. **Output.** The increment is expressed in camera coordinates (`R_wc w`), then lab
    coordinates (`c2a_r`), and integrated into the fictive path with FicTrac's column
    semantics. Unlike FicTrac, the camera-frame columns are in true camera coordinates rather
-   than the window frame; the two coincide for a ball near the image centre.
+   than the window frame; the two coincide for a ball near the image center.
 
 ## Static illumination
 
@@ -99,9 +99,26 @@ normal, so past `illum_reset_move` of a radius the field is discarded and re-lea
 the trial where the ball sinks 242 px and comes back, carrying the old field instead costs
 more than the correction saves over that stretch.
 
+The field describes the rig, so a recording too short to measure one can borrow it:
+`--load-illumination` (`illumination_fn`) reads the fields out of a map `.npz` and
+resamples them into this run's window, without the map they were saved beside. It is
+loaded `illum_tau` frames deep into the accumulator rather than merely assigned, because
+every refresh reads the field off that accumulator - a field only assigned is replaced by
+a handful of the new run's own samples `illum_warmup` frames in, and the head start lasts
+exactly that long. As a prior it decays out over `illum_tau` as the run's own frames
+outweigh it. (The field `--two-pass` hands over is installed without that weight: the
+second pass sees the same lighting as the first and re-measures it anyway, and weighting
+the hand-over measured as nothing either way, on exact truth and on the lab recordings
+alike.) Trial 003's field loaded into trial 005 - 1015 frames,
+the same rig and the same ball - halves what still does not rotate in the bottom of 005's
+window over its first 600 frames, -0.20 against -0.11 in normalized-intensity units, and
+lowers the median photometric cost by 6%. On six seeds of `holder_shadow_lab` it puts the
+field within 0.016 of the donor's at frame 100 where a fresh run is 0.115 away, and leaves
+the per-frame error unchanged, the synthetic shadow being a third of the real one.
+
 `gain` and `wt` are the multiplicative and weighting counterparts, both off by default;
 `spintrack.photometry` records what measuring them showed. `illumination: n`, or
-`--no-illumination`, restores the plain behaviour.
+`--no-illumination`, restores the plain behavior.
 
 ## Geometry from the data
 
@@ -123,12 +140,20 @@ value is believed only when the curve has a minimum inside the grid, deeper than
 wobble. The 1000 frames matter: over 300 the run is self-consistent at any assumed geometry
 and the curve is flat.
 
-**The radius, checked against itself** (`autofit.ScaleCheck`). The same frame-to-frame
-increment is solved again on an inner disc and an outer annulus of the tracking window. The
-two regions see the surface at different depths, and the depth is exactly what the assumed
-radius sets, so their ratio is fixed when the radius is right and moves monotonically when it
-is not - independently of the cost, which cannot tell an over-large ball from an under-large
-one.
+**The radius, checked against itself** (`autofit.ScaleCheck`). This is the one geometric
+input the cost cannot find for itself, and it is worth more than it looks: a relative error
+`eps` in the assumed radius mis-scales the reported rotation about any axis *in the image
+plane* by about `1.9 eps` and the rotation about the optical axis not at all, measured over
+half-angles from 2 to 25 degrees in `tests/test_scale.py`. So a camera behind the animal, for
+which forward walking is a purely in-plane rotation, reports forward speed with about twice
+the radius error - and because the two directions respond differently, the error does not
+cancel as a common factor between one reported component and another.
+
+That split is also what makes the check possible. The same frame-to-frame increment is solved
+again on an inner disc and an outer annulus of the tracking window. The two regions see the
+surface at different depths, and the depth is exactly what the assumed radius sets, so their
+ratio is fixed when the radius is right and moves monotonically when it is not -
+independently of the cost, which cannot tell an over-large ball from an under-large one.
 
 Fixed for a perfect solver, that is. What each region actually recovers of a given motion
 also depends on the recording, and over the benchmark scenes that alone moves the raw ratio
@@ -145,9 +170,13 @@ ball sits where the surface is most foreshortened). Together they read a planted
 error to 0.6 percentage points rms over 18 scenes and 7 errors each, and within half a point
 at a correct radius; the three real trials of one rig, whose radii the detector puts within
 0.2% of each other, read -0.8%, +0.3% and -0.8% (they read -1.1%, +2.4% and +1.1% before the
-control pair). An animal that stands over the ball is what remains: on `occluded` the check
-reads 1.1-2.9% too large, because a pattern that does not turn with the ball holds the outer
-annulus back and a control pair built from one frame cannot see that.
+control pair). Anything image-fixed in the outer annulus is what remains: it holds that region
+back, and a control pair built from one frame cannot see it. `occluded`, whose `roi_ignr`
+covers the animal's body but not its six legs, reads 1.1-2.9% too large; scaling that
+polygon by 2.5 about its own centre - 22% of the window's pixels - leaves 0.6-0.8. So the
+mask wants to cover the legs, not just the body. The holder shadow does the same thing more
+gently: `lab_big_shadow` and `lab_big_ball` differ in nothing else, and their corrected
+ratios differ by 1%, which is half a percentage point of radius.
 
 ## Following a ball that moves
 

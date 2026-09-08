@@ -1,10 +1,10 @@
 """Fill in the geometry a config leaves open, from the recording itself.
 
-`prepare_config` is the single hook `spintrack run` and `spintrack calibrate --auto` share:
-it looks at frames from the start of the recording, detects the ball when the config does
-not describe one, and reports what it found either way. Both need a source they can open
-before tracking begins, so a live camera is refused with a pointer to the recorded-clip
-path.
+`prepare_config` is the single hook `spintrack run` and `spintrack calibrate --auto`
+share: it looks at frames from the start of the recording, detects the ball when the
+config does not describe one, and reports what it found either way. Both need a source
+they can open before tracking begins, so a live camera is refused with a pointer to the
+recorded-clip path.
 """
 
 from __future__ import annotations
@@ -23,27 +23,29 @@ log = logging.getLogger("spintrack")
 
 CAMERA_SOURCE_MESSAGE = (
     "automatic geometry needs a seekable source: it looks at frames before tracking "
-    "starts. Record a short clip and run `spintrack calibrate CLIP.txt --auto`, then use "
-    "the config it writes."
+    "starts. Record a short clip and run `spintrack calibrate CLIP.txt --auto`, then "
+    "use the config it writes."
 )
-# A detected radius this far from the one in the config is worth saying out loud: the
-# rotation scale follows the radius slightly worse than 1:1.
+# A detected radius this far from the one in the config is worth saying out loud: a
+# relative radius error costs about twice as much of the rotation reported about an axis
+# in the image plane, so this threshold is already 6% of forward speed on a camera that
+# looks at the animal from behind (`tests/test_scale.py`).
 DISAGREEMENT_WARN = 0.03
 
 VFOV_GRID = (1.0, 120.0, 9)  # log-spaced candidates, degrees
 MAX_HALF_ANGLE_DEG = 60.0
 WARMUP_FRAMES = 20  # the map is still filling; those costs say nothing about the vfov
 # The cost separates fields of view only once the map is full enough that a new view is
-# matched against surface seen under a different rotation. Over 300 frames of `clean_fly`
-# the curve is flat to 1.5% and its minimum is noise; over 1000 it has a clean minimum at
-# the true 30 deg, 1.3x below its neighbours.
+# matched against surface seen under a different rotation. Over 300 frames of
+# `clean_fly` the curve is flat to 1.5% and its minimum is noise; over 1000 it has a
+# clean minimum at the true 30 deg, 1.3x below its neighbors.
 VFOV_FRAMES = 1000
-# A minimum is believed only when its nearer neighbour costs this much more. Measured:
+# A minimum is believed only when its nearer neighbor costs this much more. Measured:
 # the benchmark scenes that identify their field of view sit at 1.04-4.06x, while real
-# trial 003 (a 1.2 deg half-angle, near-orthographic) dips 0.2% below a neighbour on a
-# curve whose neighbouring points jump 20% either way - noise, not a minimum.
+# trial 003 (a 1.2 deg half-angle, near-orthographic) dips 0.2% below a neighbor on a
+# curve whose neighboring points jump 20% either way - noise, not a minimum.
 MIN_DEPTH = 1.02
-# Candidates whose cost is within this of the minimum count as indistinguishable from it.
+# Candidates within this factor of the minimum count as indistinguishable from it.
 FLAT_TOL = 1.05
 # Below this much accumulated rotation the recording says nothing about the geometry.
 MIN_TURN_DEG = 90.0
@@ -94,7 +96,7 @@ class Prepared:
 
 
 def resolve_source(config_path, cfg: Config, override=None) -> str:
-    """The source a config points at: a camera index, or a path relative to the config."""
+    """The source a config points at: a camera index, or a path relative to it."""
     from pathlib import Path
 
     spec = override if override is not None else cfg.src_fn
@@ -119,7 +121,7 @@ def _circle_from(roi_circ) -> tuple[float, float, float]:
 
 
 def config_circle(cfg: Config, width: int, height: int) -> tuple[float, float, float]:
-    """The ball's image circle as the config describes it; raises if it describes none."""
+    """The ball's image circle as the config describes it; raises if it has none."""
     if len(cfg.roi_circ) >= 6:
         return _circle_from(cfg.roi_circ)
     if cfg.roi_c is not None and cfg.roi_r is not None:
@@ -156,8 +158,8 @@ def prepare_config(
 
     The detection is used only when the config has no ball of its own; when it has one,
     the two are compared and the difference is reported, never applied. `vfov` is fitted
-    with the pixel circle held fixed, since the two together set the ball's angular radius
-    and the cost cannot separate them. Mutates `cfg`.
+    with the pixel circle held fixed, since the two together set the ball's angular
+    radius and the cost cannot separate them. Mutates `cfg`.
     """
     if str(src_spec).isdigit():
         raise ValueError(CAMERA_SOURCE_MESSAGE)
@@ -173,8 +175,8 @@ def prepare_config(
         if abs(prepared.radius_disagreement) > DISAGREEMENT_WARN:
             message = (
                 f"detected ball radius {detection.r:.1f} px differs from the config's "
-                f"{radius:.1f} px by {100 * prepared.radius_disagreement:+.1f}%; the "
-                f"rotation scale follows the radius almost 1:1"
+                f"{radius:.1f} px by {100 * prepared.radius_disagreement:+.1f}%; that "
+                f"is about twice as much again on every in-plane rotation reported"
             )
             log.warning("%s", message)
             prepared.notes.append(message)
@@ -203,14 +205,14 @@ def prepare_config(
 
 @dataclass
 class VfovFit:
-    """The field of view the photometric cost prefers, and whether it prefers it much."""
+    """The field of view the photometric cost prefers, and how much it prefers it."""
 
     vfov: float
     identifiable: bool
     spread: float  # max cost / min cost over the grid
     flat_range: tuple[float, float] | None  # vfovs whose cost is within 5% of the best
     turned_deg: float = 0.0  # rotation the ball showed while the curve was measured
-    depth: float = 1.0  # cost at the minimum's nearer neighbour, over the minimum
+    depth: float = 1.0  # cost at the minimum's nearer neighbor, over the minimum
     curve: list[tuple[float, float]] = field(default_factory=list)
 
     def report(self) -> dict:
@@ -229,7 +231,7 @@ class VfovFit:
         if self.identifiable:
             return (
                 f"{self.vfov:.4g} deg (fitted; identifiable, the cost minimum is "
-                f"{self.depth:.2g}x below its neighbours and varies {self.spread:.2g}x "
+                f"{self.depth:.2g}x below its neighbors and varies {self.spread:.2g}x "
                 f"over the search range)"
             )
         lo, hi = self.flat_range or (float("nan"), float("nan"))
@@ -255,8 +257,8 @@ def _cost_at(
 ) -> tuple[float, float]:
     """Median cost and total turned angle from tracking the first frames at this `vfov`.
 
-    The cost is NaN when the geometry is impossible at this `vfov` (the rim points do not
-    describe a ball, or the ball would cover most of the sky).
+    The cost is NaN when the geometry is impossible at this `vfov` (the rim points do
+    not describe a ball, or the ball would cover most of the sky).
     """
     from dataclasses import replace as _replace
 
@@ -267,11 +269,11 @@ def _cost_at(
     trial = _replace(
         cfg, vfov=float(vfov), roi_circ=list(points), roi_c=None, roi_r=None
     )
-    # This search lives on the cost's sensitivity to the geometry, so the two things that
-    # explain away part of a wrong field of view's cost are turned off: the static
+    # This search lives on the cost's sensitivity to the geometry, so the two things
+    # that explain away part of a wrong field of view's cost are turned off: the static
     # illumination field, which absorbs a systematic misregistration residual as if it
-    # were shading, and the window pre-filter, which blurs it. With the field learning, the
-    # curve's depth on the 16-degree test ball falls from 2.2 to 1.96.
+    # were shading, and the window pre-filter, which blurs it. With the field learning,
+    # the curve's depth on the 16-degree test ball falls from 2.2 to 1.96.
     params = _replace(
         params or TrackParams(), prefilter=0.0, illum_bias=False, illum_gain=False
     )
@@ -314,9 +316,9 @@ def fit_vfov(
 
     The pixel circle and `vfov` together set the ball's angular radius, so fitting both
     from the same cost is meaningless; the circle comes from the detector and only the
-    field of view is searched here. Where the ball is small in the frame the curve is flat
-    and any value in the flat region tracks identically - the fit says so rather than
-    pretending to a number.
+    field of view is searched here. Where the ball is small in the frame the curve is
+    flat and any value in the flat region tracks identically - the fit says so rather
+    than pretending to a number.
     """
     lo, hi, count = grid or VFOV_GRID
     points = _circle_points(circle)
@@ -342,12 +344,12 @@ def fit_vfov(
     spread = float(costs.max() / costs.min())
     flat_range = _flat_run(values, costs, best)
 
-    # An interior minimum is most of the test: the scenes that fail all have their minimum
-    # at an end of the grid. It is not the whole test, though. On a curve that is flat to
-    # within `FLAT_TOL` from end to end - the near-orthographic regime, where the cost
-    # genuinely does not depend on the field of view - which candidate comes out lowest is
-    # noise, and an interior one lands there as easily as an end one. Flat is flat: say so
-    # rather than reporting a fitted value from a 1% wobble.
+    # An interior minimum is most of the test: the scenes that fail all have their
+    # minimum at an end of the grid. It is not the whole test, though. On a curve that
+    # is flat to within `FLAT_TOL` from end to end - the near-orthographic regime, where
+    # the cost genuinely does not depend on the field of view - which candidate comes
+    # out lowest is noise, and an interior one lands there as easily as an end one. Flat
+    # is flat: say so rather than reporting a fitted value from a 1% wobble.
     if spread > FLAT_TOL and 0 < best < len(costs) - 1:
         depth = float(min(costs[best - 1], costs[best + 1]) / costs[best])
         vfov, extra = _golden_section(
@@ -355,9 +357,9 @@ def fit_vfov(
         )
         return VfovFit(vfov, True, spread, flat_range, turned_deg, depth, curve + extra)
 
-    # No interior minimum, or a flat curve. Usable only where the cost is flat around the
-    # best candidate, which is the near-orthographic regime; anywhere else the search has
-    # simply failed.
+    # No interior minimum, or a flat curve. Usable only where the cost is flat around
+    # the best candidate, which is the near-orthographic regime; anywhere else the
+    # search has simply failed.
     near = costs[max(best - 1, 0) : best + 2]
     if float(near.max() / near.min()) > FLAT_TOL:
         raise ValueError(
@@ -377,7 +379,7 @@ def fit_vfov(
 
 
 def _flat_run(values, costs, best) -> tuple[float, float]:
-    """Field of view range around `best` whose cost is indistinguishable from the minimum.
+    """Fields of view around `best` whose cost is indistinguishable from the minimum.
 
     Contiguous on purpose: an isolated candidate elsewhere on the curve that happens to
     come within `FLAT_TOL` is a wobble, not evidence that the range between is flat.
@@ -440,9 +442,14 @@ MIN_CHECKED = 50
 # response in turn) and within 0.5 pp at a correct radius; the exception is `occluded`,
 # where the animal's body and legs stand over the ball and the check reads 1.1-2.9% too
 # large, because a pattern that does not turn with the ball holds the outer annulus back
-# and the control pair, built from one frame, cannot see that.
+# and the control pair, built from one frame, cannot see that. That is a job for
+# `roi_ignr`, and `occluded`'s own polygon covers the body but not the six legs: scaled
+# by 2.5 about its centre, which drops 22% of the window's pixels, it takes the bias at
+# three planted errors from +1.8, +2.4 and +1.4 to +0.6, +0.8 and +0.6 pp. The holder
+# shadow does the same thing more gently - `lab_big_shadow` and `lab_big_ball` differ in
+# nothing else, and their corrected ratios differ by 1%, half a point of radius.
 #
-# The near-orthographic prediction (a point at normalised offset t sits at depth sqrt(1
+# The near-orthographic prediction (a point at normalized offset t sits at depth sqrt(1
 # - t^2) and moves by omega times that depth, so a solver assuming radius 1 + eps
 # reports omega sqrt(1 - t^2) / sqrt((1 + eps)^2 - t^2)) has the right shape but is far
 # too steep: it wants a ratio of 1.6 at -10% where the measurement says 1.13. The window

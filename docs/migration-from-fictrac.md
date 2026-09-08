@@ -3,6 +3,24 @@
 spintrack reads FicTrac configuration files and writes FicTrac's output format, so most
 pipelines only need the executable swapped.
 
+## What will not match
+
+The two trackers do not report the same amount of turning. On six 60 s trials of one lab
+rig, spintrack reads 1.5 to 4% less turning than FicTrac on the five the animal walked
+through, and 9% less on the sixth, where it barely moved; forward motion agrees to about a
+percent, and sideslip to within the several percent the comparison itself can resolve.
+Neither tracker is known to be the right one - that needs ground truth the recordings do
+not have - and the difference does not reproduce on synthetic video: at this rig's geometry
+and its animals' own speeds, both trackers land within 1.2% of exact truth and the small
+residual difference runs the other way. `docs/verification.md` has the numbers and
+what has been ruled out.
+
+The practical consequence: do not pool turning across the switch. Re-run the earlier
+recordings through spintrack rather than comparing its output against FicTrac numbers from
+before, and keep one tracker per dataset that will be analyzed together. Integrated
+heading inherits the difference, so the two fictive paths separate over a trial: on those
+six, heading ends 0.2 to 19 degrees apart and the endpoint 0.1 to 6% apart after 60 s.
+
 ## Install
 
 ```bash
@@ -17,13 +35,14 @@ Prebuilt wheels for Linux, macOS and Windows; no CMake, OpenCV, NLopt or Boost t
 |-----------------------------|---------------------------------------------|
 | `fictrac config.txt`        | `spintrack run config.txt`                  |
 | `fictrac config.txt -s vid` | `spintrack run config.txt --src vid`        |
-| socket output (`sock_port`) | honoured; also `--udp host:port`, `--tcp`   |
-| serial output (`com_port`)  | honoured; also `--serial PORT[:BAUD]`       |
+| socket output (`sock_port`) | honored; also `--udp host:port`, `--tcp`   |
+| serial output (`com_port`)  | honored; also `--serial PORT[:BAUD]`       |
 | `configGui config.txt`      | `spintrack calibrate config.txt`            |
-| `save_debug: y`             | honoured; also `--debug-video [PATH]`       |
-| `sphere_map_fn`             | honoured (.png template or spintrack .npz)  |
+| `save_debug: y`             | honored; also `--debug-video [PATH]`       |
+| `sphere_map_fn`             | honored (.png template or spintrack .npz)  |
 | (no equivalent)             | `--refine N` offline re-estimation          |
 | (no equivalent)             | `--save-map`, `--load-map`, `--frozen-map`  |
+| (no equivalent)             | `--load-illumination` the rig's lighting    |
 | (no equivalent)             | `--two-pass` map-then-track in one command  |
 | equal-area sphere-map grid  | equi-angular cubemap (`--map-projection`)   |
 
@@ -65,17 +84,22 @@ How the keys map onto spintrack's solver:
 - `thr_win_pc`: size of the local photometric normalization window (FicTrac used it for
   adaptive thresholding).
 - `opt_bound`: maximum accepted rotation per frame (rad).
-- `opt_do_global`: enables relocalisation against the map after tracking is lost.
+- `opt_do_global`: enables relocalization against the map after tracking is lost.
 - `accumulate_map: n`: keep only the currently visible surface (plus a one-cell margin),
-  reproducing the lab fork's behaviour; the default accumulates the whole surface.
+  reproducing the lab fork's behavior; the default accumulates the whole surface.
 - `max_bad_frames`: reset tracking after this many consecutive untrackable frames.
 - `sphere_map_fn`: a FicTrac sphere-map PNG (converted on import) or a spintrack `.npz`
-  written by `--save-map`; the first frame is localised globally against it. A spintrack
+  written by `--save-map`; the first frame is localized globally against it. A spintrack
   `.npz` also carries the static illumination field, which describes the rig rather than
   the ball, so a map saved from one trial gives the next one a head start.
 - `illumination` (spintrack-only, on by default): estimate the camera-fixed illumination -
   the holder's shadow above all - and keep it out of the ball's surface map. FicTrac has
   no equivalent; `illumination: n` or `--no-illumination` turns it off.
+- `illumination_fn` (spintrack-only), set by `--load-illumination PATH`: a map `.npz` to
+  take illumination fields from, without its map, so the rig's lighting can be carried to
+  a new ball. The field describes the rig and takes a few hundred frames to converge, so a
+  short recording is better off borrowing one; `sphere_map_fn` also brings the fields, but
+  only with the surface map of whatever ball they were saved beside.
 - `--map-projection` (spintrack-only, `cube` by default): how the surface map tiles the
   sphere. `equal_area` is FicTrac's Lambert cylindrical grid, and is what a like-for-like
   comparison against FicTrac wants; `cube` is an equi-angular cubemap with the same number
@@ -101,8 +125,8 @@ Two deliberate differences:
 - Column 5 (error score) is spintrack's weighted mean squared residual in normalized
   intensity units, not FicTrac's binary-match error. Use it relatively (frame to frame).
 - Columns 2-4 and 9-11 are true camera-frame vectors. FicTrac reports these in its
-  tracking-window frame (z toward the ball centre) and only labels them "camera"; the two
-  coincide for a ball near the image centre. Lab-frame columns are unaffected.
+  tracking-window frame (z toward the ball center) and only labels them "camera"; the two
+  coincide for a ball near the image center. Lab-frame columns are unaffected.
 
 ## Python API
 

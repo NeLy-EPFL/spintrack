@@ -193,13 +193,101 @@ def cmd_agree(args) -> int:
             print(
                 f"[agree] {config.parent.name:12s} frames {timing['frames']:5d} lost {timing['lost']:3d} "
                 f"| median {agr.median_deg:.3f} deg p95 {agr.p95_deg:.3f} | fwd corr {agr.forward_corr:.3f} "
-                f"turn corr {agr.turn_corr:.3f} | heading diff {agr.heading_diff_deg:+.1f} deg "
+                f"turn corr {agr.turn_corr:.3f} | scale fwd {agr.scale_forward:.4f} "
+                f"turn {agr.scale_turn:.4f} side {agr.scale_side:.4f} "
+                f"| heading diff {agr.heading_diff_deg:+.1f} deg "
                 f"endpoint {agr.endpoint_diff_pct:.1f}% | {timing['tracking_ms_per_frame']:.2f} ms/frame, "
                 f"{timing['fps_total']:.0f} fps incl. decode"
             )
     if rows and args.out:
         pd.DataFrame(rows).to_csv(args.out, index=False)
         print(f"[agree] wrote {args.out}")
+    return 0
+
+
+def _gain_section(df) -> list[str]:
+    """Per-component scale in the animal frame, as `gain +- bootstrap error` strings."""
+    import pandas as pd
+
+    names = {"forward": "forward walking", "turn": "turning", "side": "sideslip"}
+    if not all(f"gain_{n}" in df.columns for n in names):
+        return []
+    lines = [
+        "## Scale of each reported component (animal frame)",
+        "",
+        "The same factor fitted per component, on the forward, turning and sideslip rotations",
+        "a user reads (`spintrack.path`), with a moving-block bootstrap error that carries the",
+        "autocorrelation of the tracking residual. Sideslip is the slack one: these scenes give",
+        "it a tenth of the amplitude they give turning, so its error bars are ten times wider",
+        "and a reading near 0.98 there is not evidence of a 2% deficit. A dash means the scene",
+        "does not turn about that axis at all.",
+        "",
+    ]
+    for name, title in names.items():
+        rows = [
+            {
+                "dataset": row["dataset"],
+                "system": row["system"],
+                title: "-"
+                if not np.isfinite(row[f"gain_{name}"])
+                else f"{row[f'gain_{name}']:.4f} +- {row[f'gain_se_{name}']:.4f}",
+            }
+            for _, row in df.iterrows()
+        ]
+        table = pd.DataFrame(rows).pivot(
+            index="dataset", columns="system", values=title
+        )
+        lines += [f"### {title}", "", table.to_markdown(), ""]
+    return lines
+
+
+def cmd_rescore(args) -> int:
+    """Recompute the metrics from the stored estimates, without re-running anything.
+
+    Every run saves its per-frame estimate next to its row, so a new or corrected metric
+    does not need the trackers again - which matters because the FicTrac builds are not
+    reproducible from a clone. Rows whose `.npz` is missing keep the numbers they have.
+
+    A repeat of the same `(dataset, system, config_hash)` overwrites that one `.npz` and
+    appends a row, so only the newest row of each triple owns the estimate on disk; the
+    older ones are left alone rather than rescored against a stranger's numbers. That is
+    also what `report` renders.
+    """
+    import pandas as pd
+
+    results_dir = Path(args.results)
+    path = results_dir / "results.parquet"
+    df = pd.read_parquet(path)
+    owns_npz = (
+        df.sort_values("timestamp")
+        .groupby(["dataset", "system", "config_hash"], as_index=False)
+        .tail(1)
+        .index
+    )
+    truths: dict[str, dict] = {}
+    updated = 0
+    for i, row in df.loc[owns_npz].iterrows():
+        npz = (
+            results_dir / f"{row['dataset']}__{row['system']}__{row['config_hash']}.npz"
+        )
+        dataset = Path(args.datasets) / row["dataset"]
+        if not npz.exists() or not (dataset / "truth.npz").exists():
+            print(f"[rescore] {row['dataset']} / {row['system']}: no estimate, keeping")
+            continue
+        truth = truths.setdefault(row["dataset"], load_truth(dataset))
+        est = np.load(npz)["est_cam"]
+        summary = summarize(
+            est, truth["w_cam"], truth["cam_to_lab"], float(truth["fps"])
+        )
+        for key, value in summary.as_dict().items():
+            df.loc[i, key] = value
+        updated += 1
+    if not args.dry_run:
+        df.to_parquet(path, index=False)
+    print(
+        f"[rescore] {updated} of {len(owns_npz)} current rows rescored "
+        f"({len(df)} in the table){' (dry run)' if args.dry_run else ''}"
+    )
     return 0
 
 
@@ -222,6 +310,7 @@ def cmd_report(args) -> int:
         "drift_deg_per_min": "drift (deg/min)",
         "endpoint_err_pct": "endpoint err (%)",
         "tracking_ms_per_frame": "tracking ms/frame",
+        "scale": "rotation scale (reported / true)",
     }
     lines = [
         "# Benchmark results",
@@ -235,13 +324,50 @@ def cmd_report(args) -> int:
         "from the ball's texture); `spintrack-full` solves on every pixel. Errors are",
         "per-frame rotation errors in degrees; drift is the slope of the accumulated",
         "orientation error; endpoint error is the fictive-path endpoint discrepancy as a",
-        "percentage of the true path length; tracking time excludes video decoding and was",
-        "measured pinned to one core.",
+        "percentage of the true path length, and reads `nan` on a scene whose animal does",
+        "not go anywhere (`constant_turn` turns in place, `static` does not move at all);",
+        "tracking time excludes video decoding and was measured pinned to one core.",
+        "",
+        "The rotation scale is the one thing the error angles cannot show: a tracker that",
+        "reported every rotation 2% small would score the same median as one that is right on",
+        "average and noisy. It is the least-squares factor between the reported rotation and",
+        "the true one, pooled over the three camera-frame components, and it reads `nan` on",
+        "`static`, which does not turn. A wrong assumed ball radius is what moves it (about",
+        "twice the relative radius error, on the components about axes in the image plane -",
+        "see `tests/test_scale.py`), and `motion_blur` shows the other way it can move: at an",
+        "exposure of 0.8 of the frame period the per-frame rotation is the average over that",
+        "exposure rather than the instantaneous one, which is 3% small here while leaving the",
+        "integrated path exact (`scale_path` in the parquet reads 1.0000 there).",
+        "",
+        "These scenes are rendered with spintrack's own camera and sphere code, so they",
+        "cannot see an error in either; `docs/verification.md` says what closes that gap and",
+        "what the scale numbers rest on.",
+        "",
+        "Reproducing the synthetic tables from a clone: the scenes are not committed",
+        "(`benchmarks/data/` is gitignored) but regenerate from the seeds in `families.py`, and",
+        "every number is read back from `benchmarks/results/results.parquet` without rerunning a",
+        "tracker, so only the timing columns depend on the machine. The scenes were rendered and",
+        "scored, and this file written, with",
+        "",
+        "    uv run --group bench python benchmarks/bench.py synth",
+        "    uv run --group bench python benchmarks/bench.py run \\",
+        "        --systems fictrac fictrac-fork spintrack spintrack-full spintrack-noillum \\",
+        "        --pin-cpu 2",
+        "    uv run --group bench python benchmarks/bench.py report --out docs/benchmark.md",
+        "",
+        "FicTrac is compiled from its own sources - upstream 2.1.2 (`github.com/rjdmoore/fictrac`)",
+        "and the NeLy-EPFL fork, which agree to five decimals here - and",
+        "`benchmarks/spintrack_bench/runners/fictrac_cpp.py` points at the two binaries. Timings",
+        "were measured on an Intel Core i9-14900K with tracking pinned to one core and are",
+        "relative to that machine; the error and scale columns are not. The six real recordings",
+        "in the last table are lab data and are not distributed with the repository.",
         "",
     ]
     for metric, title in cols.items():
         table = df.pivot(index="dataset", columns="system", values=metric)
-        lines += [f"## {title}", "", table.to_markdown(floatfmt=".3f"), ""]
+        floatfmt = ".5f" if metric == "scale" else ".3f"
+        lines += [f"## {title}", "", table.to_markdown(floatfmt=floatfmt), ""]
+    lines += _gain_section(df)
     agreement = Path(args.results) / "agreement_lab_trials.csv"
     if agreement.exists():
         ag = pd.read_csv(agreement)
@@ -253,6 +379,9 @@ def cmd_report(args) -> int:
             "median_deg": "median diff (deg)",
             "p95_deg": "p95 diff (deg)",
             "turn_corr": "turn corr",
+            "scale_forward": "forward scale",
+            "scale_turn": "turn scale",
+            "scale_side": "side scale",
             "heading_diff_deg": "heading diff (deg)",
             "endpoint_diff_pct": "endpoint diff (%)",
             "tracking_ms_per_frame": "tracking ms/frame",
@@ -265,6 +394,39 @@ def cmd_report(args) -> int:
             "with spintrack and compared with the lab fork's FicTrac output for the same video.",
             "There is no ground truth here; differences are per-frame angles between the two",
             "trackers' lab-frame rotation increments.",
+            "",
+            "The scale columns are spintrack's reported amplitude over FicTrac's, per component,",
+            "by the lagged instrument in `spintrack_bench.agreement.scale_ratio` - which the",
+            "synthetic scenes, where both systems' gains against truth are known, put within 0.3%",
+            "(`notes/session_2026-09-08d/scale_estimator.py`; the statistics one reaches for first,",
+            "a regression either way or a ratio of standard deviations, are diluted by the noisier",
+            "series and read 0.78 to 0.99 there where the answer is 1.00). On a scene built with",
+            "these recordings' own geometry it reads the known forward and turning ratios within",
+            "0.7%, and the known *sideslip* ratio 4 to 6 points low - so the side column carries",
+            "an error bar this comparison has not pinned down, rather than agreement to a percent.",
+            "",
+            "Forward agrees to about a percent. **spintrack reports 1.5 to 4% less turning than",
+            "FicTrac on the five trials the animal walked through, and 9% less on 008**, whose",
+            "correlations are the worst of the six and whose forward column the estimator refuses",
+            "outright for want of a low-frequency signal to instrument. Nothing here says which",
+            "tracker is right - that needs truth these recordings do not have - but it is",
+            "systematic and it is on the component most of these experiments report.",
+            "",
+            "It is a **slow-turning** effect. Binned into 6 s windows by how fast the animal was",
+            "actually turning, the ratio runs 0.933 +- 0.011 below 0.08 deg/frame and 0.971 to",
+            "0.977 above 0.12. That is not, however, why no scene here shows it: re-rendering",
+            "this geometry with `fly_walk` scaled down to the real trials' own rate leaves",
+            "spintrack within 0.2% of truth and FicTrac within 1.2%, with the ratio moving the",
+            "wrong way (1.010, spintrack the higher). See `docs/verification.md`.",
+            "",
+            "What is worth knowing about every table above: **these scenes have one activity",
+            "level.** The families vary the optics, the lighting, the occluders, the noise and the",
+            "codec, but all of them drive the ball with the same seeded `fly_walk`, so 14 of the",
+            "17 scenes with an identified turn gain turn at exactly 0.871 deg/frame and the other",
+            "three at 0.87 to 1.39 - 5 to 12 times more active than these recordings, whose",
+            "animals turn at 0.07 to 0.16 deg/frame and walk at 0.04 to 0.09. Read the gains as",
+            "one operating point rather than a range that covers a real experiment.",
+            "`docs/verification.md` has the rate table and what is ruled out.",
             "",
             ag[list(keep)]
             .rename(columns=keep)
@@ -316,6 +478,13 @@ def main(argv=None) -> int:
     a.add_argument("--pin-cpu", type=int, default=None)
     a.add_argument("--out", default=None, help="CSV path for the table")
     a.set_defaults(func=cmd_agree)
+    rs = sub.add_parser(
+        "rescore", help="recompute metrics from stored estimates (no tracking)"
+    )
+    rs.add_argument("--results", default=str(DEFAULT_RESULTS))
+    rs.add_argument("--datasets", default=str(DEFAULT_DATA))
+    rs.add_argument("--dry-run", action="store_true")
+    rs.set_defaults(func=cmd_rescore)
     p = sub.add_parser("report", help="render results tables")
     p.add_argument("--results", default=str(DEFAULT_RESULTS))
     p.add_argument("--out", default=None)

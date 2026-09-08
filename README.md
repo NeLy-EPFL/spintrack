@@ -3,8 +3,10 @@
 Track the 3D rotation of a spherical treadmill ("trackball") under a tethered animal from a
 single camera, and reconstruct the animal's fictive path. A pip-installable successor to
 [FicTrac](https://github.com/rjdmoore/fictrac) (Moore et al. 2014): same configuration files
-and output format, a compiled Rust core, and a solver that is 4-8x more precise on synthetic
-ground truth and several times faster at the lab's settings.
+and output format, a compiled Rust core, and a solver whose per-frame rotation error on
+synthetic ground truth is 3-20x smaller (median 13x over the 16 scenes both systems track),
+at 2.5x FicTrac's speed on the lab's geometry and about 15% slower than it on scenes where
+the ball fills the frame.
 
 ## Install
 
@@ -16,6 +18,9 @@ Prebuilt wheels for Linux, macOS and Windows (Python >= 3.11). No CMake, OpenCV,
 Boost to build.
 
 ## Use
+
+New to a rig, with no FicTrac config? [docs/first-run.md](docs/first-run.md) takes a clip to
+a tracked file and explains which numbers in the run summary to trust.
 
 ```bash
 spintrack run config.txt                 # FicTrac config, writes <video>-<timestamp>.dat
@@ -59,8 +64,11 @@ FicTrac wants. Maps convert between the two on load.
 A ball sitting in a holder is darker near the holder, and that darkness belongs to the rig,
 not to the ball. Because the lamps do not turn with the ball, spintrack can tell the two
 apart: it measures what stays put in the camera frame and subtracts it, so the surface map
-holds texture rather than a shadow smeared around the sphere. `--no-illumination` turns it
-off. See [docs/algorithm.md](docs/algorithm.md#static-illumination).
+holds texture rather than a shadow smeared around the sphere. The field takes a few hundred
+frames to converge, so `--load-illumination` starts it from one measured on the same rig
+before - the fields alone, out of a map written by `--save-map`, without that recording's
+ball. `--no-illumination` turns the whole thing off. See
+[docs/algorithm.md](docs/algorithm.md#static-illumination).
 
 ### The geometry does not have to be hand-measured
 
@@ -107,13 +115,14 @@ to `Tracker.process_frame`. spintrack does not bundle camera SDKs.
 ## How it works
 
 FicTrac binarizes the tracking window and searches a rotation that best matches a binary
-surface map with a derivative-free optimiser. spintrack instead normalizes the window
+surface map with a derivative-free optimizer. spintrack instead normalizes the window
 photometrically, keeps a floating-point surface map, and aligns the two with Gauss-Newton
 iterations using analytic derivatives (sub-pixel, a few iterations per frame), with an
 anti-aliased window, robust weights against occluders, a coarse-to-fine fallback for
 saccades, an estimate of the rig's static illumination that keeps it out of the map, a
-window that follows a ball moving in its holder, and an optional global relocalisation.
-Details in [docs/algorithm.md](docs/algorithm.md).
+window that follows a ball moving in its holder, and an optional global relocalization.
+Details in [docs/algorithm.md](docs/algorithm.md), and what has been checked against what
+in [docs/verification.md](docs/verification.md).
 
 ## Accuracy and speed
 
@@ -130,6 +139,16 @@ black box on the same videos). Median per-frame rotation error in degrees; full 
 | saccades         |   0.242 |     0.017 |
 | motion blur      |   0.304 |     0.092 |
 | fine speckle     |  90.266 |     0.020 |
+
+Absolute scale is separate from that error and is what matters for a reported speed: over
+these scenes the reported rotation is 0.9986 to 1.0001 times the true one, and on a ball
+rendered without any of spintrack's own geometry code it is 1.0000 within 0.04%
+(`tests/test_scale.py`). What is left is calibration rather than code - a relative error in
+the ball's assumed radius costs about twice as much of the reported rotation about any axis
+in the image plane. `motion_blur` is the one scene where the scale moves, to 0.969: at an
+exposure of 0.8 of the frame period the reported rotation is the average over the exposure
+rather than the instantaneous one, and the integrated path stays exact. See
+[docs/verification.md](docs/verification.md).
 
 Tracking time per frame at the lab's settings (120x120 window, one core): FicTrac ~7 ms,
 spintrack ~2.5 ms with every check on, ~1.7 ms with the ball follower and the radius check

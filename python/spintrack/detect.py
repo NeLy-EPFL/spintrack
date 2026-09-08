@@ -1,21 +1,24 @@
 """Find the ball in the recording, so the user does not have to click its rim.
 
-The silhouette is the only circle in the image with background outside it at every angle,
-but a brightness threshold does not find it: the ball is shaded towards the rim and dark
-surface blobs touching the rim bite into any thresholded outline, which is why the
-baselines in `notes/baseline_detectors.py` come out 18-28% small. Three things fix that:
+The silhouette is the only circle in the image with background outside it at every
+angle, but a brightness threshold does not find it: the ball is shaded towards the rim
+and dark surface blobs touching the rim bite into any thresholded outline, which is why
+the baselines in `notes/baseline_detectors.py` come out 18-28% small. Three things fix
+that:
 
 1. the surface texture rotates while the silhouette does not, so a high per-pixel
    quantile over a hundred frames erases the blobs and leaves the shading envelope;
-2. the convex hull of the foreground removes what still bites in, and RANSAC removes what
-   sticks out (the animal, the holder);
+2. the convex hull of the foreground removes what still bites in, and RANSAC removes
+   what sticks out (the animal, the holder);
 3. the rim is then fitted sub-pixel by taking, along each of 360 rays, the *outermost*
    strong radial edge - interior blob edges are strong too, and that is where
    `radial_gradient` went wrong.
 
-A detection that does not meet `min_rim_fraction` and `min_confidence` raises rather than
-returning a poor circle: the ball's pixel radius sets the rotation scale slightly worse
-than 1:1, so a silently wrong radius rescales every speed the tool reports.
+A detection that does not meet `min_rim_fraction` and `min_confidence` raises rather
+than returning a poor circle: a relative error in the ball's pixel radius costs about
+twice as much of the reported rotation about any axis in the image plane (measured in
+`tests/test_scale.py`), so a silently wrong radius rescales the speeds the tool reports
+by more than itself.
 """
 
 from __future__ import annotations
@@ -35,25 +38,25 @@ QUANTILE = 0.9
 BORDER_FRACTION = 0.05  # width of the background band, as a fraction of the image
 MASK_K_BACKGROUND = 5.0  # deviations from the background level for the foreground mask
 MASK_K_MOTION = 5.0  # multiples of the temporal noise level, same purpose
-# Tukey constants of the robust rim fit, in units of the residual scale: standard outside
-# the fitted circle, tight inside it. Contamination here is one-sided, because taking the
-# outermost strong edge of a ray whose rim is hidden reads too small and never too large.
-# Measured over the 17 scenes and the three real trials: 1.0 inside takes `static` from
-# 0.88% to 0.57% and its confidence from 0.50 to 0.76, and tightens the agreement between
-# the three trials of one rig from 0.28% to 0.20%.
+# Tukey constants of the robust rim fit, in units of the residual scale: standard
+# outside the fitted circle, tight inside it. Contamination here is one-sided, because
+# taking the outermost strong edge of a ray whose rim is hidden reads too small and
+# never too large. Measured over the 17 scenes and the three real trials: 1.0 inside
+# takes `static` from 0.88% to 0.57% and its confidence from 0.50 to 0.76, and tightens
+# the agreement between the three trials of one rig from 0.28% to 0.20%.
 TUKEY_OUTSIDE = 4.685
 TUKEY_INSIDE = 1.0
 # How far from the fitted circle a ray may land and still count as rim, as a fraction of
-# the radius or as a multiple of the fit's own residual, whichever is larger. The residual
-# term is what keeps a small ball, where 1% of the radius is a fraction of a pixel, from
-# cutting mere noise.
+# the radius or as a multiple of the fit's own residual, whichever is larger. The
+# residual term is what keeps a small ball, where 1% of the radius is a fraction of a
+# pixel, from cutting mere noise.
 RIM_TOL = 0.01
 RIM_TOL_RESIDUALS = 3.0
 # Inlier band of the coarse hull RANSAC, as a fraction of the candidate circle's radius
 # and as an absolute floor. A fixed two pixels is far too tight for a big ball: the hull
-# comes from a morphologically closed mask, so it stands a little off the rim, and on the
-# real trials' 518 px ball that left RANSAC agreeing with only a third of the outline and
-# refusing about half of all detections.
+# comes from a morphologically closed mask, so it stands a little off the rim, and on
+# the real trials' 518 px ball that left RANSAC agreeing with only a third of the
+# outline and refusing about half of all detections.
 HULL_TOL = 0.015
 HULL_TOL_PX = 2.0
 MIN_AREA_FRACTION = 0.002
@@ -97,7 +100,7 @@ class BallDetection:
     n_frames: int
     method: str
     ok: bool
-    # Polar description of the measured rim about `(cx, cy)`, one entry per accepted ray.
+    # The measured rim in polar form about `(cx, cy)`, one entry per accepted ray.
     rim_theta: np.ndarray = None
     rim_radius: np.ndarray = None
 
@@ -113,12 +116,12 @@ class BallDetection:
     def rim_points(self, n: int = 16) -> list[int]:
         """Up to `n` measured rim points as a FicTrac `roi_circ` flat list.
 
-        The points come from the measured rim, not from the fitted circle: under a pinhole
-        camera the silhouette of a sphere is an ellipse, and off-axis that matters. On
-        `offaxis` (8 deg half-angle, 16 deg off the axis, less than half the rim in frame)
-        resampling the fitted circle costs 3.7% of radius and 0.46 deg of centre, while
-        the measured rim is exact. Each point is the median of the accepted rays in its
-        angular bin, so it is also quieter than any single ray.
+        The points come from the measured rim, not from the fitted circle: under a
+        pinhole camera the silhouette of a sphere is an ellipse, and off-axis that
+        matters. On `offaxis` (8 deg half-angle, 16 deg off the axis, less than half the
+        rim in frame) resampling the fitted circle costs 3.7% of radius and 0.46 deg of
+        centre, while the measured rim is exact. Each point is the median of the
+        accepted rays in its angular bin, so it is also quieter than any single ray.
         """
         if self.rim_theta is None or len(self.rim_theta) < 3:
             a = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
@@ -147,15 +150,15 @@ def temporal_stats(
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Per-pixel high quantile and standard deviation over the frames.
 
-    The quantile is what erases the rotating surface texture: over a hundred frames every
-    point of the ball is bright in most of them, so a high quantile is the shading
+    The quantile is what erases the rotating surface texture: over a hundred frames
+    every point of the ball is bright in most of them, so a high quantile is the shading
     envelope with the dark blobs gone. It is deliberately not the maximum, which also
-    keeps every bright transient - on the real trials the fly's legs and the glint at the
-    rim inflate the maximum's radius by 1.4% and make the three trials of one rig disagree
-    by 0.9%, against 0.2% at the 90th percentile.
+    keeps every bright transient - on the real trials the fly's legs and the glint at
+    the rim inflate the maximum's radius by 1.4% and make the three trials of one rig
+    disagree by 0.9%, against 0.2% at the 90th percentile.
 
-    Frames are held as uint8, so the cost is `max_frames` times the frame size (160 MB for
-    100 frames of 1600x1008, doubled while the quantile is taken). The deviation is
+    Frames are held as uint8, so the cost is `max_frames` times the frame size (160 MB
+    for 100 frames of 1600x1008, doubled while the quantile is taken). The deviation is
     accumulated with Welford, and a single frame gives that frame and zeros, which the
     rest of the module allows for.
     """
@@ -204,12 +207,12 @@ def _background_level(image: np.ndarray) -> tuple[float, float]:
 
 
 def foreground_mask(hi: np.ndarray, sd: np.ndarray) -> tuple[np.ndarray, float]:
-    """Largest connected foreground component of the temporal statistics, and the spread.
+    """Largest foreground component of the temporal statistics, and its spread.
 
     Foreground is anything far from the background level in `mx` or moving in `sd`; the
-    second term is what finds a ball whose brightness matches the background. The returned
-    spread is the per-pixel deviation of the background band of `hi`, which is what the
-    rim's edge strength is judged against.
+    second term is what finds a ball whose brightness matches the background. The
+    returned spread is the per-pixel deviation of the background band of `hi`, which is
+    what the rim's edge strength is judged against.
     """
     h, w = hi.shape
     level, spread = _background_level(hi)
@@ -263,9 +266,10 @@ def _angular_coverage(
 def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     """Coarse circle through the convex hull of the foreground, by RANSAC.
 
-    Dark blobs, legs and the body bite *into* the disc, and the hull removes those bites;
-    the animal and the holder stick *out*, and RANSAC treats them as outliers. Hull points
-    on the image border are dropped, since a ball cut off by the frame has no rim there.
+    Dark blobs, legs and the body bite *into* the disc, and the hull removes those
+    bites; the animal and the holder stick *out*, and RANSAC treats them as outliers.
+    Hull points on the image border are dropped, since a ball cut off by the frame has
+    no rim there.
     """
     h, w = mask.shape
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -344,8 +348,8 @@ def _radial_edges(image, cx, cy, r, polarity, step=0.25, band=None):
     """Sub-pixel rim radius per ray of `_polar_grid`, plus each ray's edge strength.
 
     Along every ray the *outermost* radius whose radial gradient reaches half that ray's
-    maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands on
-    a search bound, or whose samples leave the image, are rejected.
+    maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands
+    on a search bound, or whose samples leave the image, are rejected.
     """
     band = max(8.0, 0.05 * r) if band is None else band
     radii, angles, xs, ys = _polar_grid(cx, cy, r, band, step, shape=image.shape)
@@ -359,7 +363,7 @@ def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.
     """The rim edge of each ray of an already-sampled polar profile."""
     h, w = shape
     # Differentiate with a derivative-of-Gaussian one pixel wide rather than between
-    # neighbouring samples: the profile is bilinearly interpolated every 0.25 px, so
+    # neighboring samples: the profile is bilinearly interpolated every 0.25 px, so
     # consecutive samples share pixels and a plain difference divides noise by 0.25.
     t = np.arange(-3.0, 3.0 + step, step)
     kernel = (-t * np.exp(-0.5 * t * t)).astype(np.float32)
@@ -368,8 +372,8 @@ def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.
     usable = inside.all(axis=1)
 
     # The outermost *local maximum* worth half the ray's best edge. Taking the outermost
-    # half-maximum crossing instead puts every rim point outside the edge by construction,
-    # which showed up as a systematic +1% radius on all 17 scenes.
+    # half-maximum crossing instead puts every rim point outside the edge by
+    # construction, which showed up as a systematic +1% radius on all 17 scenes.
     peak = grad.max(axis=1)
     strong = np.zeros(grad.shape, bool)
     inner = grad[:, 1:-1]
@@ -401,7 +405,7 @@ class RimFit:
 
 
 def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit:
-    """Alternate sub-pixel rim sampling and a robust circle fit around the current one."""
+    """Alternate sub-pixel rim sampling and a robust circle fit around the current."""
     for _ in range(rounds):
         edge_r, strength, ok, usable, angles = _radial_edges(image, cx, cy, r, polarity)
         if ok.any():
@@ -412,10 +416,11 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
         pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
         # IRLS with Tukey weights on the radial residual, started from the RANSAC centre
         # and the median measured radius rather than from an unweighted fit: something
-        # bright lying across one sector of the rim (a holder, a leg) pulls an unweighted
-        # fit far enough that the offending rays stop looking like outliers, and the
-        # iteration then keeps them. Both seeds tolerate half the points being wrong; the
-        # RANSAC radius on its own does not, being a mask outline and so slightly large.
+        # bright lying across one sector of the rim (a holder, a leg) pulls an
+        # unweighted fit far enough that the offending rays stop looking like outliers,
+        # and the iteration then keeps them. Both seeds tolerate half the points being
+        # wrong; the RANSAC radius on its own does not, being a mask outline and so
+        # slightly large.
         r = float(np.median(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)))
         for _ in range(6):
             d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
@@ -431,9 +436,9 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
             cx, cy, r = _fit_circle(pts, weights)
         d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
     # Rays that land far from the fitted circle are not rim: too far inside, the rim is
-    # hidden behind something dark; too far outside, something bright sits in front of it.
-    # Both are dropped and the circle refitted, so the outline handed to `fit_ball` and
-    # the circle itself rest on the same points.
+    # hidden behind something dark; too far outside, something bright sits in front of
+    # it. Both are dropped and the circle refitted, so the outline handed to `fit_ball`
+    # and the circle itself rest on the same points.
     residual = float(np.sqrt(np.average(d**2, weights=weights)))
     keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
     if keep.sum() < 8:
@@ -485,28 +490,29 @@ def relocate_ball(
 ) -> BallRelocation:
     """Re-measure the centre of a ball whose radius is already known.
 
-    This is `detect_ball`'s job stripped to what following a moving ball needs, and it is
-    two orders of magnitude cheaper: the temporal quantile is taken on the polar rim band
-    alone (360 rays x a few hundred samples) instead of over whole frames, and the
-    foreground mask and hull RANSAC are skipped, since `(cx, cy)` is already within a few
-    pixels and `r` is known. The trade is capture range: the rim has to fall inside
+    This is `detect_ball`'s job stripped to what following a moving ball needs, and it
+    is two orders of magnitude cheaper: the temporal quantile is taken on the polar rim
+    band alone (360 rays x a few hundred samples) instead of over whole frames, and the
+    foreground mask and hull RANSAC are skipped, since `(cx, cy)` is already within a
+    few pixels and `r` is known. The trade is capture range: the rim has to fall inside
     `band`, so a ball that has jumped needs `detect_ball`.
 
     Holding the radius fixed is not only cheaper but better conditioned. On the real
-    trials the ball is cut off at the top and bottom of the frame, so the rim is two side
-    arcs; those pin a free circle's centre badly in y (4.3 px of scatter) and a
+    trials the ball is cut off at the top and bottom of the frame, so the rim is two
+    side arcs; those pin a free circle's centre badly in y (4.3 px of scatter) and a
     known-radius circle's well (1.4-2.5 px).
 
     `polarity` may be left out, in which case it is read off the profile: the rim band
     is centred on the silhouette, so its inner quarter is ball and its outer quarter is
-    whatever surrounds it. `cut` fixes the fit's outlier cut in pixels (see `_fit_centre`).
+    whatever surrounds it. `cut` fixes the fit's outlier cut in pixels (see
+    `_fit_centre`).
 
-    Rays through the config's `roi_ignr` are deliberately *not* left out. With the animal
-    at the top of the ball that removes the rim's upper arc, and a circle of fixed radius
-    held only by its two sides and its bottom is free to climb: on the synthetic
-    `lab_small_ball` a look seeded on its own previous answer then walked 80 px off the
-    ball. The occluder's pull (3-8 px toward the body) is the lesser evil, and
-    `spintrack.refit` is what has to live with it.
+    Rays through the config's `roi_ignr` are deliberately *not* left out. With the
+    animal at the top of the ball that removes the rim's upper arc, and a circle of
+    fixed radius held only by its two sides and its bottom is free to climb: on the
+    synthetic `lab_small_ball` a look seeded on its own previous answer then walked 80
+    px off the ball. The occluder's pull (3-8 px toward the body) is the lesser evil,
+    and `spintrack.refit` is what has to live with it.
     """
     band = max(8.0, RELOCATE_BAND * r) if band is None else band
     images = [np.asarray(frame) for frame in frames]
@@ -586,14 +592,15 @@ def _fit_centre(pts, centre, r, rounds: int = 8, cut=None, band=None):
     """Robust least-squares center of a circle of known radius `r` through `pts`.
 
     Minimizing `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
-    `c = mean_w(p_i - r u_i)` with `u_i` the unit vector from `c` to `p_i`, which is what
-    this iterates, re-weighting Tukey-style on the radial residual as `refine_rim` does.
+    `c = mean_w(p_i - r u_i)` with `u_i` the unit vector from `c` to `p_i`, which is
+    what this iterates, re-weighting Tukey-style on the radial residual exactly as
+    `refine_rim` does.
 
     With `cut` (px) the Tukey cut is that fixed value on both sides, reached by halving
     from twice `band` so that a seed well off the center still converges (a seed `band`
-    off puts genuine rim points `band` from the circle); without it the scale is estimated
-    from the residuals, which something bright standing past the rim (the animal)
-    inflates. See `spintrack.refit`.
+    off puts genuine rim points `band` from the circle); without it the scale is
+    estimated from the residuals, which something bright standing past the rim (the
+    animal) inflates. See `spintrack.refit`.
     """
     weights = np.ones(len(pts))
     d = np.zeros(len(pts))
@@ -626,12 +633,12 @@ def _confidence(
     """Product of clipped linear terms, each 0 at unusable and 1 at clearly good.
 
     The residual is judged relative to the radius (0.5 px is tight on a 500 px ball and
-    hopeless on a 20 px one) and the edge strength against the background pixel spread of
-    the same image, not against the temporal noise: on `lighting` the illumination itself
-    varies, and a temporal denominator would reject a perfectly good rim. The agreement
-    with the coarse hull circle is only a sanity bound, not a quality measure: the hull
-    comes from a morphologically closed mask and runs a few percent large, more on a
-    compressed video, so it is asked only not to disagree wildly.
+    hopeless on a 20 px one) and the edge strength against the background pixel spread
+    of the same image, not against the temporal noise: on `lighting` the illumination
+    itself varies, and a temporal denominator would reject a perfectly good rim. The
+    agreement with the coarse hull circle is only a sanity bound, not a quality measure:
+    the hull comes from a morphologically closed mask and runs a few percent large, more
+    on a compressed video, so it is asked only not to disagree wildly.
     """
 
     def term(value, bad, good):
@@ -654,9 +661,9 @@ def detect_ball(
     min_confidence: float = 0.6,
     seed: int = 0,
 ) -> BallDetection:
-    """Find the ball in a sequence of grayscale frames; raises `DetectionError` if unsure.
+    """Find the ball in a run of grayscale frames; raises `DetectionError` if unsure.
 
-    A single frame works too, with the blob-erasing benefit of the temporal maximum lost.
+    A single frame works too, losing the blob-erasing benefit of the temporal maximum.
     """
     hi, sd, n = temporal_stats(frames, max_frames)
     mask, spread = foreground_mask(hi, sd)
