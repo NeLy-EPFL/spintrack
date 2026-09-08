@@ -15,34 +15,50 @@ the "did the darkness end up in the map" number).
     uv run --group bench python -m spintrack_bench.photometry_sweep holder_shadow_cut
     uv run --group bench python -m spintrack_bench.photometry_sweep --data <root>
 
-What it found (12 seeds of `holder_shadow_lab`, medians; `lost` counts runs that dropped
-more than 5% of frames, which is the tracker losing the ball rather than degrading):
+What it found (12 seeds of `holder_shadow_lab`, medians, re-measured 2026-09-08 on the
+window pre-filter and the plain-EMA bias field; `lost` counts runs that dropped more than
+5% of frames, which is the tracker losing the ball rather than degrading):
 
-    arm        median   static  mapcorr  lost
-    baseline   0.0562   0.1459   0.9256   1/12
-    A          0.0557   0.0650   0.9293   0/12
-    A+B        0.0572   0.0722   0.9276   0/12
-    A+C        0.0494   0.0586   0.9354   0/12
-    A+B+C      0.0473   0.0608   0.9385   0/12
+    arm        median      p95   mapcorr  lost
+    baseline   0.0535   0.1143    0.9273  0/12
+    A          0.0526   0.1097    0.9327  0/12
+    B          0.0541   0.1251    0.9358  0/12
+    C          0.0486   0.1020    0.9384  0/12
+    D          0.0555   0.1155    0.9356  0/12
+    A+B        0.0561   0.1286    0.9285  0/12
+    A+C        0.0474   0.0983    0.9406  0/12
+    A+D        0.0547   0.1155    0.9384  0/12
+    A+B+C      0.0485   0.1033    0.9397  0/12
 
-Only `A` moves `static`, and it more than halves it: separating the illumination is what
-the bias field does, and no other arm substitutes for it. `A` also costs nothing in
-accuracy and removes the one run in twelve where the baseline lost the ball, so it is on
-by default. `C` is the accuracy arm, and would be tempting on this evidence - but on the
-lab recordings its field never converges (over 4000 frames p95 climbs 1.13 -> 1.35 and the
-maximum reaches 2.4, with 3.6% of pixels pinned at the clamp), because a per-pixel gain and
-the map's amplitude are separable only when the ball turns enough to mix the two, and there
-it does not. `B` is worse than nothing on its own. `D` flattens the shading further than
-`A` but raises the photometric residual by up to 60% on the lab recordings: at roughly
-three effectively independent samples per pixel its estimate contains texture, and
-subtracting texture is exactly what this is supposed to avoid, and `illumination_real`
-is where those recordings are measured.
+`static` is deliberately not in that table any more: with the bias field live it is zero
+by construction (the field *is* the running mean the residual is measured against), so
+it separates nothing. Read it with the field frozen instead - `illumination_real
+--holdout` - where `A` takes it from 0.330 to 0.167 on ANXXX049 003 and from 0.050 to
+0.048 on AN07B017 003, and every other arm raises it (`B` +18/+106%, `C` +10/+19%, `D`
+-9/+16%).
 
-`illum_tau` was chosen the same way and is not a free parameter: 500 frames is the floor.
-At 250 a run starts failing again, at 120 five of twelve fail and at 60 all twelve do, and
-the `static` reading keeps *improving* as they fail - a field fast enough to absorb what
-the map cannot is also fast enough to absorb the texture, which is why `static` alone is
-never sufficient evidence.
+`A` is on by default: it is the only arm that moves the static field on a real
+recording, it costs nothing in accuracy, it lowers the photometric residual by 36-40%
+and the map's own contrast with it, and it is what keeps a run from losing the ball
+(with the pre-filter of `e19a8c3` no arm loses it on any of these twelve seeds; before
+that the baseline lost one). `C` is the accuracy arm on synthetic truth - 9% of median
+error on its own, 11% with `A`, and 14% of p95 - and would be tempting on this evidence,
+but on the lab recordings its field never converges (trial 003, 4000 frames: p95 climbs
+1.088 -> 1.220, the maximum reaches 1.52 and 4-5% of pixels sit at the clamp from frame
+1500 on), it *raises* the held-out static field, and it raises the photometric residual
+by 30% on 003; a per-pixel gain and the map's amplitude are separable only when the ball
+turns enough to mix the two, and there it does not. `B` is worse than nothing on truth
+and on the held-out field, and its cost win on real video is circular (the reported cost
+is a weighted mean using those weights). `D` flattens the shading further than `A` (-10
+to -24% of `shading_rms`) but raises the photometric residual by up to 54% on the lab
+recordings: at roughly three effectively independent samples per pixel its estimate
+contains texture, and subtracting texture is exactly what this is supposed to avoid.
+
+`illum_tau` was chosen the same way and is not a free parameter: 500 frames is the
+floor. At 250 a run starts failing again, at 120 five of twelve fail and at 60 all
+twelve do, and the `static` reading kept *improving* as they failed - a field fast
+enough to absorb what the map cannot is also fast enough to absorb the texture, which is
+the same reason the unfrozen `static` is no evidence at all.
 """
 
 from __future__ import annotations

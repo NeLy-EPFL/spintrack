@@ -193,9 +193,12 @@ class Photometry:
     def residual_field(self) -> np.ndarray:
         """Mean of `obs - model` per window pixel: what is left that does not rotate.
 
-        Zero once the lighting has been separated out; a shadow the map has absorbed
-        shows up here as a static patch. Needs no ground truth, so it reads the same on
-        synthetic scenes and on recordings.
+        A shadow the map has absorbed shows up here as a static patch, and it needs no
+        ground truth, so it reads the same on synthetic scenes and on recordings. It is
+        only evidence about a *frozen* field, though: while `illum_bias` is live the
+        field is the running mean this is measured against, so the difference is zero to
+        within one refresh interval whatever the field contains. Freeze it and read this
+        over later frames (`benchmarks/spintrack_bench/illumination_real.py --holdout`).
         """
         ok = self.mask & (self.acc_n > 1.0)
         field = np.where(

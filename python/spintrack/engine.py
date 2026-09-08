@@ -76,20 +76,23 @@ class TrackParams:
     # ground truth, `illumination_real` on lab recordings) measures them separately and in
     # combination; only the bias field earned its default.
     illum_bias: bool = True  # additive field, estimated from the map residual
-    # Multiplicative field scaling the model. Worth 5% of median tracking error on the
-    # synthetic shadow scenes, but per-pixel gain and map amplitude are only separable
-    # when the ball turns enough to mix the two, and on the lab recordings it does not:
-    # over 4000 frames the field spreads without converging (p95 1.13 -> 1.35, max -> 2.4)
-    # instead of settling. Off until it is conditioned on something.
+    # Multiplicative field scaling the model. Worth 9% of median and 14% of p95 tracking
+    # error on the synthetic shadow scenes, but per-pixel gain and map amplitude are
+    # only separable when the ball turns enough to mix the two, and on the lab
+    # recordings it does not: over 4000 frames of trial 003 the field spreads without
+    # converging (p95 1.09 -> 1.22, max 1.52, 4-5% of pixels at the clamp), it raises
+    # the held-out static field by 10-19% and the photometric residual by 30%. Off until
+    # it is conditioned on something.
     illum_gain: bool = False
     # Per-pixel inverse-noise-variance weight. It lowers the reported cost, but that is
-    # partly circular - the cost is weighted by the same weights - and on ground truth it
-    # is not an improvement.
+    # partly circular - the cost is weighted by the same weights - and on ground truth
+    # and on the held-out static field it is worse than nothing.
     illum_weight: bool = False
     # Temporal flat field of the raw window, applied before the local normalization. It
-    # flattens the shading further than the bias field does, but at ~3 effectively
-    # independent samples per pixel its estimate contains texture, and subtracting that
-    # raises the photometric residual by up to 60% on the lab recordings.
+    # flattens the shading further than the bias field does (-10 to -24% of the
+    # corrected window's own temporal mean), but at ~3 effectively independent samples
+    # per pixel its estimate contains texture, and subtracting that raises the
+    # photometric residual by up to 54% on the lab recordings.
     illum_flat: bool = False
     # Accumulate the fields for reporting without applying any of them.
     illum_measure: bool = False

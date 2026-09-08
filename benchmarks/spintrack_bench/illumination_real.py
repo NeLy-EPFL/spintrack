@@ -13,6 +13,9 @@ but that part is common to every arm, so the comparison between them is fair.
 `static` is the same quantity taken against the map rather than against zero, so it counts
 only what the ball-fixed map could not absorb. It reads much lower, because a map free to
 smear the shadow over the surface absorbs most of it - which is the problem, not the fix.
+It is only evidence with `--holdout`: while the bias field is live it is the running
+mean that this residual is measured against, so the column reads ~0 for every arm with
+`A` in it, whatever the field contains (see `Photometry.residual_field`).
 
 `cost` is the photometric residual the solver reports and `map_std` the map's own
 contrast; both fall when the map stops carrying illumination it never should have had.
@@ -33,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
+from spintrack.autofit import prepare_config
 from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.io.sources import VideoSource
@@ -76,6 +80,9 @@ def row_profile(field: np.ndarray, mask: np.ndarray, bands: int = 12) -> list[fl
 
 def track(session: Path, overrides: dict, holdout: bool, max_frames: int | None):
     cfg = Config.load(session / "camera_H.txt")
+    if not cfg.has_ball():
+        # As `spintrack run` does: a config that names no ball leaves it to the detector.
+        prepare_config(cfg, cfg.src_fn)
     params = TrackParams(illum_measure=True, **{**OFF, **overrides})
     src = VideoSource(cfg.src_fn)
     tracker = Tracker(cfg, src.width, src.height, params)
