@@ -125,3 +125,54 @@ def test_a_cube_map_renders_on_either_grid():
     weight = np.full(mean.shape, 5.0, dtype=np.float32)
     assert render_map(mean, weight, layout="grid").shape == (90, 180)
     assert render_map(mean, weight, layout="cube").shape == (156, 208)
+
+
+def test_net_tiles_join_at_their_seams_and_face_the_camera():
+    """The drawn net is one continuous surface, seen from outside, centered on the camera."""
+    from spintrack.maps import _NET_TILES, NET_LABELS, _tile_directions
+
+    n = 32
+    texel = 0.5 * np.pi / n
+    tiles = {rc: _tile_directions(n, *frame) for rc, frame in _NET_TILES.items()}
+    assert set(tiles) == set(NET_LABELS)
+
+    def gap(a, b):
+        return np.arccos(np.clip(np.sum(a * b, axis=-1), -1, 1)).max()
+
+    band = [(1, 0), (1, 1), (1, 2), (1, 3)]
+    for left, right in zip(band, band[1:] + band[:1], strict=True):
+        assert gap(tiles[left][:, -1], tiles[right][:, 0]) < texel, (left, right)
+    assert gap(tiles[(0, 1)][-1], tiles[(1, 1)][0]) < texel  # top sits on near
+    assert gap(tiles[(2, 1)][0], tiles[(1, 1)][-1]) < texel  # bottom hangs from near
+
+    near = tiles[(1, 1)]
+    center = near[n // 2 - 1 : n // 2 + 1, n // 2 - 1 : n // 2 + 1].mean((0, 1))
+    assert np.allclose(center, [0, 0, -1], atol=0.05)  # toward the camera
+    assert near[n // 2, -1][0] > 0.5  # window +x (image right) is drawn to the right
+    assert near[0, n // 2][1] < -0.5  # window -y (image up) is drawn at the top
+    assert tiles[(0, 1)][n // 2, n // 2][1] < -0.9  # "top" is the top of the ball
+    assert tiles[(1, 3)][n // 2, n // 2][2] > 0.9  # "far" faces away from the camera
+    # Seen from outside: right x up = forward on every tile.
+    for rc, tile in tiles.items():
+        right = tile[n // 2, n // 2 + 1] - tile[n // 2, n // 2 - 1]
+        up = tile[n // 2 - 1, n // 2] - tile[n // 2 + 1, n // 2]
+        assert np.cross(right, up) @ tile[n // 2, n // 2] > 0, rc
+
+
+def test_cube_net_draws_the_window_at_identity():
+    """A map splatted from one window at R = I shows that window in the near tile."""
+    from spintrack.maps import _NET_TILES, _tile_directions, sample_map
+
+    face = 40
+    dirs = _tile_directions(face, *_NET_TILES[(1, 1)])
+    # A pattern on the sphere that is the direction's x coordinate: brighter to the right.
+    mean = np.zeros((6 * 52, 52), np.float32)
+    from spintrack.maps import map_directions
+
+    mean[:] = map_directions(mean.shape)[..., 0]
+    weight = np.full(mean.shape, 5.0, np.float32)
+    img = render_map(mean, weight, layout="cube", face=face)
+    near = img[face : 2 * face, face : 2 * face].astype(float)
+    assert near[:, -1].mean() > near[:, 0].mean() + 20  # +x drawn on the right
+    value, seen = sample_map(mean, weight, dirs)
+    assert seen.all() and value[face // 2, -1] > 0.5 > value[face // 2, 0]

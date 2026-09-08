@@ -25,10 +25,9 @@ ILLUM_KEYS = ("illum_bias", "illum_gain", "illum_wt")
 UNSEEN = 128  # the mid-gray FicTrac uses for a tile it has never looked at
 CONTRAST = 40.0  # normalized intensity per gray level, shared by every map rendering
 
-# The six cube faces as (forward, right, up), laid out as an unfolded dice: a band of
-# four around the equator with the two poles above and below the front face. `forward`
-# is the face centre; `right` and `up` span it. The poles of the map's own grid are at
-# +/-y, so they land in the middle of the top and bottom faces.
+# The six cube faces the map is stored on, as (forward, right, up): `forward` is the face
+# centre, `right` and `up` span it. The poles of the equal-area grid are at +/-y, so they
+# land in the middle of two faces.
 _FACES = {
     "-x": ((-1, 0, 0), (0, 0, 1), (0, 1, 0)),
     "+z": ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
@@ -37,9 +36,32 @@ _FACES = {
     "+y": ((0, 1, 0), (1, 0, 0), (0, 0, -1)),
     "-y": ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
 }
-_NET = [[None, "+y", None, None], ["-x", "+z", "+x", "-z"], [None, "-y", None, None]]
 # The order the faces are stacked into a `(6 face, face)` array; `FACES` in `map.rs` again.
 _FACE_ORDER = ("-x", "+z", "+x", "-z", "+y", "-y")
+# The unfolded dice `render_map` draws, as (row, col) -> (forward, right, up): a band of
+# four faces around the window's horizontal great circle, with the top and bottom of the
+# ball above and below the face the camera looks at. `right` runs along a tile's columns
+# and `up` against its rows, so every tile is seen from outside the ball (right x up =
+# forward), the middle tile is the near face the way the camera sees it (window frame: x
+# right, y down, z away from the camera) and every seam of the net is a seam of the
+# sphere. These are display frames, not the storage faces above.
+_NET_TILES = {
+    (0, 1): ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
+    (1, 0): ((-1, 0, 0), (0, 0, -1), (0, -1, 0)),
+    (1, 1): ((0, 0, -1), (1, 0, 0), (0, -1, 0)),
+    (1, 2): ((1, 0, 0), (0, 0, 1), (0, -1, 0)),
+    (1, 3): ((0, 0, 1), (-1, 0, 0), (0, -1, 0)),
+    (2, 1): ((0, 1, 0), (1, 0, 0), (0, 0, -1)),
+}
+NET_SHAPE = (3, 4)  # tiles down, tiles across
+NET_LABELS = {
+    (0, 1): "top",
+    (1, 0): "left",
+    (1, 1): "near",
+    (1, 2): "right",
+    (1, 3): "far",
+    (2, 1): "bottom",
+}
 _FORWARD = np.array([_FACES[f][0] for f in _FACE_ORDER], dtype=np.float64)
 _RIGHT = np.array([_FACES[f][1] for f in _FACE_ORDER], dtype=np.float64)
 _UP = np.array([_FACES[f][2] for f in _FACE_ORDER], dtype=np.float64)
@@ -157,12 +179,12 @@ def fictrac_template_to_map(
     return np.ascontiguousarray(mean), np.ascontiguousarray(weight)
 
 
-def _taps(
-    mean: np.ndarray, weight: np.ndarray, dirs: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The four cells a bilinear read along `dirs` draws on, flat, with their weights."""
-    h, w = mean.shape
-    if projection_of(mean.shape) == "cube":
+def _tap_cells(
+    shape: tuple[int, int], dirs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """The four cells a bilinear read along `dirs` draws on, flat, with their shares."""
+    h, w = shape
+    if projection_of(shape) == "cube":
         # The face `dirs` is closest to, then equi-angular coordinates on it. Taps that
         # fall off a face are clamped rather than followed across the seam: the solver
         # does follow them (`Map::cube_cell`), but this reader only ever resamples or
@@ -198,6 +220,14 @@ def _taps(
     share = np.stack([
         (1.0 - fu) * (1.0 - fv), fu * (1.0 - fv), (1.0 - fu) * fv, fu * fv
     ])  # fmt: skip
+    return flat, share
+
+
+def _taps(
+    mean: np.ndarray, weight: np.ndarray, dirs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """`_tap_cells` plus the weights of the cells it lands on."""
+    flat, share = _tap_cells(mean.shape, dirs)
     return flat, share, weight.reshape(-1)[flat]
 
 
@@ -234,8 +264,8 @@ def resample_map(
     )
 
 
-def cube_directions(face: int) -> dict[str, np.ndarray]:
-    """Unit vector of every texel of an equi-angular cube, one `(face, face, 3)` per face.
+def _tile_directions(face: int, forward, right, up) -> np.ndarray:
+    """Unit vector of every texel of one equi-angular face, `(face, face, 3)`.
 
     Equi-angular (`s' = tan(pi s / 4)`) rather than the plain gnomonic `s'= s`: it costs
     one `tan` and brings the solid angle per texel from a 5.2:1 spread between face centre
@@ -243,15 +273,18 @@ def cube_directions(face: int) -> dict[str, np.ndarray]:
     """
     s = np.tan(0.25 * np.pi * (2.0 * (np.arange(face) + 0.5) / face - 1.0))
     right_s, up_s = np.meshgrid(s, -s)
-    out = {}
-    for name, (forward, right, up) in _FACES.items():
-        v = (
-            np.asarray(forward, dtype=np.float64)
-            + right_s[..., None] * np.asarray(right, dtype=np.float64)
-            + up_s[..., None] * np.asarray(up, dtype=np.float64)
-        )
-        out[name] = v / np.linalg.norm(v, axis=-1, keepdims=True)
-    return out
+    v = (
+        np.asarray(forward, dtype=np.float64)
+        + right_s[..., None] * np.asarray(right, dtype=np.float64)
+        + up_s[..., None] * np.asarray(up, dtype=np.float64)
+    )
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def cube_directions(face: int) -> dict[str, np.ndarray]:
+    """Unit vector of every texel of the stored equi-angular cube, one `(face, face, 3)`
+    array per face."""
+    return {name: _tile_directions(face, *frame) for name, frame in _FACES.items()}
 
 
 @lru_cache(maxsize=8)
@@ -263,22 +296,23 @@ def _directions(shape: tuple[int, int]) -> np.ndarray:
 
 
 @lru_cache(maxsize=8)
-def _net(face: int) -> tuple[np.ndarray, np.ndarray]:
-    """Directions of the unfolded-dice layout and the mask of the tiles it actually uses."""
-    faces = cube_directions(face)
-    # The four unused tiles of the 4x3 net hold a valid direction rather than zeros, so
-    # that sampling them is arithmetic rather than NaN; `inside` masks them out after.
-    dirs = np.zeros((3 * face, 4 * face, 3)) + np.array([0.0, 0.0, 1.0])
-    inside = np.zeros((3 * face, 4 * face), dtype=bool)
-    for r, row in enumerate(_NET):
-        for c, name in enumerate(row):
-            if name is None:
-                continue
-            tile = (slice(r * face, (r + 1) * face), slice(c * face, (c + 1) * face))
-            dirs[tile], inside[tile] = faces[name], True
-    dirs.flags.writeable = False
-    inside.flags.writeable = False
-    return dirs, inside
+def _render_plan(shape: tuple[int, int], layout: str, face: int | None):
+    """Where a picture of a map shaped `shape` reads the map: the bilinear taps of every
+    output pixel, and for the cube net the `(row, col)` tile each block of them fills.
+
+    Cached because it depends on the grid and the layout, not on the map, and the debug
+    video draws the map on every frame.
+    """
+    if layout == "grid":
+        h = round(np.sqrt(shape[0] * shape[1] / 2.0))
+        dirs, tiles = _directions((h, 2 * h)), None
+    else:
+        tiles = tuple(_NET_TILES)
+        dirs = np.stack([_tile_directions(face, *_NET_TILES[rc]) for rc in tiles])
+    flat, share = _tap_cells(shape, dirs)
+    flat.flags.writeable = False
+    share.flags.writeable = False
+    return flat, share, tiles
 
 
 def _face_size(shape: tuple[int, int]) -> int:
@@ -297,23 +331,35 @@ def render_map(
     """uint8 picture of a surface map, unseen cells mid-gray.
 
     The layout is the projection to draw in, not the one the map is stored in: `grid` is a
-    Lambert equal-area rectangle, on the same scale as the debug video panel and as
-    FicTrac's sphere-map PNGs, and `cube` is an unfolded dice. A map is resampled if it is
-    not already on that grid. The cube is the honest way to look at the poles of an
-    equal-area map: a single row of 0.1-degree slivers in the rectangle, a square face here.
+    Lambert equal-area rectangle, on the same scale as FicTrac's sphere-map PNGs, and
+    `cube` is an unfolded dice (`NET_LABELS` names its tiles) centered on the face the
+    camera looks at and oriented like the image, so at `R = I` its middle tile is the
+    tracking window. A map is resampled if it is not already on that grid. The cube is the
+    honest way to look at the poles of an equal-area map: a single row of 0.1-degree
+    slivers in the rectangle, a square face here.
     """
-    if layout == "grid":
-        if projection_of(mean.shape) == "equal_area":
-            value, seen = np.asarray(mean, dtype=np.float32), weight >= w_min
-        else:
-            h = round(np.sqrt(mean.size / 2.0))
-            value, seen = sample_map(mean, weight, _directions((h, 2 * h)), w_min)
-    elif layout == "cube":
-        dirs, inside = _net(int(face) if face is not None else _face_size(mean.shape))
-        value, seen = sample_map(mean, weight, dirs, w_min)
-        seen &= inside
-    else:
+    if layout not in ("grid", "cube"):
         raise ValueError(f"unknown map layout {layout!r}")
+    if layout == "grid" and projection_of(mean.shape) == "equal_area":
+        value, seen = np.asarray(mean, dtype=np.float32), weight >= w_min
+    else:
+        if layout == "cube":
+            face = int(face) if face is not None else _face_size(mean.shape)
+        flat, share, tiles = _render_plan(tuple(mean.shape), layout, face)
+        value = np.einsum("k...,k...->...", share, mean.reshape(-1)[flat])
+        seen = np.all(weight.reshape(-1)[flat] >= w_min, axis=0)
+        if tiles is not None:
+            # The used tiles into the 4x3 net; the six unused ones stay unseen.
+            rows, cols = NET_SHAPE
+            net_value = np.zeros((rows * face, cols * face), np.float32)
+            net_seen = np.zeros(net_value.shape, dtype=bool)
+            for k, (r, c) in enumerate(tiles):
+                tile = (
+                    slice(r * face, (r + 1) * face),
+                    slice(c * face, (c + 1) * face),
+                )
+                net_value[tile], net_seen[tile] = value[k], seen[k]
+            value, seen = net_value, net_seen
     img = np.clip(UNSEEN + CONTRAST * value, 0, 255).astype(np.uint8)
     img[~seen] = UNSEEN
     return img

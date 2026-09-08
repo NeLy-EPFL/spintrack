@@ -1,5 +1,10 @@
 """Annotated debug video: source frame with ball and axes, tracking window, map, path.
 
+The side panels are the tracking window and the fictive path, then the map and the
+static illumination field. The map is drawn as an unfolded dice centered on the face the
+camera looks at and oriented like the image, with the ball's top and bottom above and
+below it (`maps.NET_LABELS`), so at `R = I` its middle tile is the window.
+
 Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. Rendering costs
 a few milliseconds per frame, so it is off by default.
 """
@@ -14,6 +19,7 @@ import cv2
 import numpy as np
 
 from spintrack.geometry import normalize
+from spintrack.maps import NET_LABELS, NET_SHAPE
 from spintrack.sphere import ball_outline
 from spintrack.tracker import FrameResult, Tracker
 
@@ -24,6 +30,13 @@ AXIS_BGR = (
     (80, 220, 80),
     (255, 140, 80),
 )  # x red, y green, z blue (BGR)
+LABEL_BGR = (255, 255, 0)  # panel titles and face names
+
+
+def _label(panel: np.ndarray, text: str, x: int, y: int) -> None:
+    cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, LABEL_BGR, 1)
+
+
 FOURCC = {
     "h264": "avc1",
     "avc1": "avc1",
@@ -156,53 +169,78 @@ class DebugCanvas:
             1,
         )
 
-        # Tracking window (normalized) and map.
+        # Side panels, two rows: the tracking window (normalized) and the fictive path
+        # on top, the map as an unfolded dice and the static illumination field below.
+        panel = self.panel
+        side = np.zeros((self.height, 2 * panel, 3), np.uint8)
         obs = tr.engine.last_obs
         win = (
             np.clip(128 + 40 * obs, 0, 255).astype(np.uint8)
             if obs is not None
             else np.zeros((8, 8), np.uint8)
         )
-        win = cv2.resize(win, (self.panel, self.panel), interpolation=cv2.INTER_NEAREST)
-        map_img = tr.engine.map_image()
-        map_img = cv2.resize(
-            map_img, (self.panel, self.panel // 2), interpolation=cv2.INTER_AREA
-        )
-        col1 = np.zeros((self.height, self.panel), np.uint8)
-        col1[: self.panel] = win
-        col1[self.panel : self.panel + self.panel // 2] = map_img
-        illum = tr.engine.illumination_image()
-        half = self.panel // 2
-        if illum is not None and self.height >= self.panel + 2 * half:
-            col1[self.panel + half : self.panel + 2 * half, :half] = cv2.resize(
-                illum, (half, half), interpolation=cv2.INTER_NEAREST
+        box = min(panel, self.height)
+        win = cv2.resize(win, (box, box), interpolation=cv2.INTER_NEAREST)
+        side[:box, :box] = cv2.cvtColor(win, cv2.COLOR_GRAY2BGR)
+        _label(side, "window", 6, 16)
+        self._draw_path(side, panel, 0, box, result)
+        # The net takes what height is left, up to what leaves the illumination field
+        # half a panel of width.
+        top = box
+        tile = min((self.height - top) // 3, (2 * panel - panel // 2) // 4)
+        if tile >= 16:
+            self._draw_net(side, top, tile)
+            illum = tr.engine.illumination_image()
+            if illum is not None:
+                x0 = 4 * tile
+                s = min(2 * panel - x0, self.height - top)
+                illum = cv2.resize(illum, (s, s), interpolation=cv2.INTER_NEAREST)
+                side[top : top + s, x0 : x0 + s] = cv2.cvtColor(
+                    illum, cv2.COLOR_GRAY2BGR
+                )
+                _label(side, "illumination", x0 + 6, top + 16)
+        return np.hstack([main, side])
+
+    def _draw_net(self, side: np.ndarray, top: int, tile: int) -> None:
+        """Draw the map as an unfolded dice of `tile`-pixel faces at the left of `side`,
+        from row `top` down.
+
+        The net is centered on the face the camera looks at and oriented like the image
+        (see `maps.NET_LABELS`), so at `R = I` its middle tile is the tracking window. The
+        six unused tiles of the 4x3 net stay black.
+        """
+        rows, cols = NET_SHAPE
+        w, h = cols * tile, rows * tile
+        net = self.tracker.engine.map_image("cube")
+        interp = cv2.INTER_AREA if net.shape[1] > w else cv2.INTER_LINEAR
+        net = cv2.resize(net, (w, h), interpolation=interp)
+        net = cv2.cvtColor(net, cv2.COLOR_GRAY2BGR)
+        for r in range(rows):
+            for c in range(cols):
+                if (r, c) not in NET_LABELS:
+                    net[r * tile : (r + 1) * tile, c * tile : (c + 1) * tile] = 0
+        for (r, c), name in NET_LABELS.items():
+            x0, y0 = c * tile, r * tile
+            cv2.rectangle(
+                net, (x0, y0), (x0 + tile - 1, y0 + tile - 1), (70, 70, 70), 1
             )
-        col1 = cv2.cvtColor(col1, cv2.COLOR_GRAY2BGR)
-        cv2.putText(
-            col1, "window", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1
-        )
-        cv2.putText(
-            col1,
-            "map",
-            (6, self.panel + 16),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 0),
-            1,
-        )
-        if illum is not None:
             cv2.putText(
-                col1,
-                "illumination",
-                (6, self.panel + half + 16),
+                net,
+                name,
+                (x0 + 3, y0 + 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (255, 255, 0),
+                0.35,
+                LABEL_BGR,
                 1,
             )
+        side[top : top + h, :w] = net
+        _label(side, "map", 6, top + 16)
 
-        # Fictive path (world frame: x north/up, y east/right).
-        col2 = np.zeros((self.height, self.panel, 3), np.uint8)
+    def _draw_path(
+        self, side: np.ndarray, x0: int, y0: int, box: int, result: FrameResult | None
+    ) -> None:
+        """Draw the fictive path (world frame: x north/up, y east/right) in the `box`
+        pixel square at `(x0, y0)` of `side`."""
         if result is not None:
             x, y = float(result.values[14]), float(result.values[15])
             self._append_path(x, y)
@@ -213,42 +251,28 @@ class DebugCanvas:
                 min(b[2], y),
                 max(b[3], y),
             )
-        if self._n_path > 1:
-            b = self.path_bbox
-            span = max(b[1] - b[0], b[3] - b[2], 1e-6)
-            margin = 12
-            size = self.panel - 2 * margin
-            path = self._path[max(0, self._n_path - 20000) : self._n_path]
-            pts = np.empty((len(path), 2), np.int32)
-            pts[:, 0] = margin + (path[:, 1] - b[2]) / span * size
-            pts[:, 1] = self.panel - margin - (path[:, 0] - b[0]) / span * size
-            cv2.polylines(col2, [pts], False, (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.circle(col2, tuple(pts[-1]), 3, (0, 0, 255), -1)
-            if result is not None:
-                h = result.heading
-                tip = (
-                    int(pts[-1][0] + 14 * np.sin(h)),
-                    int(pts[-1][1] - 14 * np.cos(h)),
-                )
-                cv2.arrowedLine(
-                    col2,
-                    tuple(pts[-1]),
-                    tip,
-                    (0, 0, 255),
-                    1,
-                    cv2.LINE_AA,
-                    tipLength=0.4,
-                )
-            cv2.putText(
-                col2,
-                f"path {span:.1f} rad span",
-                (6, 16),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (255, 255, 0),
-                1,
+        if self._n_path < 2 or box < 60:
+            return
+        b = self.path_bbox
+        span = max(b[1] - b[0], b[3] - b[2], 1e-6)
+        margin = 12
+        size = box - 2 * margin
+        path = self._path[max(0, self._n_path - 20000) : self._n_path]
+        pts = np.empty((len(path), 2), np.int32)
+        pts[:, 0] = x0 + margin + (path[:, 1] - b[2]) / span * size
+        pts[:, 1] = y0 + box - margin - (path[:, 0] - b[0]) / span * size
+        cv2.polylines(side, [pts], False, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.circle(side, tuple(pts[-1]), 3, (0, 0, 255), -1)
+        if result is not None:
+            h = result.heading
+            tip = (
+                int(pts[-1][0] + 14 * np.sin(h)),
+                int(pts[-1][1] - 14 * np.cos(h)),
             )
-        return np.hstack([main, col1, col2])
+            cv2.arrowedLine(
+                side, tuple(pts[-1]), tip, (0, 0, 255), 1, cv2.LINE_AA, tipLength=0.4
+            )
+        _label(side, f"path {span:.1f} rad span", x0 + 6, y0 + 16)
 
 
 class DebugVideoWriter:
