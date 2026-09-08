@@ -1,4 +1,4 @@
-"""Offline/online driver: pull frames from a source, track, fan results out to recorders.
+"""Offline/online driver: pull frames from a source, track, fan the results out.
 
 Decoding runs in a background thread so that video decode and tracking overlap.
 """
@@ -51,7 +51,7 @@ def _prefetch(source: FrameSource, q: queue.Queue, stop: threading.Event) -> Non
             q.put(frame)
             if frame is None:
                 return
-    except Exception as exc:  # noqa: BLE001 - forward any decoder failure to the consumer
+    except Exception as exc:  # noqa: BLE001 - forwarded to the consumer
         q.put(exc)
 
 
@@ -59,9 +59,9 @@ def _join_prefetch(reader: threading.Thread, q: queue.Queue) -> None:
     """Wait for the prefetch thread, draining the queue so it can notice `stop`.
 
     It only checks `stop` between frames, so a producer blocked on a full queue would
-    never see it. Leaving it inside `source.read()` is worse than untidy: the caller then
-    closes the source underneath it, and `cv2.VideoCapture` deadlocks on a concurrent
-    read and release.
+    never see it. Leaving it inside `source.read()` is worse than untidy: the caller
+    then closes the source underneath it, and `cv2.VideoCapture` deadlocks on a
+    concurrent read and release.
     """
     while reader.is_alive():
         try:
@@ -93,16 +93,16 @@ def run(
     """Track every frame of `source`; returns run statistics.
 
     `debug_video` writes an annotated video; `refine_sweeps > 0` keeps every normalized
-    window in memory, re-estimates all orientations against the complete map afterwards and
-    writes the refined records to `refined_out`. The run quality summary always lands in
-    `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
+    window in memory, re-estimates all orientations against the complete map afterwards
+    and writes the refined records to `refined_out`. The run quality summary always
+    lands in `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
 
     `two_pass_source` opens the same recording a second time: the ball is mapped in a
     throwaway first pass and this run starts from that map, so the opening frames are
-    matched against a finished ball instead of an empty one. It fixes the cold start, not
-    the drift that accumulates afterwards - that is what `refine_sweeps` is for, and the
-    two compose. `tracker` supplies a pre-built tracker instead of building one, which is
-    how the first pass hands its map over.
+    matched against a finished ball instead of an empty one. It fixes the cold start,
+    not the drift that accumulates afterwards - that is what `refine_sweeps` is for, and
+    the two compose. `tracker` supplies a pre-built tracker instead of building one,
+    which is how the first pass hands its map over.
     """
     first = None
     if tracker is None:
@@ -188,9 +188,9 @@ def run(
             if refine_sweeps > 0 and tracker.engine.last_obs is not None:
                 R_win = result.step.R_win if result is not None else None
                 obs16 = tracker.engine.last_obs.astype(np.float16)
-                # Orientations recorded before a window move are in the old window frame;
-                # `tracked_version` says which frame each one belongs to, and they are
-                # brought forward together once the run is over. It is not
+                # Orientations recorded before a window move are in the old window
+                # frame; `tracked_version` says which frame each one belongs to, and
+                # they are brought forward together once the run is over. It is not
                 # `geometry_version`: a frame whose own window moved was tracked in the
                 # frame before the move.
                 keep.append((frame.index, frame.ts_ms, frame.wall_ms, obs16, R_win,
@@ -283,8 +283,8 @@ def run(
         ts_list = [k[1] for k in keep]
         wall_list = [k[2] for k in keep]
         windows = [k[3] for k in keep]
-        # Each window stays paired with the orientation in its own window frame; only the
-        # refined result is brought into the final one (see `spintrack.refine`).
+        # Each window stays paired with the orientation in its own window frame; only
+        # the refined result is brought into the final one (see `spintrack.refine`).
         versions = [k[5] for k in keep]
         refined, rstats = refine_orientations(
             tracker.engine,

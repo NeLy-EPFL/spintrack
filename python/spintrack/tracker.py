@@ -143,10 +143,10 @@ class Tracker:
     def _camera_to_lab(self, cfg: Config) -> np.ndarray:
         """The transform named by `cfg.c2a_source()`; identity (with a warning) if none.
 
-        Also records which key it came from in `self.c2a_source`. The camera-frame columns
-        of the output are valid without a transform, so this warns rather than raising;
-        `spintrack run` refuses instead, because its lab-frame columns would be camera
-        values in disguise.
+        Also records which key it came from in `self.c2a_source`. The camera-frame
+        columns of the output are valid without a transform, so this warns rather than
+        raising; `spintrack run` refuses instead, because its lab-frame columns would be
+        camera values in disguise.
         """
         self.c2a_source = cfg.c2a_source() or "identity"
         if self.c2a_source == "c2a_r":
@@ -204,7 +204,7 @@ class Tracker:
     def process_frame(
         self, gray: np.ndarray, ts_ms: float = -1.0, wall_ms: float | None = None
     ) -> FrameResult | None:
-        """Track one grayscale frame (2-D uint8). Returns None if the frame was dropped."""
+        """Track one grayscale frame (2-D uint8); None if the frame was dropped."""
         self.tracked_version = self.geometry_version
         # The window this frame is tracked in; `_watch_centre` below may move it, and
         # the increment and orientation the step returns belong to this one.
@@ -275,8 +275,9 @@ class Tracker:
 
             check = ScaleCheck(geometry, self.params, self.half_angle)
             if check.enabled:
-                # The statistic is a ratio of projections within each frame, so rows taken
-                # in the old window frame stay comparable with rows taken in the new one.
+                # The statistic is a ratio of projections within each frame, so rows
+                # taken in the old window frame stay comparable with rows taken in the
+                # new one.
                 check.rows = self.scale_check.rows
                 self.scale_check = check
             else:
@@ -293,20 +294,20 @@ class Tracker:
         cx, cy, _ = pixel_circle(self.camera, self.centre, self.half_angle)
         if float(np.hypot(target[0] - cx, target[1] - cy)) < FOLLOW_TOL_PX:
             return
-        # The radius is left alone: a ball only changes apparent size by moving along the
-        # optical axis, and translation on its own is much better conditioned. The target
-        # is where the silhouette's circle should sit, which is not where the ball's
-        # centre projects, so it is inverted rather than read as a direction.
+        # The radius is left alone: a ball only changes apparent size by moving along
+        # the optical axis, and translation on its own is much better conditioned. The
+        # target is where the silhouette's circle should sit, which is not where the
+        # ball's centre projects, so it is inverted rather than read as a direction.
         self.refit_centre(
             centre_from_pixel_circle(self.camera, target, self.half_angle, self.centre)
         )
         self._record_refit(target)
 
     def orientations_in_current_window(self, recorded) -> list:
-        """Bring window-frame orientations recorded before a re-fit into the current frame.
+        """Bring orientations recorded before a window re-fit into the current frame.
 
-        `recorded` is a sequence of `(R_win, geometry_version)`; every window move left a
-        `Q` behind, and an orientation from version `v` needs the product of the moves
+        `recorded` is a sequence of `(R_win, geometry_version)`; every window move left
+        a `Q` behind, and an orientation from version `v` needs the product of the moves
         since then applied to it.
         """
         out = []
@@ -352,8 +353,8 @@ class Tracker:
 
         `R_wc` is the window-to-camera transform that `w_win` and `R_win` are written
         in. It is not `self.R_wc` on a frame whose own window has just been re-fitted:
-        pairing the new window with the old orientation rotates the reported camera-frame
-        orientation by the window move.
+        pairing the new window with the old orientation rotates the reported
+        camera-frame orientation by the window move.
         """
         R_wc = self.R_wc if R_wc is None else R_wc
         w_cam = R_wc @ w_win
@@ -378,10 +379,11 @@ class Tracker:
         return values, w_cam, w_lab, R_cam, R_lab
 
     def records_from_orientations(self, orientations, ts_list, wall_list, frames):
-        """Records for a whole sequence of window-frame orientations (offline refinement).
+        """Records for a sequence of window-frame orientations (offline refinement).
 
-        `orientations` may contain None for frames that stay untracked; the path integrator
-        and sequence counter start fresh, as they would for a run from the first frame.
+        `orientations` may contain None for frames that stay untracked; the path
+        integrator and sequence counter start fresh, as they would for a run from the
+        first frame.
         """
         path = PathIntegrator()
         rows: list[np.ndarray] = []
