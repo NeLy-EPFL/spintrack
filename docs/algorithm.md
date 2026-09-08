@@ -178,6 +178,17 @@ Everything is measured as a displacement from a reference taken over the first l
 as an absolute position, so a systematic difference between the look and whatever fitted the
 config's circle (3.5 px on 004) does not move a still ball's window.
 
+Against exact truth (`lab_small_ball`, `ball_drop`) a look seeded on the true center errs
+0.4-0.6 px in the median and under 3 px at worst, so the look itself is not biased toward the
+animal. What the confirmation guards against is what a look seeded on its own previous answer
+does: iterated that way on `lab_small_ball` it leaves the ball on a quarter of the frames, by
+up to 65 px, climbing the animal, and dropping the rays through the animal makes it worse,
+because a circle of fixed radius held only by its sides and bottom is free to climb. A
+per-ray weight learned from each ray's agreement over the last twenty looks cut the raw
+runaway to 4% of frames, but the follower's gates already contain it (a still ball's window
+never moved either way) and it measured neutral to slightly worse on the benchmarks, so it
+was not kept.
+
 What remains of the delay online is structural - the confirmation that keeps a still ball's
 window still, and the filter's lag on a fast drop - and `--two-pass` removes it, see below.
 
