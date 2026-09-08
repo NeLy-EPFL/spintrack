@@ -30,19 +30,25 @@ spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
 spintrack map ball.npz --layout cube     # look at the ball's surface map
 ```
 
-`--debug-video` writes an annotated video (ball orientation, tracking window, map,
-illumination, path);
-it encodes H.264 with PyAV's bundled FFmpeg, so no system `ffmpeg` is needed.
-`--refine N` re-estimates every frame offline against the map built from the whole
-recording, which removes drift and recovers dropped frames. `--save-map` / `--load-map`
-(also FicTrac sphere-map PNGs) carry a surface map between runs; `--frozen-map` keeps it
-fixed. `--two-pass` maps the ball in a throwaway first pass over the recording and tracks
-it again from the finished map, so the opening frames see a whole ball instead of one
-visible cap; it fixes the cold start, not the drift that accumulates afterwards, which is
-what `--refine` is for. The two compose. If the ball moved in its holder, the second pass
-also places the window on the trajectory the first pass measured, without the online
-follower's delay. `spintrack map` renders a saved map as a picture,
-either as a Lambert equal-area rectangle or unfolded onto a cube.
+`--debug-video` writes an annotated video: the ball with its orientation axes, the
+tracking window, the fictive path, the surface map as an unfolded dice centered on the face
+the camera sees, and the static illumination field. It encodes H.264 with PyAV's bundled
+FFmpeg, so no system `ffmpeg` is needed. `--refine N` re-estimates every frame offline
+against a map of its neighbors (50 frames either side), which sharpens the per-frame
+increments and recovers dropped frames; it does not remove drift. `--save-map` /
+`--load-map` (also FicTrac sphere-map PNGs) carry a surface map between runs. A loaded
+map counts as a prior: its weights are capped so that the frames being tracked replace
+its content quickly, because a map from another time matches them poorly. `--frozen-map`
+keeps it fixed instead, which suits a template the run must not alter but not a map of a
+different recording (a frozen map of trial 003's own first pass lost track of the ball
+within 100 frames). `--two-pass` maps the ball in a throwaway first pass over the
+recording and tracks it again from the finished map, so the opening frames see a whole
+ball instead of one visible cap; it fixes the cold start, and on the lab recording
+measured it also closes loops a little tighter than the first pass, but the drift that
+accumulates over a recording is not what it is for. If the ball moved in its holder, the
+second pass also places the window on the trajectory the first pass measured, without the
+online follower's delay. `spintrack map` renders a saved map as a picture, either as a
+Lambert equal-area rectangle or unfolded onto a cube.
 
 The surface map is an equi-angular cubemap; `--map-projection equal_area` switches to
 FicTrac's Lambert cylindrical grid, which is what a like-for-like comparison against

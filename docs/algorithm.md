@@ -190,14 +190,46 @@ frame at `R = I` and a mid-run window re-fit carries it unchanged, so both passe
 body frame and the second one starts at `R = I` like any other run rather than searching
 SO(3) the way a map loaded with `--load-map` has to.
 
-What it buys is the cold start: the opening frames match against a whole ball instead of
-the single cap that happens to be visible, and the static illumination field is there from
-frame 0 instead of after its hundred-frame warm-up. On the synthetic scenes the per-frame
-velocity error over the opening frames drops by 15-25%. What it does not buy is less drift:
-the second pass inherits the first pass's drift, baked into the map it is now matching
-against, and the accumulated orientation error comes out a wash. That is what the offline
-refinement below is for, and the two compose. A live camera cannot be read twice, so the
-flag is refused rather than ignored.
+What it buys is the cold start: a map complete from frame 0 instead of the single cap that
+happens to be visible, so a ball that turns far in its first frames still has something to
+match against, and the static illumination field from frame 0 instead of after its
+hundred-frame warm-up. A live camera cannot be read twice, so the flag is refused rather
+than ignored.
+
+The handed-over map is a prior, not the truth, and the second pass treats it as one: its
+weights are capped at `map_prior_w_max`, just above `w_min`, so that its cells count as seen
+and can be matched where nothing fresher exists, while the first frame that sees a cell
+replaces its content almost entirely. The map is stale in two ways. Lighting, shading and
+the animal's shadow change over a recording, which is why the offline refinement below
+matches against a temporally local map; and the first pass's drift has displaced each region
+of the map by however far the first pass had drifted when it last saw it, about a degree on
+trial 003 (a block cross-correlation of the map the first pass handed over against the map
+the second pass left behind finds the same texture shifted by 0.75 degrees in the median,
+1.1 at the 90th percentile). With its weights kept, the second pass on 003 opened at a cost
+100 times the one-pass run's, spent 150 frames overwriting the visible region before the
+cost came down, and over its first 300 frames matched the optical-flow cross-check 47% worse
+than one pass in y; a *frozen* copy of the same map lost the ball within 100 frames. Any cap
+that lets stale and fresh content mix for a few frames makes the estimate wander while the
+mixture changes: 1.8 degrees of wobble over the first ten frames' increments at a cap of 3,
+1.3 at 1, 0.5 at 0.5. At 0.15 the second pass's opening increments are the one-pass run's
+frame for frame, the rest of the run is unchanged, and the ball_drop episode error with exact
+truth is unchanged to the third decimal; on the synthetic scenes this gives up the 10-20%
+the stale map used to buy over the opening frames, which on a recording it never bought. The
+first frame against a handed-over or loaded map fixes where the ball is: it gets five times
+the usual iteration budget and is reported with a zero increment, because the rotation the
+second pass snaps through onto the stale map (1.9 degrees on 003) is not a rotation of the
+ball.
+
+Drift, measured by loop closure on trial 003 (frame j aligned directly against frame i
+alone, starting from the run's own relative rotation; the residual is the drift between
+them): 0.06 degrees for frames a few apart, which is the noise floor of one alignment, then
+0.10, 0.15 and 0.18 degrees (median) for gaps of 8-50, 50-200 and 200-600 frames in the
+one-pass run, with a systematic component about the window's x axis, the axis a walking
+animal turns the ball about. The second pass closes the same loops at 0.10, 0.12 and 0.13
+degrees, so it inherits a little less than the first pass's drift rather than more, but the
+random walk over a whole recording is still there and the refinement below does not remove
+it either; that would take loop-closure constraints between distant frames, which these
+measurements show to be available.
 
 The second pass also knows where the ball went. The follower above measures the ball's
 silhouette on every frame of the first pass, and the second pass places its window on a

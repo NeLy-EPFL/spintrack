@@ -1,11 +1,17 @@
 """Mapping the ball once, then tracking it again from the finished map.
 
-What the second pass buys, measured on the scene below (seeds 0-3, 40 frames): the
-per-frame velocity error drops by 10-15% overall and 15-25% over the opening frames,
-and the map is complete from frame 0 instead of a single visible cap. What it does not
-buy is less accumulated drift - the second pass inherits the first pass's drift baked
-into the map, and the absolute-orientation error comes out a wash. That is what
-`--refine` is for, and the two compose.
+What the second pass buys: a map complete from frame 0 instead of a single visible cap,
+the static illumination field from frame 0, and on a ball that moved the window planned
+from the first pass's looks (the last test). It no longer buys velocity accuracy on the
+scene below (seeds 0-3, 40 frames: the opening frames come out within a few percent of a
+one-pass run either way), because the handed-over map is a prior whose weights are capped
+at `map_prior_w_max`: on a lab recording it is stale (the lighting changed, and the first
+pass's drift displaced it by about a degree), with its weights kept the second pass opened
+at 100x the one-pass cost and matched an optical-flow cross-check worse than one pass for
+300 frames, and with any cap that let stale and fresh content mix for a few frames the
+first frames' increments wobbled by up to 1.8 deg. Capped just above `w_min`, the second
+pass opens like a one-pass run frame for frame, and closes loops a little tighter than the
+first pass; the drift that accumulates over a recording is not what it removes.
 """
 
 import sys
@@ -47,16 +53,46 @@ def track(images, primed=None):
 
 
 def test_prime_from_carries_the_map_exactly():
-    """The hand-over is in memory, so nothing is resampled or rounded on the way."""
+    """The hand-over is in memory, so nothing is resampled or rounded on the way; only
+    the weights are capped, so that the second pass's frames overwrite a stale cell as
+    fast as a lightly seen one."""
     images, _, _ = sequence(20)
     first, _, _ = track(images)
     second = Tracker(config(), *SIZE, PARAMS)
     second.prime_from(first)
-    for a, b in zip(first.engine.export_map(), second.engine.export_map(), strict=True):
-        assert np.array_equal(a, b)
+    mean, weight = first.engine.export_map()
+    mean_2, weight_2 = second.engine.export_map()
+    assert np.array_equal(mean, mean_2)
+    assert np.array_equal(weight_2, np.minimum(weight, PARAMS.map_prior_w_max))
+    assert weight.max() > PARAMS.map_prior_w_max  # the cap did something
     # The map is in the body frame both passes share, so no global search is needed.
     assert np.array_equal(second.engine.R, np.eye(3))
     assert not second.engine._needs_localisation
+
+
+def test_first_frame_against_a_handed_over_map_reports_no_rotation():
+    """Where the first frame lands on the stale map is an initial orientation, not a
+    rotation: the .dat's frame 0 has no frame before it to have turned from."""
+    images, _, _ = sequence(20)
+    first, _, _ = track(images)
+    second = Tracker(config(), *SIZE, PARAMS)
+    second.prime_from(first)
+    # Hand over a map displaced by two degrees, as the first pass's drift would leave it.
+    mean, weight = second.engine.export_map()
+    second.engine.core.set_map(mean, weight)
+    second.engine.R = rotvec_to_matrix(np.array([0.035, 0.0, 0.0])) @ second.engine.R
+    result = second.process_frame(images[0][0])
+    assert result is not None and result.step.source == "map"
+    assert np.array_equal(result.step.w_win, np.zeros(3))
+    assert np.allclose(second.engine.velocity, 0.0)
+    # The snap did happen: the orientation moved off the displaced start.
+    assert np.degrees(np.linalg.norm(np.array([0.035, 0.0, 0.0]))) > 1.5
+    assert not np.allclose(
+        result.step.R_win, rotvec_to_matrix(np.array([0.035, 0, 0])), atol=1e-3
+    )
+    # And the next frame reports a rotation again.
+    result = second.process_frame(images[1][0])
+    assert result is not None and np.linalg.norm(result.step.w_win) > 0
 
 
 def test_two_pass_starts_from_a_mapped_ball():
@@ -65,8 +101,9 @@ def test_two_pass_starts_from_a_mapped_ball():
     second, warm, warm_coverage = track(images, first)
     assert cold_coverage < 0.35, cold_coverage
     assert warm_coverage > 0.6, warm_coverage
-    # The opening frames are the ones a cold map costs.
-    assert np.nanmean(warm[1:10]) < 0.9 * np.nanmean(cold[1:10]), (
+    # The map is replaced at first sight, so the opening frames match a one-pass run
+    # rather than beat it; what must not happen is the stale map making them worse.
+    assert np.nanmean(warm[1:10]) < 1.1 * np.nanmean(cold[1:10]), (
         np.nanmean(cold[1:10]),
         np.nanmean(warm[1:10]),
     )

@@ -56,6 +56,19 @@ class TrackParams:
     # is exactly what makes it the control for `spintrack_bench.map_grid_sweep poles`.
     map_frame: tuple[float, float, float] = (0.0, 0.0, 0.0)
     map_w_max: float = 50.0
+    # Weight the cells of a loaded or handed-over map are capped at: just above `w_min`,
+    # so that they count as seen and can be matched where nothing fresher exists, while
+    # the first frame that sees a cell replaces its content almost entirely (0.15 plus
+    # one observation is 87% fresh). Such a map is stale: lighting, shading and the
+    # animal's shadow change over a recording, and the first pass's drift has displaced
+    # its content by about a degree. On trial ANXXX049 003 the second pass of --two-pass
+    # opened at 100x the one-pass cost against the uncapped map and matched the y
+    # cross-check 47% worse over its first 300 frames; capped at 3, the weight of a fully
+    # trusted cell, the mixing of stale and fresh content still put 1.8 deg of wobble
+    # into the first ten frames' increments (1.3 at a cap of 1, 0.5 at 0.5); at 0.15 the
+    # opening increments are the one-pass run's frame for frame, and the ball_drop
+    # episode error is unchanged. None keeps the weights as saved.
+    map_prior_w_max: float | None = 0.15
     forget_outside_view: bool = False  # FicTrac fork's `accumulate_map: n`
     forget_margin: int = 1
     # Static camera-frame illumination (see `photometry.py`). The arms are independent,
@@ -158,6 +171,10 @@ class StepResult:
     hessian: np.ndarray | None = None
 
 
+# Gauss-Newton budget of the first frame against a loaded map, as a multiple of `max_iter`.
+FIRST_FRAME_ITERATIONS = 5
+
+
 def map_shape(projection: str, scale: float, window: int) -> tuple[int, int]:
     """`(h, w)` of the surface map, with the same cell count either way.
 
@@ -235,6 +252,10 @@ class TrackEngine:
         """
         if mean.shape != self.map_shape or weight.shape != self.map_shape:
             raise ValueError(f"map arrays must have shape {self.map_shape}")
+        if self.params.map_prior_w_max is not None:
+            # A prior, not the truth: the frames now being tracked replace it at first
+            # sight (moot for a frozen map).
+            weight = np.minimum(weight, self.params.map_prior_w_max)
         self.core.set_map(
             np.ascontiguousarray(mean, dtype=np.float32),
             np.ascontiguousarray(weight, dtype=np.float32),
@@ -302,7 +323,7 @@ class TrackEngine:
         return np.ascontiguousarray(out, dtype=np.float32)
 
     # ----- per frame -----
-    def _solve(self, obs, w0, use_prev, levels=None):
+    def _solve(self, obs, w0, use_prev, levels=None, max_iter=None):
         p = self.params
         return self.core.solve(
             obs,
@@ -313,7 +334,7 @@ class TrackEngine:
             level_tol_factor=p.level_tol_factor,
             coarse_max_iter=p.coarse_max_iter,
             reweight_iters=p.reweight_iters,
-            max_iter=p.max_iter,
+            max_iter=p.max_iter if max_iter is None else max_iter,
             tol=p.tol,
             huber=p.huber,
             tukey=p.tukey,
@@ -488,8 +509,15 @@ class TrackEngine:
         p = self.params
         w0 = self.velocity if p.velocity_smoothing > 0 else np.zeros(3)
         source = "map"
+        # The first frame against a loaded map lands wherever that map puts the ball, up
+        # to a couple of degrees from `R = I` when the map is another pass's. Ten
+        # iterations leave part of that way to go, and what is left leaks into the next
+        # frames' increments as the map is rewritten around a half-converged start.
+        max_iter = (
+            FIRST_FRAME_ITERATIONS * p.max_iter if self.frames_tracked == 0 else None
+        )
         if p.fine_first:
-            res = self._solve(obs, w0, use_prev=False, levels=1)
+            res = self._solve(obs, w0, use_prev=False, levels=1, max_iter=max_iter)
             # A solve that stalled just above tolerance is still a good solution; only
             # escalate to the pyramid when the last step was clearly large.
             settled = res.converged or (
@@ -497,10 +525,10 @@ class TrackEngine:
             )
             ok = settled and self._accept(res)
             if not ok and p.levels > 1:
-                res = self._solve(obs, w0, use_prev=False)
+                res = self._solve(obs, w0, use_prev=False, max_iter=max_iter)
                 ok = self._accept(res)
         else:
-            res = self._solve(obs, w0, use_prev=False)
+            res = self._solve(obs, w0, use_prev=False, max_iter=max_iter)
             ok = self._accept(res)
         if not ok:
             alt = self._solve(obs, w0, use_prev=True)
@@ -538,9 +566,16 @@ class TrackEngine:
             else np.asarray(res.w)
         )
         w = np.asarray(w, dtype=np.float64)
+        first = self.frames_tracked == 0
+        if first:
+            # The first frame against a loaded map fixes where the ball is; an increment
+            # needs a frame before it. Reporting the solve's step here put the 1.9 deg the
+            # second pass of --two-pass snapped onto the first pass's map into frame 0 of
+            # its .dat as a rotation.
+            w = np.zeros(3)
         self.R = R_new
         a = p.velocity_smoothing
-        if source == "global":
+        if source == "global" or first:
             self.velocity = np.zeros(3)
         else:
             self.velocity = (1.0 - a) * self.velocity + a * w if a > 0 else np.zeros(3)
