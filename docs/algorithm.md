@@ -148,13 +148,15 @@ unchanged, and the ball's rotation relative to the camera is exactly preserved. 
 absolute orientation stays referred to the first window frame so that the columns do not step.
 
 The measurement is `relocate_ball`: the rim of a circle of the known radius, fitted from the
-current frame alone in a band about where the ball is predicted to be (2.4 ms on a 1600 x
-1008 frame). Two details make it usable on every frame. The fit's outlier cut is fixed at 1%
-of the radius rather than estimated from the residuals, because the animal's body stands past
-the rim and a residual-based scale grows to accommodate it: seeded on its own previous answer,
-that fit climbs the animal's back and walks off the ball. And the look is seeded on the last
-accepted look carried by the estimated velocity, never on the smoothed position, whose lag on
-a fast drop puts the seed outside the look's capture range (about half the band).
+current frame alone in a band about where the ball is predicted to be (0.7 ms on a 1600 x
+1008 frame with a 518 px ball; the rays whose samples would leave the image are not sampled
+at all, which is a third of them there). Two details make it usable on every frame. The
+fit's outlier cut is fixed at 1% of the radius rather than estimated from the residuals,
+because the animal's body stands past the rim and a residual-based scale grows to
+accommodate it: seeded on its own previous answer, that fit climbs the animal's back and
+walks off the ball. And the look is seeded on the last accepted look carried by the
+estimated velocity, never on the smoothed position, whose lag on a fast drop puts the seed
+outside the look's capture range (about half the band).
 
 An alpha-beta filter carries the position and velocity, with gains scheduled on the size of
 the innovation relative to the look's own scatter: slow while the looks scatter like noise

@@ -10,7 +10,8 @@ anyway. So the window is placed by measuring the ball's silhouette, on every fra
 
 The measurement is `detect.relocate_ball`: the rim of a circle of the *known* radius,
 fitted in a band about where the ball is predicted to be, from the current frame alone
-(2.4 ms on a 1600 x 1008 frame). Two details make it usable on every frame.
+(0.7 ms on a 1600 x 1008 frame with a 518 px ball, of the 1.2 ms per frame the whole
+follower costs there). Two details make it usable on every frame.
 
 - The fit's outlier cut is fixed at 1% of the radius, annealed down from the band,
   rather than estimated from the residuals. On trial 004 the animal's body stands past

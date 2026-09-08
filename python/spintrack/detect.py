@@ -29,6 +29,7 @@ import numpy as np
 log = logging.getLogger("spintrack")
 
 N_RAYS = 360
+MIN_RIM_RAYS = 8  # fewer rays than a circle fit needs
 # Per-pixel temporal quantile the silhouette is measured on; see `temporal_stats`.
 QUANTILE = 0.9
 BORDER_FRACTION = 0.05  # width of the background band, as a fraction of the image
@@ -305,10 +306,24 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     return cx, cy, r, coverage
 
 
-def _polar_grid(cx, cy, r, band, step=0.25):
-    """The sampling grid of the rim search: radii, ray angles and their pixel positions."""
+def _polar_grid(cx, cy, r, band, step=0.25, shape=None):
+    """The sampling grid of the rim search: radii, ray angles and their pixel positions.
+
+    Given the image `shape`, rays that would leave it are left out instead of being
+    sampled and rejected afterwards. That changes no answer - such rays are already
+    excluded from the edge search, from the polarity and from `rim_fraction`'s
+    denominator - and on the lab trials, where the ball is cut off top and bottom, a
+    third of the rays never counted.
+    """
     radii = np.arange(r - band, r + band + step, step)
     angles = np.linspace(0.0, 2.0 * np.pi, N_RAYS, endpoint=False)
+    if shape is not None:
+        h, w = shape
+        # A ray's samples lie on a segment, so its two ends decide the whole ray.
+        ends = radii[[0, -1]]
+        ex = cx + np.outer(np.cos(angles), ends)
+        ey = cy + np.outer(np.sin(angles), ends)
+        angles = angles[((ex >= 0) & (ex <= w) & (ey >= 0) & (ey <= h)).all(axis=1)]
     xs = cx + np.outer(np.cos(angles), radii)
     ys = cy + np.outer(np.sin(angles), radii)
     return radii, angles, xs, ys
@@ -326,14 +341,14 @@ def _polar_sample(image, xs, ys) -> np.ndarray:
 
 
 def _radial_edges(image, cx, cy, r, polarity, step=0.25, band=None):
-    """Sub-pixel rim radius along `N_RAYS` rays, plus each ray's edge strength.
+    """Sub-pixel rim radius per ray of `_polar_grid`, plus each ray's edge strength.
 
     Along every ray the *outermost* radius whose radial gradient reaches half that ray's
     maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands on
     a search bound, or whose samples leave the image, are rejected.
     """
     band = max(8.0, 0.05 * r) if band is None else band
-    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, step)
+    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, step, shape=image.shape)
     profile = _polar_sample(image, xs, ys)
     return _edges_from_profile(
         profile, radii, angles, xs, ys, polarity, image.shape, step
@@ -363,11 +378,11 @@ def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.
     )
     last = grad.shape[1] - 1 - np.argmax(strong[:, ::-1], axis=1)
     ok = usable & strong.any(axis=1) & (peak > 0)
-    rows = np.arange(N_RAYS)
+    rows = np.arange(len(angles))
     k = np.clip(last, 1, grad.shape[1] - 2)
     left, mid, right = grad[rows, k - 1], grad[rows, k], grad[rows, k + 1]
     denom = left - 2.0 * mid + right
-    offset = np.zeros(N_RAYS)
+    offset = np.zeros(len(angles))
     np.divide(0.5 * (left - right), denom, out=offset, where=np.abs(denom) > 1e-12)
     offset = np.clip(offset, -1.0, 1.0)
     return radii[k] + offset * step, grad[rows, k], ok, usable, angles
@@ -494,19 +509,19 @@ def relocate_ball(
     `spintrack.refit` is what has to live with it.
     """
     band = max(8.0, RELOCATE_BAND * r) if band is None else band
-    radii, angles, xs, ys = _polar_grid(cx, cy, r, band)
-    stack = []
-    shape = None
-    for frame in frames:
-        image = np.asarray(frame)
+    images = [np.asarray(frame) for frame in frames]
+    if not images:
+        raise DetectionError("no frames to relocate the ball in")
+    for image in images:
         if image.ndim != 2:
             raise DetectionError(
                 f"frames must be 2-D grayscale, got shape {image.shape}"
             )
-        shape = image.shape
-        stack.append(_polar_sample(image, xs, ys))
-    if not stack:
-        raise DetectionError("no frames to relocate the ball in")
+    shape = images[0].shape
+    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, shape=shape)
+    if len(angles) < MIN_RIM_RAYS:
+        raise DetectionError("the ball's rim band lies outside the image")
+    stack = [_polar_sample(image, xs, ys) for image in images]
     k = round(quantile * (len(stack) - 1))
     profile = np.partition(np.stack(stack), k, axis=0)[k].astype(np.float32)
     if polarity is None:
