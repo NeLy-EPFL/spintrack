@@ -5,8 +5,8 @@ static illumination field. The map is drawn as an unfolded dice centered on the 
 camera looks at and oriented like the image, with the ball's top and bottom above and
 below it (`maps.NET_LABELS`), so at `R = I` its middle tile is the window.
 
-Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. Rendering costs
-a few milliseconds per frame, so it is off by default.
+Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. Rendering
+costs a few milliseconds per frame, so it is off by default.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ class DebugCanvas:
         return int(x * self.scale), int(y * self.scale)
 
     def _update_outline(self) -> None:
-        """Re-project the ball outline; the window may have been moved onto a moved ball."""
+        """Re-project the ball outline; the window may have moved onto a moved ball."""
         tracker, scale = self.tracker, self.scale
         self._geometry_version = tracker.geometry_version
         self.outline = np.round(
@@ -135,26 +135,29 @@ class DebugCanvas:
         c = (int(self.centre_px[0]), int(self.centre_px[1]))
         if result is not None:
             # Ball orientation: a gnomon that rotates with the ball (camera frame).
-            for i, colour in enumerate(AXIS_BGR):
+            for i, color in enumerate(AXIS_BGR):
                 tip = self._project_axis(result.R_cam[:, i])
-                cv2.arrowedLine(main, c, tip, colour, 2, cv2.LINE_AA, tipLength=0.2)
+                cv2.arrowedLine(main, c, tip, color, 2, cv2.LINE_AA, tipLength=0.2)
         # Lab axes at the ball centre (fixed): thin lines with labels.
-        for i, colour in enumerate(AXIS_BGR):
+        for i, color in enumerate(AXIS_BGR):
             tip = self._project_axis(tr.cam_to_lab.T[:, i])
-            cv2.line(main, c, tip, colour, 1, cv2.LINE_AA)
+            cv2.line(main, c, tip, color, 1, cv2.LINE_AA)
             cv2.putText(
                 main,
                 "xyz"[i],
                 (tip[0] + 3, tip[1] + 3),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
-                colour,
+                color,
                 1,
             )
         text = f"frame {tr.frame - 1}"
         if result is not None:
             st = result.step
-            text += f"  {st.source}  cost {st.cost:.3f}  iters {st.iters}  heading {np.degrees(result.heading):.1f} deg"
+            text += (
+                f"  {st.source}  cost {st.cost:.3f}  iters {st.iters}"
+                f"  heading {np.degrees(result.heading):.1f} deg"
+            )
         else:
             text += "  DROPPED"
         if fps:
@@ -206,8 +209,8 @@ class DebugCanvas:
         from row `top` down.
 
         The net is centered on the face the camera looks at and oriented like the image
-        (see `maps.NET_LABELS`), so at `R = I` its middle tile is the tracking window. The
-        six unused tiles of the 4x3 net stay black.
+        (see `maps.NET_LABELS`), so at `R = I` its middle tile is the tracking window.
+        The six unused tiles of the 4x3 net stay black.
         """
         rows, cols = NET_SHAPE
         w, h = cols * tile, rows * tile
@@ -285,9 +288,9 @@ class DebugVideoWriter:
     encoders, so nothing has to be installed system-wide. Frame threading also lets the
     encoder work on other cores while tracking continues.
 
-    The fourcc codecs OpenCV does handle (`mp4v`, `xvid`, `mjpg`, `raw`) still go through
-    `cv2.VideoWriter`. Without PyAV, H.264 falls back to it too, and a warning names the
-    consequence.
+    The fourcc codecs OpenCV does handle (`mp4v`, `xvid`, `mjpg`, `raw`) still go
+    through `cv2.VideoWriter`. Without PyAV, H.264 falls back to it too, and a warning
+    names the consequence.
     """
 
     def __init__(

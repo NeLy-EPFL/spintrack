@@ -2,14 +2,14 @@
 
 spintrack's native format is an `.npz` with `mean` and `weight` arrays (float32, shape
 `(map_h, map_w)`) plus the window size they were built for. Version 3 also names the
-projection, though the shape gives it away: an equal-area map is `(h, 2h)` and a cube map
-`(6 face, face)`, so `projection_of` can read it off an array of either. Version 2 may also carry the
-static illumination fields (`illum_bias`, `illum_gain`, `illum_wt`, shaped like the
-window): those describe the rig rather than the ball, and on the lab recordings they come
-out near-identical from one trial to the next, so a run can start from a measured field
-instead of learning it again. FicTrac templates are PNG images whose pixels are 0 (dark),
-255 (bright) or 128 (unseen) on an equal-area grid that is mirrored both ways relative to
-spintrack's, so they are flipped and rescaled on import.
+projection, though the shape gives it away: an equal-area map is `(h, 2h)` and a cube
+map `(6 face, face)`, so `projection_of` can read it off an array of either. Version 2
+may also carry the static illumination fields (`illum_bias`, `illum_gain`, `illum_wt`,
+shaped like the window): those describe the rig rather than the ball, and on the lab
+recordings they come out near-identical from one trial to the next, so a run can start
+from a measured field instead of learning it again. FicTrac templates are PNG images
+whose pixels are 0 (dark), 255 (bright) or 128 (unseen) on an equal-area grid that is
+mirrored both ways relative to spintrack's, so they are flipped and rescaled on import.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ ILLUM_KEYS = ("illum_bias", "illum_gain", "illum_wt")
 UNSEEN = 128  # the mid-gray FicTrac uses for a tile it has never looked at
 CONTRAST = 40.0  # normalized intensity per gray level, shared by every map rendering
 
-# The six cube faces the map is stored on, as (forward, right, up): `forward` is the face
-# centre, `right` and `up` span it. The poles of the equal-area grid are at +/-y, so they
-# land in the middle of two faces.
+# The six cube faces the map is stored on, as (forward, right, up): `forward` is the
+# face centre, `right` and `up` span it. The poles of the equal-area grid are at +/-y,
+# so they land in the middle of two faces.
 _FACES = {
     "-x": ((-1, 0, 0), (0, 0, 1), (0, 1, 0)),
     "+z": ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
@@ -36,7 +36,7 @@ _FACES = {
     "+y": ((0, 1, 0), (1, 0, 0), (0, 0, -1)),
     "-y": ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
 }
-# The order the faces are stacked into a `(6 face, face)` array; `FACES` in `map.rs` again.
+# The order the faces are stacked into a `(6 face, face)` array; `FACES` in `map.rs`.
 _FACE_ORDER = ("-x", "+z", "+x", "-z", "+y", "-y")
 # The unfolded dice `render_map` draws, as (row, col) -> (forward, right, up): a band of
 # four faces around the window's horizontal great circle, with the top and bottom of the
@@ -70,7 +70,7 @@ _UP = np.array([_FACES[f][2] for f in _FACE_ORDER], dtype=np.float64)
 def projection_of(shape: tuple[int, int]) -> str:
     """`"cube"` for a `(6 face, face)` stack of faces, `"equal_area"` otherwise.
 
-    The two shapes cannot collide: an equal-area map is always twice as wide as it is tall.
+    The two shapes cannot collide: an equal-area map is always twice as wide as tall.
     """
     h, w = shape
     return "cube" if h == 6 * w else "equal_area"
@@ -79,9 +79,9 @@ def projection_of(shape: tuple[int, int]) -> str:
 def map_directions(shape: tuple[int, int]) -> np.ndarray:
     """Unit vector of every map cell, in the ball's body frame, shaped `(h, w, 3)`.
 
-    Inverse of the projection the solver uses: for an equal-area map, longitude about the
-    window y axis and latitude by equal area, so every cell covers the same solid angle;
-    for a cube map, the six faces of `cube_directions` stacked in `_FACE_ORDER`.
+    Inverse of the projection the solver uses: for an equal-area map, longitude about
+    the window y axis and latitude by equal area, so every cell covers the same solid
+    angle; for a cube map, the six faces of `cube_directions` stacked in `_FACE_ORDER`.
     """
     h, w = shape
     if projection_of(shape) == "cube":
@@ -115,9 +115,9 @@ def load_illumination(
     """`(fields, geometry)` stored alongside a native map, if any and if they fit.
 
     The fields live in window pixels, so a map saved for a different window size cannot
-    supply them; that is not an error, the run just learns its own. `geometry` carries the
-    `centre` and `half_angle` they were measured at, which the caller needs in order to
-    resample them into its own window.
+    supply them; that is not an error, the run just learns its own. `geometry` carries
+    the `centre` and `half_angle` they were measured at, which the caller needs in order
+    to resample them into its own window.
     """
     path = Path(path)
     if path.suffix.lower() != ".npz":
@@ -136,9 +136,9 @@ def load_illumination(
 def load_map(path: str | Path, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
     """Load a native `.npz` map or a FicTrac PNG template, resampled to `shape` (h, w).
 
-    The resampling goes through directions rather than pixels, so a map saved on one grid
-    loads onto another - including a different projection, which is what lets a map from
-    before the cube existed, or a FicTrac template, still be used.
+    The resampling goes through directions rather than pixels, so a map saved on one
+    grid loads onto another - including a different projection, which is what lets a map
+    from before the cube existed, or a FicTrac template, still be used.
     """
     path = Path(path)
     if path.suffix.lower() == ".npz":
@@ -159,11 +159,11 @@ def fictrac_template_to_map(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a FicTrac sphere-map image to spintrack `(mean, weight)` arrays.
 
-    FicTrac stores 128 for never-seen tiles and pushes seen tiles toward 0 or 255. Its grid
-    runs the opposite way in both longitude and latitude, hence the double flip. Dark and
-    bright tiles become -1 and +1 in normalized-intensity units, a coarse but usable prior.
-    The conversion happens on the image's own equal-area grid; `shape` is reached from
-    there by `resample_map`, which is the only way to land on a cube map at all.
+    FicTrac stores 128 for never-seen tiles and pushes seen tiles toward 0 or 255. Its
+    grid runs the opposite way in both longitude and latitude, hence the double flip.
+    Dark and bright tiles become -1 and +1 in normalized-intensity units, a coarse but
+    usable prior. The conversion happens on the image's own equal-area grid; `shape` is
+    reached from there by `resample_map`, the only way to land on a cube map.
     """
     img = np.asarray(img)
     if img.ndim == 3:
@@ -236,9 +236,9 @@ def sample_map(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Read the map along `dirs`, mirroring `Map::sample` in `rust/src/map.rs`.
 
-    Plain bilinear in `mean`, so any array on the same grid can be passed in its place; a
-    direction counts as seen only when all four cells it draws on are, which is the rule
-    the solver uses to decide a pixel has anything to match against.
+    Plain bilinear in `mean`, so any array on the same grid can be passed in its place;
+    a direction counts as seen only when all four cells it draws on are, which is the
+    rule the solver uses to decide a pixel has anything to match against.
     """
     flat, share, taps = _taps(mean, weight, dirs)
     value = np.einsum("k...,k...->...", share, mean.reshape(-1)[flat])
@@ -250,9 +250,10 @@ def resample_map(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Move a map onto a different grid, which may be a different projection.
 
-    Weighted like `Map::coarse`, `sum(m w) / sum(w)`, so a cell straddling the frontier of
-    what has been seen takes the value of the seen side instead of being dragged toward
-    zero by its unseen neighbours. Unseen stays unseen: the weight carries over bilinearly.
+    Weighted like `Map::coarse`, `sum(m w) / sum(w)`, so a cell straddling the frontier
+    of what has been seen takes the value of the seen side instead of being dragged
+    toward zero by its unseen neighbors. Unseen stays unseen: the weight carries over
+    bilinearly.
     """
     flat, share, taps = _taps(mean, weight, _directions(tuple(shape)))
     total = np.einsum("k...,k...->...", share, taps)
@@ -268,8 +269,8 @@ def _tile_directions(face: int, forward, right, up) -> np.ndarray:
     """Unit vector of every texel of one equi-angular face, `(face, face, 3)`.
 
     Equi-angular (`s' = tan(pi s / 4)`) rather than the plain gnomonic `s'= s`: it costs
-    one `tan` and brings the solid angle per texel from a 5.2:1 spread between face centre
-    and corner down to 1.41:1, with near-square texels throughout.
+    one `tan` and brings the solid angle per texel from a 5.2:1 spread between face
+    centre and corner down to 1.41:1, with near-square texels throughout.
     """
     s = np.tan(0.25 * np.pi * (2.0 * (np.arange(face) + 0.5) / face - 1.0))
     right_s, up_s = np.meshgrid(s, -s)
@@ -330,12 +331,12 @@ def render_map(
 ) -> np.ndarray:
     """uint8 picture of a surface map, unseen cells mid-gray.
 
-    The layout is the projection to draw in, not the one the map is stored in: `grid` is a
-    Lambert equal-area rectangle, on the same scale as FicTrac's sphere-map PNGs, and
+    The layout is the projection to draw in, not the one the map is stored in: `grid` is
+    a Lambert equal-area rectangle, on the same scale as FicTrac's sphere-map PNGs, and
     `cube` is an unfolded dice (`NET_LABELS` names its tiles) centered on the face the
     camera looks at and oriented like the image, so at `R = I` its middle tile is the
-    tracking window. A map is resampled if it is not already on that grid. The cube is the
-    honest way to look at the poles of an equal-area map: a single row of 0.1-degree
+    tracking window. A map is resampled if it is not already on that grid. The cube is
+    the honest way to look at the poles of an equal-area map: a single row of 0.1-degree
     slivers in the rectangle, a square face here.
     """
     if layout not in ("grid", "cube"):

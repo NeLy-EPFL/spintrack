@@ -1,17 +1,17 @@
 """Run quality summary: cost statistics, map coverage and elevated-cost episodes.
 
-An *episode* is a contiguous stretch where tracking was measurably harder than in the rest
-of the same run. Two per-frame signals go into it, both expressed as a ratio to the run's
-own robust baseline: the photometric `cost` and the number of Gauss-Newton iterations the
-solver needed. A frame counts as elevated only when **both** are, because the cost on its
-own also rises whenever the ball simply turns fast or shows surface the map has not seen
-yet - on real trials those bouts reach 4-6x the run baseline, as high as an actual
-geometry failure. The iteration count does not move for them (3-4 either way) and jumps to
-8-10 when the model no longer fits. See `episodes_above_baseline` for the measured
-constants.
+An *episode* is a contiguous stretch where tracking was measurably harder than in the
+rest of the same run. Two per-frame signals go into it, both expressed as a ratio to the
+run's own robust baseline: the photometric `cost` and the number of Gauss-Newton
+iterations the solver needed. A frame counts as elevated only when **both** are, because
+the cost on its own also rises whenever the ball simply turns fast or shows surface the
+map has not seen yet - on real trials those bouts reach 4-6x the run baseline, as high
+as an actual geometry failure. The iteration count does not move for them (3-4 either
+way) and jumps to 8-10 when the model no longer fits. See `episodes_above_baseline` for
+the measured constants.
 
-`.dat` files carry no iteration count, so `summary_from_dat` falls back to the cost alone
-and says so in `RunQuality.notes`; episodes found that way are far less specific.
+`.dat` files carry no iteration count, so `summary_from_dat` falls back to the cost
+alone and says so in `RunQuality.notes`; episodes found that way are far less specific.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from spintrack.io.dat import read_dat
 
 @dataclass
 class Episode:
-    """A contiguous stretch of frames where tracking was harder than the run baseline."""
+    """A contiguous stretch of frames where tracking was harder than the baseline."""
 
     start: int  # frame numbers, inclusive
     end: int
@@ -67,7 +67,7 @@ COVERAGE_NOTE = (
     "as the ball turns further and does not indicate bad tracking."
 )
 COST_ONLY_NOTE = (
-    "No solver iteration counts (summarised from a .dat): episodes come from the cost "
+    "No solver iteration counts (summarized from a .dat): episodes come from the cost "
     "alone and also fire on fast turning and on map warm-up."
 )
 
@@ -103,7 +103,8 @@ def _ratio_to_baseline(values, ok, smooth: int) -> np.ndarray | None:
     """Smoothed `values / median(values)` over the accepted frames.
 
     Frames that are not `ok`, or whose value is not finite, take the baseline value so
-    that they neither raise nor lower the running median; the caller marks them elsewhere.
+    that they neither raise nor lower the running median; the caller marks them
+    elsewhere.
     """
     values = np.asarray(values, dtype=np.float64)
     good = ok & np.isfinite(values) & (values > 0)
@@ -137,8 +138,9 @@ def episodes_above_baseline(
     synthetic benchmark scenes: no episode on any synthetic scene nor on trials 003 and
     005, and 004's ball drop comes out as frames 1134-1643 at 4.7x the run's cost
     baseline. Dropping the iteration term instead makes 003 report six episodes of the
-    same apparent severity, and thresholding the cost on its own spread (a MAD term) only
-    truncates 004's episode, because that spread is what the episode itself creates.
+    same apparent severity, and thresholding the cost on its own spread (a MAD term)
+    only truncates 004's episode, because that spread is what the episode itself
+    creates.
     """
     cost = np.asarray(cost, dtype=np.float64)
     ok = np.asarray(ok, dtype=bool)
@@ -248,7 +250,7 @@ def summarize_run(
 
 
 def summary_from_dat(path: str | Path, fps: float | None = None) -> RunQuality:
-    """Summarise an existing `.dat`. Gaps in the frame column count as dropped frames."""
+    """Summarize an existing `.dat`; gaps in the frame column count as dropped."""
     data = read_dat(path)
     if data.shape[0] == 0:
         raise ValueError(f"{path}: no records")
@@ -271,7 +273,10 @@ def summary_from_dat(path: str | Path, fps: float | None = None) -> RunQuality:
 def format_summary(q: RunQuality) -> str:
     """The terminal block (at most ~15 lines)."""
     lines = [
-        f"run quality: {q.n_frames} frames, {q.n_tracked} tracked, {q.n_dropped} dropped",
+        (
+            f"run quality: {q.n_frames} frames, {q.n_tracked} tracked, "
+            f"{q.n_dropped} dropped"
+        ),
         f"cost: median {q.cost_median:.4g}, p90 {q.cost_p90:.4g}, p99 {q.cost_p99:.4g}",
     ]
     if q.iters_median is not None:

@@ -20,7 +20,7 @@ from spintrack.config import Config
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
 from spintrack.sphere import ball_outline, fit_ball
 
-AXIS_COLOURS = ((255, 80, 80), (80, 220, 80), (80, 140, 255))  # x, y, z in RGB
+AXIS_COLORS = ((255, 80, 80), (80, 220, 80), (80, 140, 255))  # x, y, z in RGB
 
 
 @dataclass
@@ -176,7 +176,7 @@ class CalibrationSession:
         )
         cx, cy, _ = self.camera.project(self.centre)
         length = 0.8 * np.sin(self.half_angle)
-        for i, colour in enumerate(AXIS_COLOURS):
+        for i, color in enumerate(AXIS_COLORS):
             axis_cam = self.cam_to_lab.T[
                 :, i
             ]  # lab axis i expressed in camera coordinates
@@ -186,7 +186,7 @@ class CalibrationSession:
                 rgb,
                 (int(cx), int(cy)),
                 (int(tx), int(ty)),
-                colour,
+                color,
                 2,
                 cv2.LINE_AA,
                 tipLength=0.2,
@@ -197,6 +197,6 @@ class CalibrationSession:
                 (int(tx) + 4, int(ty) + 4),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                colour,
+                color,
                 1,
             )

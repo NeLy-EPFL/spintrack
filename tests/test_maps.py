@@ -1,4 +1,4 @@
-"""Saving, loading and localising against surface-map templates."""
+"""Saving, loading and localizing against surface-map templates."""
 
 import sys
 
@@ -81,7 +81,7 @@ def test_sample_map_reads_cell_centres_exactly():
 
 
 def test_cube_faces_meet_at_their_seams():
-    """The net is an unfolded dice: neighbouring faces have to line up along their edge."""
+    """The net is an unfolded dice: neighboring faces have to line up along their edge."""
     n = 32
     faces = cube_directions(n)
     texel = 0.5 * np.pi / n  # angular size of a face-centre texel

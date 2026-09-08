@@ -18,7 +18,7 @@ def skew(v: np.ndarray) -> np.ndarray:
 
 
 def rotvec_to_matrix(w: np.ndarray) -> np.ndarray:
-    """Exponential map so(3) -> SO(3) (Rodrigues' formula), accurate for small angles."""
+    """Exponential map so(3) -> SO(3) (Rodrigues), accurate for small angles."""
     w = np.asarray(w, dtype=np.float64)
     theta2 = float(w @ w)
     k = skew(w)

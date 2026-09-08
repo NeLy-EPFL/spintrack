@@ -37,7 +37,7 @@ def square_pose(
     """Pose `(R, t)` of the square with `camera_point = R @ animal_point + t`.
 
     `plane` is `"xy"`, `"yz"` or `"xz"` (a FicTrac `c2a_cnrs_xy` style key is accepted).
-    Initialised with a planar PnP solve on normalised coordinates (so any camera model
+    Initialized with a planar PnP solve on normalized coordinates (so any camera model
     works), then refined by Gauss-Newton on the direction residuals.
     """
     key = plane.lower()[-2:]
@@ -50,9 +50,9 @@ def square_pose(
     rays = camera.rays(pts[:, 0], pts[:, 1])
     if np.any(rays[:, 2] <= 0):
         raise ValueError("square corners must be in front of the camera")
-    normalised = (rays[:, :2] / rays[:, 2:3]).reshape(-1, 1, 2)
+    normalized = (rays[:, :2] / rays[:, 2:3]).reshape(-1, 1, 2)
     ok, rvec, tvec = cv2.solvePnP(
-        obj, normalised, np.eye(3), None, flags=cv2.SOLVEPNP_IPPE
+        obj, normalized, np.eye(3), None, flags=cv2.SOLVEPNP_IPPE
     )
     if not ok:
         raise RuntimeError("planar pose initialisation failed")

@@ -1,8 +1,8 @@
 """Central camera models mapping between pixels and view directions.
 
-Conventions (shared with FicTrac so its configs stay valid): camera axes x right, y down,
-z forward; pixel coordinates are continuous with the centre of pixel `(i, j)` at
-`(i + 0.5, j + 0.5)`. All methods are vectorised over leading dimensions.
+Conventions (shared with FicTrac so its configs stay valid): camera axes x right, y
+down, z forward; pixel coordinates are continuous with the centre of pixel `(i, j)` at
+`(i + 0.5, j + 0.5)`. All methods are vectorized over leading dimensions.
 """
 
 from __future__ import annotations

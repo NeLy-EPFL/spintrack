@@ -17,16 +17,16 @@ from spintrack.camera import Camera, EquidistantCamera, pixel_centres
 from spintrack.geometry import normalize, rotation_between, rotvec_to_matrix
 
 # Anti-aliasing of the window remap, as the standard deviation of a Gaussian in units of
-# the decimation (source pixels per window pixel: 5.8 on the synthetic scenes, 8.6 on the
-# lab recordings). Bilinear interpolation at that decimation samples one source pixel in
-# thirty and aliases the surface texture. Pre-filtering the source halves the per-frame
-# error on the synthetic scenes (clean_fly 0.036 -> 0.019 deg, sparse 0.061 -> 0.026) and
-# cuts trial 003's disagreement with an optical-flow cross-check by 13-31%; 0.35 and 0.7
-# both measure worse. Below `PREFILTER_MIN_DECIMATION` there is nothing to alias, and the
-# blur costs 1-4% on the lab-like scenes, so the filter is skipped. It is one `cv2.pyrDown`
-# (a binomial blur of variance one in source pixels, then a halving) followed by a Gaussian
-# on the half-size image: as accurate as the Gaussian on the full frame and a quarter of
-# its cost. A second halving is not - it loses 5-15% of the gain.
+# the decimation (source pixels per window pixel: 5.8 on the synthetic scenes, 8.6 on
+# the lab recordings). Bilinear interpolation at that decimation samples one source
+# pixel in thirty and aliases the surface texture. Pre-filtering the source halves the
+# per-frame error on the synthetic scenes (clean_fly 0.036 -> 0.019 deg, sparse 0.061 ->
+# 0.026) and cuts trial 003's disagreement with an optical-flow cross-check by 13-31%;
+# 0.35 and 0.7 both measure worse. Below `PREFILTER_MIN_DECIMATION` there is nothing to
+# alias, and the blur costs 1-4% on the lab-like scenes, so the filter is skipped. It is
+# one `cv2.pyrDown` (a binomial blur of variance one in source pixels, then a halving)
+# followed by a Gaussian on the half-size image: as accurate as the Gaussian on the full
+# frame and a quarter of its cost. A second halving is not - it loses 5-15% of the gain.
 PREFILTER_SIGMA = 0.5
 PREFILTER_MIN_DECIMATION = 2.0
 
@@ -48,8 +48,8 @@ def fit_ball(
     """Fit the ball outline: unit direction to the centre and angular radius (radians).
 
     Rays through the clicked rim points lie on a cone about the ball centre. The axis is
-    initialised from the plane through the ray tips (SVD) and both axis and half-angle are
-    refined by Gauss-Newton on the residuals `angle(ray_i, axis) - half_angle`.
+    initialized from the plane through the ray tips (SVD) and both axis and half-angle
+    are refined by Gauss-Newton on the residuals `angle(ray_i, axis) - half_angle`.
     """
     pts = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
     if len(pts) < 3:
@@ -80,7 +80,7 @@ def fit_ball(
 def ball_outline(
     camera: Camera, centre, half_angle: float, n_points: int = 180, shrink: float = 1.0
 ) -> np.ndarray:
-    """Image polygon (K, 2) of the ball outline at `shrink * half_angle` from the centre."""
+    """Image polygon (K, 2) of the outline at `shrink * half_angle` from the centre."""
     c = normalize(np.asarray(centre, dtype=np.float64))
     e1, e2 = tangent_basis(c)
     a = shrink * half_angle
@@ -97,10 +97,11 @@ def pixel_circle(
 ) -> tuple[float, float, float]:
     """Image circle `(cx, cy, r)` of the ball outline, in continuous pixel coordinates.
 
-    The silhouette of a sphere under a pinhole camera is exactly a circle, so this is the
-    inverse of `fit_ball` there; under a fisheye it is the best-fit circle of the outline.
-    The circle is fitted rather than summarised: for a ball far off the optical axis the
-    outline points crowd one side, and their centroid misses the centre by a few pixels.
+    The silhouette of a sphere under a pinhole camera is exactly a circle, so this is
+    the inverse of `fit_ball` there; under a fisheye it is the best-fit circle of the
+    outline. The circle is fitted rather than summarized: for a ball far off the optical
+    axis the outline points crowd one side, and their centroid misses the centre by a
+    few pixels.
     """
     outline = ball_outline(camera, centre, half_angle, 180)
     a = np.stack([2.0 * outline[:, 0], 2.0 * outline[:, 1], np.ones(len(outline))], 1)
@@ -115,7 +116,7 @@ def pixel_circle(
 def centre_from_pixel_circle(
     camera: Camera, target_px, half_angle: float, seed, iterations: int = 3
 ) -> np.ndarray:
-    """The ball direction whose `pixel_circle` sits at `target_px`; inverts that function.
+    """The ball direction whose `pixel_circle` sits at `target_px`; inverts that.
 
     The centre of the silhouette is not the projection of the ball's centre. It sits
     farther from the principal point, and by more the farther off axis the ball is, so
@@ -245,8 +246,8 @@ def rotated_window(
 def prefilter_plan(decimation: float, sigma: float) -> tuple[int, float]:
     """Pyramid levels and top-up Gaussian (reduced-image px) for a blur of `sigma`.
 
-    `sigma` is in units of the decimation. One `cv2.pyrDown` contributes a variance of one
-    source pixel squared; the remainder of the target variance is a Gaussian on the
+    `sigma` is in units of the decimation. One `cv2.pyrDown` contributes a variance of
+    one source pixel squared; the remainder of the target variance is a Gaussian on the
     half-size image. The pyramid's alignment is exact: output pixel `j` is centered on
     input pixel `2 j`, so a map in source pixel indices is divided by two.
     """
@@ -269,8 +270,9 @@ def window_geometry(
     """Build the tracking window for a ball at `centre` (unit) with `half_angle` (rad).
 
     The window frame has +z along `centre`; the ball centre sits at distance 1 and the
-    ball radius is `sin(half_angle)`. `mask` is the source-image mask from `source_mask`.
-    `prefilter` is the anti-aliasing blur in units of the decimation (0 for none).
+    ball radius is `sin(half_angle)`. `mask` is the source-image mask from
+    `source_mask`. `prefilter` is the anti-aliasing blur in units of the decimation (0
+    for none).
     """
     c = normalize(np.asarray(centre, dtype=np.float64))
     to_camera = rotation_between(np.array([0.0, 0.0, 1.0]), c)

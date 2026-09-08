@@ -2,7 +2,7 @@
 
 A source is any object with `width`, `height`, `fps`, `read()` and `close()`. `read()`
 returns a `Frame` or `None` at the end of the stream. Frames are 2-D uint8 arrays; a
-colour input is converted to gray on the way in, so the tracker never sees colour.
+color input is converted to gray on the way in, so the tracker never sees color.
 """
 
 from __future__ import annotations

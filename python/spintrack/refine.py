@@ -1,39 +1,40 @@
 """Offline refinement: rebuild the map from every frame, then re-solve every frame.
 
 Online tracking builds the map incrementally, so early errors are baked into it and
-frame-to-frame modes drift. Given all normalized windows and the online orientations, each
-sweep splats every frame into a map at its current orientation and re-aligns every frame
-against it. Two or three sweeps are usually enough.
+frame-to-frame modes drift. Given all normalized windows and the online orientations,
+each sweep splats every frame into a map at its current orientation and re-aligns every
+frame against it. Two or three sweeps are usually enough.
 
 The map a frame is aligned against is *temporally local*: an exponential window of
 `LOCAL_TAU` frames on either side of it, the frame itself left out. A map of the whole
-recording is sharper in principle and blurrier in practice - the lighting, the shading and
-the animal's shadow change over a recording, and a mean over all of it no longer looks like
-the texture any one frame sees. Judged by an optical-flow cross-check on trial 003, refining
-against the whole recording made the per-frame increments worse than the online ones (0.59
-px rms against 0.43) and the local map makes them better (0.41 px); on `ball_drop`, with
-exact truth, the episode error goes from 0.053 deg online to 0.049 (whole recording:
-0.053). Fifty frames measures best of 50, 150 and 500. The two sides of the window are two
-passes: forward, where the map of the frames before each one is checkpointed every
-`CHECKPOINT_EVERY` frames and replayed by block, and backward, where each frame is solved
-and then folded into the map of the frames after it. The memory is a block of maps, not one
-per frame.
+recording is sharper in principle and blurrier in practice - the lighting, the shading
+and the animal's shadow change over a recording, and a mean over all of it no longer
+looks like the texture any one frame sees. Judged by an optical-flow cross-check on
+trial 003, refining against the whole recording made the per-frame increments worse than
+the online ones (0.59 px rms against 0.43) and the local map makes them better (0.41
+px); on `ball_drop`, with exact truth, the episode error goes from 0.053 deg online to
+0.049 (whole recording: 0.053). Fifty frames measures best of 50, 150 and 500. The two
+sides of the window are two passes: forward, where the map of the frames before each one
+is checkpointed every `CHECKPOINT_EVERY` frames and replayed by block, and backward,
+where each frame is solved and then folded into the map of the frames after it. The
+memory is a block of maps, not one per frame.
 
 Windows recorded before the tracking window moved (see `spintrack.refit`) are in the
 window frame they were tracked in, and so must their orientations be: a window's pixels
 map to the same surface directions wherever the window sits, so a window paired with an
 orientation expressed in a later window frame is splatted rotated by the move. On
 `ball_drop` that pairing cost the refined episode 0.088 deg per frame against 0.070 with
-each frame kept in its own frame. `versions` and `moves` carry the frames, and the refined
-orientations come back in the same per-frame frames.
+each frame kept in its own frame. `versions` and `moves` carry the frames, and the
+refined orientations come back in the same per-frame frames.
 
-A re-solve can land in a wrong minimum several degrees away and still fit well enough to be
-accepted: on trial 003 seventeen frames did, and the refined output carried out-and-back
-spikes of 9-12 degrees that the online run never had. A frame whose orientation is far from
-both of its neighbors while the neighbors agree with each other is such a spike - the ball
-cannot go there and back within a frame - and it keeps its pre-sweep orientation instead.
-There is no cost gate: the pre-filtered window makes a still frame's cost a tenth of a
-moving one's, so a multiple of the median rejects the frames where the animal walks.
+A re-solve can land in a wrong minimum several degrees away and still fit well enough to
+be accepted: on trial 003 seventeen frames did, and the refined output carried
+out-and-back spikes of 9-12 degrees that the online run never had. A frame whose
+orientation is far from both of its neighbors while the neighbors agree with each other
+is such a spike - the ball cannot go there and back within a frame - and it keeps its
+pre-sweep orientation instead. There is no cost gate: the pre-filtered window makes a
+still frame's cost a tenth of a moving one's, so a multiple of the median rejects the
+frames where the animal walks.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ SPIKE_AGREEMENT = 0.5
 def bring_forward(
     R: np.ndarray, from_version: int, to_version: int, moves
 ) -> np.ndarray:
-    """Re-express a window-frame orientation across the window moves between two versions."""
+    """Re-express a window-frame orientation across the moves between two versions."""
     for Q in moves[from_version:to_version]:
         R = Q @ R
     return R
@@ -76,13 +77,14 @@ def refine_orientations(
 ) -> tuple[list[np.ndarray | None], dict]:
     """Return refined window-frame orientations (None where a frame stays untrackable).
 
-    `windows` are normalized windows (as produced by `TrackEngine.normalize`, any float dtype);
-    `orientations` are the online estimates, with None for dropped frames (they are seeded
-    from the nearest earlier estimate and solved against the map). Each is in the window
-    frame its frame was tracked in: `versions[i]` names that frame and `moves[v]` is the
-    rotation from window frame `v` to `v + 1` (`Tracker._moves`), both optional when the
-    window never moved. The result is in the same per-frame frames. `tau` is the map's
-    temporal window in frames; None uses every other frame of the recording.
+    `windows` are normalized windows (as produced by `TrackEngine.normalize`, any float
+    dtype); `orientations` are the online estimates, with None for dropped frames (they
+    are seeded from the nearest earlier estimate and solved against the map). Each is in
+    the window frame its frame was tracked in: `versions[i]` names that frame and
+    `moves[v]` is the rotation from window frame `v` to `v + 1` (`Tracker._moves`), both
+    optional when the window never moved. The result is in the same per-frame frames.
+    `tau` is the map's temporal window in frames; None uses every other frame of the
+    recording.
     """
     n = len(windows)
     R = list(orientations)
@@ -225,7 +227,7 @@ def revert_spikes(new_R, old_R, versions, moves) -> int:
 
 
 def increments(orientations: Sequence[np.ndarray | None]) -> list[np.ndarray | None]:
-    """Per-frame rotation vectors `log(R_t R_prev^T)` relative to the previous tracked frame."""
+    """Per-frame `log(R_t R_prev^T)`: the rotation since the previous tracked frame."""
     out: list[np.ndarray | None] = []
     prev = None
     for R in orientations:

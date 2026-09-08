@@ -1,10 +1,10 @@
 """Fictive path integration from per-frame ball rotations in the lab frame.
 
 Lab frame (FicTrac convention): x forward, y right, z down. A ball rotation vector
-`dr_lab` maps to animal motion as: `forward = dr_lab[1]`, `side = -dr_lab[0]` (positive to
-the animal's right), `heading -= dr_lab[2]`. Positions are in radians of ball rotation
-(multiply by the ball radius for distance). The world frame has x along the initial
-heading and y to the initial right, matching FicTrac's output columns 15-21.
+`dr_lab` maps to animal motion as: `forward = dr_lab[1]`, `side = -dr_lab[0]` (positive
+to the animal's right), `heading -= dr_lab[2]`. Positions are in radians of ball
+rotation (multiply by the ball radius for distance). The world frame has x along the
+initial heading and y to the initial right, matching FicTrac's output columns 15-21.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ class PathIntegrator:
 
 
 def integrate_path(dr_lab: np.ndarray) -> np.ndarray:
-    """Vectorised convenience: (N, 3) lab rotation vectors -> (N, 5) x, y, heading, int_x, int_y."""
+    """Vectorized: (N, 3) lab rotation vectors -> (N, 5) x, y, heading, int_x, int_y."""
     integ = PathIntegrator()
     out = np.empty((len(dr_lab), 5))
     for i, dr in enumerate(dr_lab):
