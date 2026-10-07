@@ -12,7 +12,12 @@ import numpy as np
 import pytest
 
 from spintrack import debug_video
-from spintrack.debug_video import DebugVideoWriter
+from spintrack.calibrate.sliders import c2a_from_angles
+from spintrack.config import Config
+from spintrack.debug_video import DebugCanvas, DebugVideoWriter
+from spintrack.engine import StepResult, TrackParams
+from spintrack.geometry import rotvec_to_matrix
+from spintrack.tracker import FrameResult, Tracker
 
 av = pytest.importorskip("av")
 
@@ -76,3 +81,69 @@ def test_writer_rejects_a_canvas_of_the_wrong_size(tmp_path):
             writer.write(np.zeros((48, 32, 3), np.uint8))
     finally:
         writer.close()
+
+
+# ----- the animal's trail over the ball -----
+#
+# The trail is drawn where the ball's surface carried the animal's past contact points,
+# so a transposed orientation or a mistaken "up" puts it on the far side of the ball, or
+# on the wrong side of the image, and still looks like a plausible curve. This pins the
+# direction end to end: a fly walking straight forward under a camera behind it leaves a
+# trail running from the top of the ball down its face towards the camera.
+
+BALL_HALF_ANGLE = np.radians(5.0)
+
+
+def frame_result(i, R_cam, tracker):
+    step = StepResult(True, "prev", np.zeros(3), np.eye(3), cost=0.0)
+    return FrameResult(
+        frame=i,
+        seq=i,
+        ts_ms=10.0 * i,
+        w_cam=np.zeros(3),
+        w_lab=np.zeros(3),
+        R_cam=R_cam,
+        R_lab=tracker.cam_to_lab @ R_cam @ tracker.cam_to_lab.T,
+        step=step,
+        values=np.zeros(25),
+    )
+
+
+def walking_canvas(n=90, step_deg=1.0):
+    """A rendered canvas after `n` frames of a fly walking straight forward."""
+    cfg = Config(
+        src_fn="none",
+        vfov=60.0,
+        roi_c=[0.0, 0.0, 1.0],  # ball dead ahead, so the image is the ball's own frame
+        roi_r=BALL_HALF_ANGLE,
+        src_fps=100.0,
+    )
+    cfg.c2a_r = c2a_from_angles(0.0, 180.0)  # camera behind the animal, level with it
+    tracker = Tracker(cfg, 640, 480, TrackParams(center_watch=False))
+    canvas = DebugCanvas(tracker)  # 480 rows in and out, so panel px are source px
+    gray = np.zeros((480, 640), np.uint8)
+    # Walking forward turns the ball about the lab's y axis (`path.PathIntegrator`).
+    w_cam = tracker.cam_to_lab.T @ (np.radians(step_deg) * np.array([0.0, 1.0, 0.0]))
+    for i in range(n):
+        canvas.render(gray, frame_result(i, rotvec_to_matrix(i * w_cam), tracker))
+    return tracker, canvas
+
+
+def test_trail_runs_from_the_animal_down_the_face_of_the_ball():
+    tracker, canvas = walking_canvas()
+    pts, seen = canvas.trail_points()
+    cx, cy = tracker.camera.center
+    radius = tracker.ball_radius_px
+    assert seen[0] and not seen[-1]  # the animal itself is at the limb, not on the face
+    trail = pts[seen]
+    assert np.allclose(trail[:, 0], cx)  # walking forward moves it nowhere sideways
+    assert np.all(np.diff(trail[:, 1]) < 0)  # newer points are nearer the top
+    assert trail[-1, 1] < cy - 0.9 * radius  # the newest is up at the animal
+    assert abs(trail[0, 1] - cy) < 0.05 * radius  # the oldest, 89 deg back, faces us
+
+
+def test_trail_is_bounded_and_survives_a_dropped_frame():
+    _, canvas = walking_canvas(n=debug_video.TRAIL_FRAMES + 50, step_deg=0.05)
+    canvas.render(np.zeros((480, 640), np.uint8), None)  # a dropped frame still draws
+    pts, _ = canvas.trail_points()
+    assert len(pts) == debug_video.TRAIL_FRAMES

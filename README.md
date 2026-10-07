@@ -35,9 +35,10 @@ spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
 spintrack map ball.npz --layout cube     # look at the ball's surface map
 ```
 
-`--debug-video` writes an annotated video: the ball with its orientation axes, the
-tracking window, the fictive path, the surface map as an unfolded dice centered on the face
-the camera sees, and the static illumination field. It encodes H.264 with PyAV's bundled
+`--debug-video` writes an annotated video: the ball with its orientation axes and the
+trail the animal has walked over its surface, the tracking window, the fictive path, the
+surface map as an unfolded dice centered on the face the camera sees, and the static
+illumination field. It encodes H.264 with PyAV's bundled
 FFmpeg, so no system `ffmpeg` is needed. `--refine N` re-estimates every frame offline
 against a map of its neighbors (50 frames either side), which sharpens the per-frame
 increments and recovers dropped frames; it does not remove drift. `--save-map` /

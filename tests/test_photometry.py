@@ -92,7 +92,7 @@ def test_bias_field_recovers_the_shadow():
     fixed, geom, _ = run(TrackParams(illum_bias=True, **FAST))
 
     # The field lands where the artifact actually is. Deep inside the shadow the local
-    # normalization copes, because the whole neighbourhood is dark; it is at the *edge*
+    # normalization copes, because the whole neighborhood is dark; it is at the *edge*
     # that its box straddles bright and dark and drives the reading down. So the field
     # should be strongly negative in that band and flat well above it.
     rows = np.arange(SIZE)[:, None]

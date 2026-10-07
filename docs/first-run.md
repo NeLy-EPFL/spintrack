@@ -46,10 +46,11 @@ click the rim, the regions to ignore, and the forward and side axes.
 spintrack run config.txt --debug-video run.mp4
 ```
 
-Watch `run.mp4`: the orientation axes should stay planted on the ball, and the fictive path
-should move only when the animal walks. Once that looks right, `--two-pass` maps the ball in
-a throwaway first pass so the opening frames see a whole ball, and `--refine 2` re-estimates
-each frame offline; neither removes drift over the recording.
+Watch `run.mp4`: the orientation axes should stay planted on the ball, the trail the animal
+leaves over its surface should ride with the texture rather than slide across it, and the
+fictive path should move only when the animal walks. Once that looks right, `--two-pass`
+maps the ball in a throwaway first pass so the opening frames see a whole ball, and
+`--refine 2` re-estimates each frame offline; neither removes drift over the recording.
 
 ## 4. Read the summary, and when to distrust it
 

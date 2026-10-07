@@ -1,9 +1,12 @@
-"""Annotated debug video: source frame with ball and axes, tracking window, map, path.
+"""Annotated debug video: source frame with the ball, its axes and the animal's trail
+over it, plus the tracking window, map and fictive path.
 
-The side panels are the tracking window and the fictive path, then the map and the
-static illumination field. The map is drawn as an unfolded dice centered on the face the
-camera looks at and oriented like the image, with the ball's top and bottom above and
-below it (`maps.NET_LABELS`), so at `R = I` its middle tile is the window.
+The main panel is the source frame with the ball's outline, its orientation axes and the
+trail the animal has walked over the surface. The side panels are the tracking window and
+the fictive path, then the map and the static illumination field. The map is drawn as an
+unfolded dice centered on the face the camera looks at and oriented like the image, with
+the ball's top and bottom above and below it (`maps.NET_LABELS`), so at `R = I` its
+middle tile is the window.
 
 Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. Rendering
 costs a few milliseconds per frame, so it is off by default.
@@ -31,6 +34,21 @@ AXIS_BGR = (
     (255, 140, 80),
 )  # x red, y green, z blue (BGR)
 LABEL_BGR = (255, 255, 0)  # panel titles and face names
+
+# The animal's trail over the ball: how many frames of it to keep, as FicTrac's
+# DRAW_SPHERE_HIST_LENGTH.
+TRAIL_FRAMES = 1024
+# How much of the ball to draw it on: the cosine of the grazing angle a surface point
+# must beat. Within a few degrees of the limb the surface is so foreshortened that any
+# point of it lands on the outline, so a trail there hugs the outline and says nothing
+# about where the animal walked. The cut costs the outermost percent of the disk.
+TRAIL_LIMB_COS = 0.1
+# Trail color by age, oldest first. FicTrac blends each segment into the image under it;
+# a ramp from dark blue to cyan is the same idea without reading the pixels back.
+TRAIL_BGR = [
+    tuple(bgr)
+    for bgr in np.linspace((90, 40, 0), (255, 255, 0), 6).round().astype(int).tolist()
+]
 
 
 def _label(panel: np.ndarray, text: str, x: int, y: int) -> None:
@@ -82,12 +100,21 @@ class DebugCanvas:
         self.scale = scale
         self.main_w = round(tracker.width * scale)
         self.width = self.main_w + panel * 2
-        self.axis_len = 0.8 * np.sin(tracker.half_angle)
+        self.sin_half = np.sin(tracker.half_angle)
+        self.axis_len = 0.8 * self.sin_half
+        # The animal rides on top of the ball, so the surface point it touches is the
+        # lab frame's up in camera coordinates. Without a `c2a_r` in the config this is
+        # the identity's up, which points at the camera rather than at the animal.
+        self.up_cam = -tracker.cam_to_lab[2]
         self._geometry_version = -1
         self._update_outline()
         self._path = np.empty((1024, 2), np.float64)  # grown by doubling
         self._n_path = 0
         self.path_bbox = [-0.1, 0.1, -0.1, 0.1]
+        # Where the animal has touched the ball, in its body frame, oldest first.
+        self._trail = np.empty((TRAIL_FRAMES, 3), np.float64)
+        self._n_trail = 0
+        self._R_cam = None  # last tracked orientation, so a dropped frame still draws
 
     @property
     def path_pts(self) -> np.ndarray:
@@ -99,6 +126,14 @@ class DebugCanvas:
             self._path = np.resize(self._path, (2 * len(self._path), 2))
         self._path[self._n_path] = (x, y)
         self._n_path += 1
+
+    def _append_trail(self, contact_body: np.ndarray) -> None:
+        """Keep the last `TRAIL_FRAMES` contact points, oldest first."""
+        if self._n_trail == TRAIL_FRAMES:
+            self._trail[:-1] = self._trail[1:]
+            self._n_trail -= 1
+        self._trail[self._n_trail] = contact_body
+        self._n_trail += 1
 
     @property
     def size(self) -> tuple[int, int]:
@@ -132,6 +167,7 @@ class DebugCanvas:
         cv2.polylines(
             main, [self.outline.astype(np.int32)], True, (0, 200, 0), 1, cv2.LINE_AA
         )
+        self._draw_trail(main, result)
         c = (int(self.center_px[0]), int(self.center_px[1]))
         if result is not None:
             # Ball orientation: a gnomon that rotates with the ball (camera frame).
@@ -203,6 +239,53 @@ class DebugCanvas:
                 )
                 _label(side, "illumination", x0 + 6, top + 16)
         return np.hstack([main, side])
+
+    def trail_points(self) -> tuple[np.ndarray, np.ndarray]:
+        """Where the animal's past contact points sit now: panel coordinates (n, 2),
+        oldest first, and which of them the camera can see."""
+        tr = self.tracker
+        # Each stored point is body-fixed, so the ball's current orientation says where
+        # the surface carried it, and the ball's radius puts it back on the surface.
+        contact = self._trail[: self._n_trail] @ self._R_cam.T
+        # A surface point faces the camera when `-(c . u)` beats the ball's radius over
+        # its distance, which is a little short of a hemisphere; `TRAIL_LIMB_COS` more
+        # asks it to face the camera squarely enough to be drawn where it really is.
+        seen = contact @ tr.center < -self.sin_half - TRAIL_LIMB_COS
+        x, y, inside = tr.camera.project(tr.center + self.sin_half * contact)
+        seen &= inside
+        pts = np.stack([np.where(seen, x, 0.0), np.where(seen, y, 0.0)], axis=1)
+        return pts * self.scale, seen
+
+    def _draw_trail(self, main: np.ndarray, result: FrameResult | None) -> None:
+        """Draw the trail the animal has walked over the ball, as FicTrac does.
+
+        The animal stays put while the ball turns under it, so the surface point it
+        touched at frame `i` is now `R_cam @ R_cam(i).T @ up`, and the trail is that
+        point for every frame still in the history - the animal's path, inverted,
+        painted on the ball it walked. Only the near side of the ball is drawn, and the
+        trail brightens with recency.
+        """
+        if result is not None:
+            self._R_cam = result.R_cam
+            self._append_trail(result.R_cam.T @ self.up_cam)
+        if self._R_cam is None or self._n_trail < 2:
+            return
+        pts, seen = self.trail_points()
+        pts = pts.astype(np.int32)
+        bands = len(TRAIL_BGR)
+        for band in range(bands):
+            lo = band * self._n_trail // bands
+            hi = (band + 1) * self._n_trail // bands + 1  # overlap, to join the bands
+            edges = np.flatnonzero(np.diff(np.r_[False, seen[lo:hi], False]))
+            runs = [
+                pts[lo + i : lo + j]
+                for i, j in zip(edges[::2], edges[1::2])
+                if j - i > 1
+            ]
+            cv2.polylines(main, runs, False, TRAIL_BGR[band], 1, cv2.LINE_AA)
+        if seen[-1]:
+            cv2.circle(main, tuple(pts[-1]), 3, TRAIL_BGR[-1], -1, cv2.LINE_AA)
+        _label(main, "path on ball", 8, 16)
 
     def _draw_net(self, side: np.ndarray, top: int, tile: int) -> None:
         """Draw the map as an unfolded dice of `tile`-pixel faces at the left of `side`,
