@@ -16,7 +16,7 @@ Streaming over a serial port needs the `serial` extra (`uv sync --extra serial` 
 
 ## Quick start
 
-The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball.
+The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball. A second example, `examples/ball_drop/`, shows the tracking window following a ball that sinks in its holder and comes back up.
 
 ```console
 $ uv run spintrack run examples/sample/config.txt --debug-video

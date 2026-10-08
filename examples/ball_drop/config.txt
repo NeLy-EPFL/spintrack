@@ -1,0 +1,11 @@
+## Hind camera of an octacam recording (AN07B017_260414_Fly4_004), frames 950-2049
+## at half resolution: the ball sinks about 100 px in its holder in three jerks.
+## vfov from the rig's bundle adjustment; camera behind the animal.
+src_fn         : ball_drop.mp4
+vfov           : 2.3893
+q_factor       : 12
+src_fps        : 100
+opt_do_global  : y
+max_bad_frames : 100
+roi_circ       : { 131, 381.5, 148, 290, 176.5, 237.5, 220.5, 187, 500, 148.5, 562, 186.5, 614.5, 254, 638.5, 311.5, 651, 374, 645, 428.5, 629.5, 482, 140, 445 }
+c2a_r          : { 1.2092, 1.2092, 1.2092 }
