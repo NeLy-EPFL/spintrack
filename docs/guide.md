@@ -70,6 +70,13 @@ wrote config.toml
 
 Detection uses the first 100 frames (`--frames`) and exits with status 2 rather than write a ball it is unsure of. The field of view is fitted only here (`run` refuses a config without one), so all runs of a rig share it. On a long lens the fit is flat, as above, and any value in the flat range gives the same rotations; if you know the field of view, write it. `run` detects the ball itself when the config has none, but writing it once keeps a rig's runs consistent.
 
+Detection looks at the per-pixel 90th percentile of those frames: as the ball turns, its dark markings pass over every pixel of it, so the high percentile shows the ball's plain surface while the static background stays as it is. Two detectors work on that image:
+
+- With the `sam` extra (`uv sync --extra sam` or `pip install ".[sam]"`), SAM 3 is asked for a "ball" and a "sphere". Its masks only say where the ball is: the rim is measured on the image in a narrow band around each mask, and a candidate is kept only if the rim confirms enough of the outline the mask shows, fits a circle tightly, stands out of the noise and agrees with the mask; among those, SAM's score decides. On 266 recordings from six rigs this found all 225 balls without a wrong one and refused all 41 recordings with no usable ball in view. It takes 0.3 s on a GPU or about 13 s on a CPU, once per recording. The checkpoint (3.4 GB, downloaded on first use) is gated by Meta: request access at [huggingface.co/facebook/sam3](https://huggingface.co/facebook/sam3) and log in once with `hf auth login`. Its [license](https://github.com/facebookresearch/sam3/blob/main/LICENSE) asks publications that use it to acknowledge SAM.
+- Without the extra, or when the checkpoint cannot be loaded, a classical detector thresholds the image. It is as precise when it answers, but on the same recordings it found only 108 of the 225 balls, refusing the rest.
+
+Both assume a ball lighter than its markings, as on every rig tested. A ball that moves in its holder during the first frames reads slightly large; the summary's radius line shows it.
+
 Without `--auto`, a window opens: `c` marks rim points, `i` draws an ignore polygon, `s` marks a calibration square's corners (written as `camera.rotation`), `a` sets the camera position with sliders, `w` writes the config. `calibrate` rewrites the whole file: the comments at its top are kept, those further down are not.
 
 ### The camera position

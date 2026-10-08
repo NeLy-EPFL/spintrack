@@ -13,15 +13,18 @@ from dataclasses import replace as _replace
 
 import numpy as np
 
+from spintrack import segment
 from spintrack.camera import source_camera
 from spintrack.config import BallConfig, Config
 from spintrack.detect import (
     BallDetection,
     DetectionError,
+    ball_from_masks,
     circle_points,
     detect_ball,
     fit_circle,
     sample_frames,
+    temporal_stats,
 )
 from spintrack.sphere import fit_ball
 
@@ -111,6 +114,7 @@ class Prepared:
                 rim_fraction=self.detection.rim_fraction,
                 residual_px=self.detection.residual_px,
                 n_frames=self.detection.n_frames,
+                model_score=self.detection.model_score,
             )
         if self.config_radius_px is not None:
             out["config_radius_px"] = self.config_radius_px
@@ -124,6 +128,11 @@ class Prepared:
             return "from config (detection failed, not checked)"
         d = self.detection
         where = f"({d.cx:.1f}, {d.cy:.1f}) r {d.r:.1f} px"
+        if self.ball_source == "detected" and d.model_score is not None:
+            return (
+                f"detected at {where} by SAM 3 (score {d.model_score:.2f}), "
+                f"rim confirms {100 * d.confidence:.0f}% of its outline"
+            )
         if self.ball_source == "detected":
             return f"detected at {where}, confidence {d.confidence:.2f}"
         if self.radius_disagreement is None:
@@ -157,7 +166,8 @@ def prepare_config(
     height, width = frames[0].shape
     prepared = Prepared()
     try:
-        prepared.detection = detect_ball(frames, max_frames=n_frames)
+        # The comparison with a configured ball is only a check, not worth a model.
+        prepared.detection = find_ball(frames, n_frames, use_model=not cfg.ball.rim)
     except DetectionError as exc:
         if not cfg.ball.rim:
             raise
@@ -198,6 +208,34 @@ def prepare_config(
         )
         cfg.camera.vfov_deg = prepared.vfov.vfov
     return prepared
+
+
+def find_ball(frames, n_frames: int = 100, *, use_model: bool = True) -> BallDetection:
+    """The ball in a run of frames; raises `DetectionError` when it cannot be trusted.
+
+    With the `sam` extra installed, SAM 3 proposes the ball's silhouette in the
+    frames' temporal quantile and `ball_from_masks` measures and checks the rim; its
+    refusal is final. Without the extra, or when the model cannot be loaded, the
+    classical detector runs instead, which finds far fewer balls but refuses rather
+    than guess.
+    """
+    if use_model and segment.installed():
+        hi, _, n = temporal_stats(frames, n_frames)
+        try:
+            masks, scores = segment.ball_masks(np.clip(hi, 0, 255).astype(np.uint8))
+        except segment.SegmenterUnavailable as exc:
+            log.warning("%s; using the classical detector", exc)
+        else:
+            return ball_from_masks(hi, masks, scores, n_frames=n)
+    try:
+        return detect_ball(frames, max_frames=n_frames)
+    except DetectionError as exc:
+        if not use_model or segment.installed():
+            raise
+        raise DetectionError(
+            f"{exc}. Model-based detection finds the ball far more often: "
+            "pip install 'spintrack[sam]'"
+        ) from exc
 
 
 def _circle_points(circle, n: int = 16) -> list[tuple[int, int]]:

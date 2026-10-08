@@ -1,11 +1,12 @@
-"""Ball detection on rendered frames: accuracy, occlusion, partial views, refusal."""
+"""Ball detection on rendered frames: accuracy, occlusion, partial views, refusal,
+and the rim measured from a segmentation mask."""
 
 import numpy as np
 import pytest
 
 from helpers import make_texture, render
 from spintrack.camera import PinholeCamera
-from spintrack.detect import DetectionError, detect_ball
+from spintrack.detect import DetectionError, ball_from_masks, detect_ball
 from spintrack.geometry import normalize, rotvec_to_matrix
 
 
@@ -131,3 +132,51 @@ def test_rim_look_says_so_when_the_rim_is_not_where_it_was_told():
     except DetectionError:
         return
     assert not bad.ok or bad.residual_px > 5.0 * good.residual_px, (good, bad)
+
+
+def disc(shape, cx, cy, r):
+    yy, xx = np.indices(shape)
+    return (np.hypot(xx + 0.5 - cx, yy + 0.5 - cy) < r).astype(np.uint8)
+
+
+def quantile_image(frames):
+    from spintrack.detect import temporal_stats
+
+    return temporal_stats(frames)[0]
+
+
+def test_a_mask_proposes_and_the_rim_decides():
+    """A mask whose edge sits inside the rim, as a model's does, still finds the rim."""
+    size, center, half = CASES[1]
+    hi = quantile_image(sequence(size, center, half))
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
+    mask = disc(hi.shape, cx + 1.0, cy - 1.0, 0.985 * r)
+    mask[:, round(cx) : round(cx) + 3] = 0  # a painted seam splits the mask
+    det = ball_from_masks(hi, [mask], [0.5])
+    assert abs(det.r / r - 1) < 0.01, (det.r, r)
+    assert np.hypot(det.cx - cx, det.cy - cy) < 0.5, (det.cx, det.cy, cx, cy)
+    assert det.model_score == 0.5
+
+
+def test_the_model_score_decides_between_round_things():
+    """A smaller bright disc off the ball passes the rim checks too; the score picks."""
+    size, center, half = CASES[1]
+    hi = quantile_image(sequence(size, center, half, occluders=False))
+    cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
+    other = disc(hi.shape, 40.0, 40.0, 25.0)
+    hi = np.where(other > 0, 230.0, hi)
+    ball = disc(hi.shape, cx, cy, 0.99 * r)
+    det = ball_from_masks(hi, [other, ball], [0.12, 0.8])
+    assert abs(det.r / r - 1) < 0.01
+
+
+def test_refuses_a_mask_on_something_else():
+    rng = np.random.default_rng(3)
+    hi = rng.integers(0, 60, (240, 320)).astype(np.float32)
+    hi[60:180, 100:220] = 200.0  # a bright square, not a ball
+    mask = np.zeros(hi.shape, np.uint8)
+    mask[60:180, 100:220] = 1
+    with pytest.raises(DetectionError):
+        ball_from_masks(hi, [mask], [0.3])
+    with pytest.raises(DetectionError):
+        ball_from_masks(hi, [], [])

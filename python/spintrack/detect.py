@@ -45,17 +45,30 @@ HULL_TOL = 0.015
 HULL_TOL_PX = 2.0
 MIN_AREA_FRACTION = 0.002
 MAX_AREA_FRACTION = 0.85
+# Checking a circle proposed from a segmentation mask. The mask edge sits about 1%
+# inside the rim on the quantile image (0.3-1.7% on the lab test set), so the rim is
+# searched in a band about a slightly larger circle, and has to agree with the mask.
+MASK_INSIDE = 1.01
+MASK_BAND = 0.03  # half-width of the rim search, relative to the radius
+MASK_AGREE = 0.04  # largest radius or center difference to the mask's circle
+MIN_SUPPORT = 0.35  # of the mask's rim arc that the rim search has to confirm
+MIN_MASK_ARC = 0.25  # directions about the center that carry a rim point
+MAX_RESIDUAL = 0.01  # RMS radial residual, relative to the radius
+MIN_CONTRAST = 3.0  # rim edge strength over the image's pixel-to-pixel noise
+
+
+def _arc_bins(theta, bins: int = 72) -> np.ndarray:
+    """Which of `bins` equal angular sectors hold at least one of `theta`."""
+    hit = np.zeros(bins, bool)
+    if theta is not None and len(theta):
+        sector = np.asarray(theta) % (2 * np.pi) / (2 * np.pi) * bins
+        hit[sector.astype(int) % bins] = True
+    return hit
 
 
 def _theta_coverage(theta, bins: int = 72) -> float:
     """Fraction of `bins` equal angular sectors that hold at least one of `theta`."""
-    if theta is None or len(theta) == 0:
-        return 0.0
-    hit = np.zeros(bins, bool)
-    hit[(np.asarray(theta) % (2 * np.pi) / (2 * np.pi) * bins).astype(int) % bins] = (
-        True
-    )
-    return float(hit.mean())
+    return float(_arc_bins(theta, bins).mean())
 
 
 def circle_points(cx: float, cy: float, r: float, n: int = 16) -> list[int]:
@@ -89,6 +102,8 @@ class BallDetection:
     # The measured rim in polar form about `(cx, cy)`, one entry per accepted ray.
     rim_theta: np.ndarray = None
     rim_radius: np.ndarray = None
+    # The segmentation model's score when a model proposed the ball, else None.
+    model_score: float | None = None
 
     @property
     def arc_fraction(self) -> float:
@@ -351,10 +366,15 @@ class RimFit:
     radius: np.ndarray  # measured rim radius along each of those rays
 
 
-def refine_rim(image, cx, cy, r, polarity, min_strength=0.3) -> RimFit:
-    """Sub-pixel rim around a coarse circle and a robust free circle fit through it."""
+def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, band=None) -> RimFit:
+    """Sub-pixel rim around a coarse circle and a robust free circle fit through it.
+
+    The rim is searched within `band` pixels of the circle (default 5% of the radius,
+    at least 8 px).
+    """
     image = np.asarray(image, dtype=np.float32)
-    radii, cos, sin, dx, dy = _polar_offsets(r, max(8.0, 0.05 * r))
+    band = max(8.0, 0.05 * r) if band is None else band
+    radii, cos, sin, dx, dy = _polar_offsets(r, band)
     keep = _rays_inside(cx, cy, radii, cos, sin, image.shape)
     profile = _sample(image, cx, cy, dx[keep], dy[keep])
     edge_r, strength, ok = _edges(profile, radii, polarity)
@@ -401,6 +421,147 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3) -> RimFit:
         strength=float(np.median(strength[ok][sel])),
         theta=np.arctan2(dy, dx),
         radius=np.hypot(dx, dy),
+    )
+
+
+def _fill_hull(mask: np.ndarray) -> np.ndarray:
+    """The mask's convex hull, filled: closes seams, holes and what bites into it."""
+    pts = cv2.findNonZero(np.asarray(mask, np.uint8))
+    if pts is None:
+        raise DetectionError("empty mask")
+    out = np.zeros(mask.shape, np.uint8)
+    cv2.fillConvexPoly(out, cv2.convexHull(pts), 1)
+    return out
+
+
+def mask_circle(mask: np.ndarray, rng: np.random.Generator, n_iter: int = 400):
+    """The circle explaining the widest arc of a mask's outline, by RANSAC.
+
+    Points on the image border are dropped. Inliers lie within a band tied to the image
+    size rather than the radius, so a huge circle along a straight edge gains nothing,
+    and candidates are scored by the angular coverage of their inliers about the
+    center: a ball's rim spans a wide arc, an occluder's straight edge a narrow one.
+    Returns `(cx, cy, r, theta)`, `theta` the inliers' angles about the center.
+    """
+    h, w = mask.shape
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        raise DetectionError("empty mask")
+    pts = np.concatenate([c[:, 0, :] for c in contours]).astype(np.float64) + 0.5
+    inside = (
+        (pts[:, 0] > 3.5) & (pts[:, 0] < w - 3.5)
+        & (pts[:, 1] > 3.5) & (pts[:, 1] < h - 3.5)
+    )  # fmt: skip
+    pts = pts[inside]
+    if len(pts) < 20:
+        raise DetectionError("the mask's outline lies almost all on the image border")
+    pts = pts[:: max(1, len(pts) // 1500)]
+    tol = max(2.0, 0.004 * max(h, w))
+    best, best_coverage = None, -1.0
+    for _ in range(n_iter):
+        try:
+            cx, cy, r = fit_circle(pts[rng.choice(len(pts), 3, replace=False)])
+        except DetectionError, np.linalg.LinAlgError:
+            continue
+        if not 0.02 * min(h, w) < r < 1.5 * max(h, w):
+            continue
+        near = pts[np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r) < tol]
+        if len(near) < 10:
+            continue
+        coverage = _coverage_about(near, cx, cy)
+        if coverage > best_coverage:
+            best, best_coverage = (cx, cy, r), coverage
+    if best is None:
+        raise DetectionError("no circle fits the mask's outline")
+    cx, cy, r = best
+    for _ in range(2):
+        near = pts[np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r) < tol]
+        cx, cy, r = fit_circle(near)
+    return cx, cy, r, np.arctan2(near[:, 1] - cy, near[:, 0] - cx)
+
+
+def _polarity_about(image, cx: float, cy: float, r: float) -> float:
+    """+1 when the band just inside the circle is brighter than the one outside."""
+    h, w = image.shape
+    x0, x1 = max(0, int(cx - 1.2 * r)), min(w, int(cx + 1.2 * r) + 1)
+    y0, y1 = max(0, int(cy - 1.2 * r)), min(h, int(cy + 1.2 * r) + 1)
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    d = np.hypot(xx + 0.5 - cx, yy + 0.5 - cy) / r
+    crop = image[y0:y1, x0:x1]
+    inner, outer = crop[(d > 0.8) & (d < 0.95)], crop[(d > 1.05) & (d < 1.2)]
+    if not inner.size or not outer.size:
+        return 1.0
+    return 1.0 if np.median(inner) >= np.median(outer) else -1.0
+
+
+def ball_from_masks(image, masks, scores, *, n_frames: int = 1, seed: int = 0):
+    """The ball in `image`, from segmentation masks of it and the model's scores.
+
+    Each mask proposes a circle through its outline; the rim is then searched on the
+    image in a narrow band about it and has to confirm enough of the arc the mask
+    shows, fit a circle tightly, stand out of the noise and agree with the mask. Of
+    the masks that pass, the model's score decides, because a round thing the model
+    is less sure about (the animal's thorax) can pass too. Raises `DetectionError`
+    when none passes.
+    """
+    image = np.asarray(image, dtype=np.float32)
+    noise = max(1.4826 * float(np.median(np.abs(np.diff(image, axis=1)))), 1.0)
+    best, reasons = None, []
+    for mask, score in zip(masks, scores):
+        try:
+            mx, my, mr, mask_theta = mask_circle(
+                _fill_hull(mask), np.random.default_rng(seed)
+            )
+            fit = refine_rim(
+                image,
+                mx,
+                my,
+                MASK_INSIDE * mr,
+                _polarity_about(image, mx, my, mr),
+                band=max(4.0, MASK_BAND * mr),
+            )
+        except DetectionError as exc:
+            reasons.append(str(exc))
+            continue
+        mask_bins = _arc_bins(mask_theta)
+        support = (_arc_bins(fit.theta) & mask_bins).sum() / max(mask_bins.sum(), 1)
+        arc = _theta_coverage(fit.theta)
+        apart = max(abs(fit.r / mr - 1), np.hypot(fit.cx - mx, fit.cy - my) / mr)
+        residual = fit.residual_px / fit.r
+        checks = {
+            "rim confirms": (support, support >= MIN_SUPPORT),
+            "arc": (arc, arc >= MIN_MASK_ARC),
+            "residual": (residual, residual <= MAX_RESIDUAL),
+            "off the mask": (apart, apart < MASK_AGREE),
+            "contrast": (fit.strength / noise, fit.strength >= MIN_CONTRAST * noise),
+        }
+        failed = [f"{k} {v:.3g}" for k, (v, ok) in checks.items() if not ok]
+        if failed:
+            reasons.append(f"mask at score {score:.2f}: " + ", ".join(failed))
+            continue
+        if best is None or score > best[1]:
+            best = (fit, float(score), float(support), arc)
+    if best is None:
+        detail = "; ".join(reasons[:3]) if reasons else "no mask proposed"
+        raise DetectionError(f"no ball found ({detail})")
+    fit, score, support, arc = best
+    log.debug(
+        "ball at (%.1f, %.1f) r %.1f px from a mask at score %.2f (rim confirms %.0f%% "
+        "of its arc, residual %.2f px)",
+        fit.cx, fit.cy, fit.r, score, 100 * support, fit.residual_px,
+    )  # fmt: skip
+    return BallDetection(
+        cx=fit.cx,
+        cy=fit.cy,
+        r=fit.r,
+        confidence=support,
+        rim_fraction=fit.rim_fraction,
+        residual_px=fit.residual_px,
+        n_frames=n_frames,
+        ok=True,
+        rim_theta=fit.theta,
+        rim_radius=fit.radius,
+        model_score=score,
     )
 
 

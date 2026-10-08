@@ -12,7 +12,7 @@ cd spintrack
 uv sync            # or, in an environment of your own: pip install .
 ```
 
-Streaming over a serial port needs the `serial` extra (`uv sync --extra serial` or `pip install ".[serial]"`).
+Streaming over a serial port needs the `serial` extra (`uv sync --extra serial` or `pip install ".[serial]"`). Finding the ball with SAM 3, which finds it on far more rigs than the classical detector, needs the `sam` extra (`uv sync --extra sam` or `pip install ".[sam]"`) and one-time access to Meta's checkpoint; see [finding the ball](docs/guide.md#find-the-ball).
 
 ## Quick start
 
