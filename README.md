@@ -23,7 +23,7 @@ New to a rig, with no FicTrac config? [docs/first-run.md](docs/first-run.md) tak
 a tracked file and explains which numbers in the run summary to trust.
 
 ```bash
-spintrack run config.txt                 # FicTrac config, writes <video>-<timestamp>.dat
+spintrack run config.txt                 # FicTrac config, writes <video>-<timestamp>.dat and .parquet
 spintrack run config.txt --src ball.mp4  # override the source (video path or camera index)
 spintrack run config.txt --udp 127.0.0.1:1111 --print
 spintrack run config.txt --debug-video --refine 2 --save-map ball.npz

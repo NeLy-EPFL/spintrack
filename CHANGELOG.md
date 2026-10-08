@@ -4,7 +4,15 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-Nothing yet.
+### Output
+
+- Each run writes its records as `<out>.parquet` beside the `.dat`: the same 25 columns, named and typed, with units in the field metadata and the version and provenance in the file metadata. `--no-parquet` turns it off. `pyarrow` is now a dependency.
+
+### Tracking
+
+- The tracking window keeps up with a ball that drops in its holder. Online, a move is detected on the rim looks themselves rather than on a slow filter of them, and the window follows an adaptive line fit of the recent looks instead of an alpha-beta filter. With `--two-pass`, the planned window is smoothed with a width that shrinks through a jerk instead of a fixed six-frame Gaussian. Each frame is now tracked in the window placed for it, not in the previous frame's. On trial 004's jerky drop the window's p95 distance from the ball goes from 42 to 5 px online and from 15 to 3 px with `--two-pass`. Recordings whose ball does not move track exactly as before.
+- A resting ball that jumps farther in one frame than its rim look reaches is found again by the seed-independent detection, which used to run only while the window was already following.
+- The benchmark has three new scenes, `jerky_drop`, `jerky_diag` and `lab_jerky_drop`, in which the ball drops in jerks of about a tenth of its radius over ten frames, as on trial 004; `ball_drop` moves too slowly for any follower to lag. The scene generator takes a `steps` ball path for them.
 
 ## 0.1.0
 

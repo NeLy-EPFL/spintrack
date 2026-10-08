@@ -222,3 +222,32 @@ def test_second_pass_places_the_window_from_the_first_pass_looks():
         np.nanmedian(online[early]),
         np.nanmedian(planned[early]),
     )
+
+
+def test_planned_window_keeps_up_with_a_jerk():
+    """A ball that drops in a few frames is followed through the drop, not smeared.
+
+    Trial 004's ball fell in jerks of about 50 px over ten frames; a fixed six-frame
+    Gaussian over the looks put the planned window up to 24 px behind it mid-jerk and
+    moved it before the ball did.
+    """
+    from spintrack.refit import plan_window_trajectory
+
+    rng = np.random.default_rng(1)
+    n, reference = 900, np.array([400.0, 300.0])
+    truth = np.zeros((n, 2))
+    for start, length, size in ((300, 10, 50.0), (340, 8, 60.0), (600, 300, -110.0)):
+        phase = np.clip((np.arange(n) - start) / length, 0.0, 1.0)
+        truth[:, 1] += size * 0.5 * (1.0 - np.cos(np.pi * phase))
+    looks = [
+        (i, reference + truth[i] + rng.normal(0.0, 0.7, 2), 0.9)
+        for i in range(n)
+        if rng.random() > 0.05
+    ]
+    window, _, _ = plan_window_trajectory(
+        looks, n, reference, radius_px=500.0, scatter=0.7
+    )
+    error = np.hypot(*(window - reference - truth).T)
+    jerks = slice(295, 355)
+    assert np.percentile(error[jerks], 95) < 3.0, np.percentile(error[jerks], 95)
+    assert np.array_equal(window[:280], np.tile(reference, (280, 1)))

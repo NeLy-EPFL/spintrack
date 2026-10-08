@@ -2,7 +2,7 @@
 
 [benchmark.md](benchmark.md) says how *precise* the tracker is: hundredths of a degree per frame, against exact synthetic truth. This page is about whether it is *right* - whether one radian of ball rotation comes back as one radian, in the direction the animal actually moved - because a precision number cannot tell you that. A tracker reporting every rotation 2% small scores the same per-frame error as one that is right on average and equally noisy.
 
-Two things are open, and they are stated here rather than buried: spintrack reports 1.5 to 4% less **turning** than FicTrac on five real recordings of one rig and 9% less on a sixth - a gap that widens the more slowly the animal turns, and that no synthetic scene reproduces even when built with that rig's geometry and slowed to its animals' own pace - and about 2% less **sideslip** than truth on the synthetic scenes whose ball is small in the frame. Both are below the per-frame error in absolute terms and neither changes what the tool is for, but both are systematic. The sections below say what has been ruled out for each.
+Two things are open, and they are stated here rather than buried: spintrack reports 1.5 to 4.5% less **turning** than FicTrac on five real recordings of one rig and 5% less on a sixth - a gap that widens the more slowly the animal turns, and that no synthetic scene reproduces even when built with that rig's geometry and slowed to its animals' own pace - and about 2% less **sideslip** than truth on the synthetic scenes whose ball is small in the frame. Both are below the per-frame error in absolute terms and neither changes what the tool is for, but both are systematic. The sections below say what has been ruled out for each.
 
 ## The circularity, and what closes it
 
@@ -28,12 +28,12 @@ And what it depends on. Split each trial into 6-second windows and bin them by h
 
 | turning, deg/frame | windows | spintrack / FicTrac |
 |---|---|---|
-| 0.03 to 0.08 | 16 | 0.933 +- 0.011 |
-| 0.08 to 0.12 | 15 | 0.961 +- 0.005 |
+| 0.03 to 0.08 | 16 | 0.934 +- 0.011 |
+| 0.08 to 0.12 | 15 | 0.958 +- 0.005 |
 | 0.12 to 0.25 | 15 | 0.977 +- 0.003 |
-| 0.25 to 0.55 | 16 | 0.971 +- 0.013 |
+| 0.25 to 0.55 | 16 | 0.977 +- 0.007 |
 
-**The deficit is a slow-turning effect**, three times larger in the slowest windows than in the fastest, and the estimator is not the cause of the trend: at 600-frame windows and correlations down to 0.58 - below the worst bin's 0.76 - planted series with a true ratio of 1.00 read it within 0.7%, and the lagged autocovariance those bins are instrumented on carries 0.61 to 0.83 of the variance against the 0.05 the estimator refuses below.
+**The deficit is a slow-turning effect**, three times larger in the slowest windows than in the fastest, and the estimator is not the cause of the trend: at 600-frame windows and correlations down to 0.58 - below the worst bin's 0.76 - planted series with a true ratio of 1.00 read it within 0.7%, and the lagged autocovariance those bins are instrumented on carries 0.61 to 0.82 of the variance against the 0.05 the estimator refuses below.
 
 **The synthetic scenes move nothing like these recordings**, which looked like the explanation and is not. `lab_big_ball` turns at 0.87 and walks at 0.80 degrees per frame; five of the six trials turn at 0.07 to 0.16 and walk at 0.04 to 0.09, ten to twenty times slower, and the sixth - the one that does walk like the scene - has the second-best turn ratio of the six. So the same geometry, texture, lighting, occluders and sensor were re-rendered with `fly_walk` scaled to 0.3 and 0.1 (`notes/session_2026-09-08f/make_lab_slow.py`), which brackets the real trials, and scored against exact truth:
 

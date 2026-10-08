@@ -201,22 +201,36 @@ def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
     if not spec.ball_path:
         return path
     kind = spec.ball_path.get("kind", "bump")
-    if kind != "bump":
-        raise ValueError(f"unknown ball_path kind {kind!r}")
-    start = int(spec.ball_path["start"])
-    end = int(spec.ball_path["end"])
-    amplitude = float(spec.ball_path["amplitude_radii"]) * renderer.radius_px
     angle = np.radians(float(spec.ball_path.get("direction_deg", 90.0)))
+    frames = np.arange(spec.n_frames)
+    offset = np.zeros(spec.n_frames)
+    moved = np.zeros(spec.n_frames, dtype=bool)
+    if kind == "bump":
+        start = int(spec.ball_path["start"])
+        end = int(spec.ball_path["end"])
+        amplitude = float(spec.ball_path["amplitude_radii"]) * renderer.radius_px
+        inside = (frames >= start) & (frames < end)
+        phase = 2.0 * np.pi * (frames[inside] - start) / max(end - start, 1)
+        offset[inside] = amplitude * 0.5 * (1.0 - np.cos(phase))
+        moved = inside
+    elif kind == "steps":
+        # `steps` is a list of `[start, frames, amplitude_radii]`: each moves the ball
+        # by its amplitude along `direction_deg` over its frames with a raised-cosine
+        # velocity profile, and the moves add up. A few short ones make the jerky drop
+        # of AN07B017_260414_Fly4_004 (about a tenth of a radius in ten frames).
+        for start, length, amplitude_radii in spec.ball_path["steps"]:
+            amplitude = float(amplitude_radii) * renderer.radius_px
+            phase = np.clip((frames - start) / max(int(length), 1), 0.0, 1.0)
+            offset += amplitude * 0.5 * (1.0 - np.cos(np.pi * phase))
+        moved = offset != 0.0
+    else:
+        raise ValueError(f"unknown ball_path kind {kind!r}")
+    if not moved.any():
+        return path
     cx, cy = renderer.center_px
-    index = np.arange(start, min(end, spec.n_frames))
-    phase = 2.0 * np.pi * (index - start) / max(end - start, 1)
-    offset = amplitude * 0.5 * (1.0 - np.cos(phase))
-    moved = renderer.camera.rays(
-        cx + offset * np.cos(angle), cy + offset * np.sin(angle)
-    )
-    path[start : start + len(index)] = moved / np.linalg.norm(
-        moved, axis=-1, keepdims=True
-    )
+    shift = offset[moved]
+    rays = renderer.camera.rays(cx + shift * np.cos(angle), cy + shift * np.sin(angle))
+    path[moved] = rays / np.linalg.norm(rays, axis=-1, keepdims=True)
     return path
 
 

@@ -4,6 +4,7 @@ import sys
 
 import cv2
 import numpy as np
+import pyarrow.parquet as pq
 
 from spintrack.calibrate.sliders import c2a_from_angles
 from spintrack.camera import PinholeCamera
@@ -62,6 +63,9 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
     dat = read_dat(out)
     assert dat.shape == (n, N_COLUMNS)
     assert list(dat[:, 0].astype(int)) == list(range(n))
+    # The Parquet copy holds the same records at full precision.
+    table = pq.read_table(out.with_suffix(".parquet"))
+    assert np.allclose(np.column_stack([c.to_numpy() for c in table.columns]), dat)
     # Camera-frame increments match the simulated rotation (frame 0 is the reference).
     err = [
         np.degrees(
@@ -136,6 +140,8 @@ def test_cli_debug_video_and_refinement(tmp_path):
     cap.release()
     refined = read_dat(tmp_path / "out-refined.dat")
     assert refined.shape == (n, N_COLUMNS)
+    table = pq.read_table(tmp_path / "out-refined.parquet")
+    assert np.allclose(np.column_stack([c.to_numpy() for c in table.columns]), refined)
     online = read_dat(out)
     diff = np.degrees(np.linalg.norm(refined[1:, 1:4] - online[1:, 1:4], axis=1))
     assert np.median(diff) < 0.3, diff

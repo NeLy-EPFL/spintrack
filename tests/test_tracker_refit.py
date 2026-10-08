@@ -129,6 +129,64 @@ def test_watch_follows_a_moving_ball():
     assert errors[True] < 0.5 * errors[False], errors
 
 
+def test_watch_keeps_up_with_a_jerk():
+    """A ball that drops in a few frames has the window back on it within a few frames.
+
+    The follower used to decide that the ball had moved on a slow filter of its looks,
+    which on trial 004 let the ball fall 45 px before the window moved, and then
+    followed it with a lagging filter that overshot each jerk by 10 px. The ball here is
+    scaled like 004's: a drop of a quarter of the radius over eight frames.
+    """
+    half, move, start, over = 0.3, 20.0, 160, 8
+    cx, cy0, _ = pixel_circle(CAMERA, CENTER, half)
+
+    def offset(i):
+        phase = float(np.clip((i - start) / over, 0.0, 1.0))
+        return move * 0.5 * (1.0 - np.cos(np.pi * phase))
+
+    rng = np.random.default_rng(0)
+    texture = make_texture(rng, n_blobs=120)
+    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=half)
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    tracker = Tracker(cfg, *SIZE, TrackParams(center_watch=True))
+    R, error = np.eye(3), []
+    for i in range(start + 40):
+        R = rotvec_to_matrix(STEP) @ R
+        center = normalize(CAMERA.rays(cx, cy0 + offset(i)))
+        tracker.process_frame(render(texture, R, rng, SIZE, center, half, False))
+        _, cy, _ = pixel_circle(CAMERA, tracker.center, half)
+        error.append(abs(cy - cy0 - offset(i)))
+    # The rim look itself reads this ball 1.3-1.8 px low once the frame's edge cuts it,
+    # and just after the jerk the window may run past the ball by up to `T_MOVE`.
+    late = np.array(error)[start + over :]
+    assert late.max() < 8.0 and np.median(late) < 4.0, late
+
+
+def test_watch_finds_a_resting_ball_that_jumped_out_of_reach():
+    """A ball that moves farther in one frame than its look can reach is found again.
+
+    No seed can follow such a jump, and the look that needs none - a detection on a
+    downscaled buffer of frames - used to be fed only while the window was already
+    following, so a resting ball that jumped was lost for the rest of the recording.
+    """
+    half, move, start = 0.3, 25.0, 160
+    cx, cy0, _ = pixel_circle(CAMERA, CENTER, half)
+    rng = np.random.default_rng(0)
+    texture = make_texture(rng, n_blobs=120)
+    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=half)
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    tracker = Tracker(cfg, *SIZE, TrackParams(center_watch=True))
+    R, error = np.eye(3), []
+    for i in range(start + 80):
+        R = rotvec_to_matrix(STEP) @ R
+        offset = move if i >= start else 0.0
+        center = normalize(CAMERA.rays(cx, cy0 + offset))
+        tracker.process_frame(render(texture, R, rng, SIZE, center, half, False))
+        _, cy, _ = pixel_circle(CAMERA, tracker.center, half)
+        error.append(abs(cy - cy0 - offset))
+    assert max(error[-20:]) < 3.0, np.round(error[start + 20 :], 1)
+
+
 def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
     """The frame whose window moved is still an observation, in the frame it was tracked in.
 
@@ -145,9 +203,12 @@ def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
     kept = []  # (R_win, the version it was tracked in, the camera-frame orientation)
     moved_frames = 0
     for image, _ in images:
+        before = tracker.geometry_version
         result = tracker.process_frame(image)
         assert tracker.engine.last_obs is not None, "every tracked frame has a window"
-        moved_frames += tracker.geometry_version > tracker.tracked_version
+        moved_frames += tracker.geometry_version > before
+        # The window moves onto the ball before the frame is tracked, not after.
+        assert tracker.tracked_version == tracker.geometry_version
         if result is not None:
             kept.append((result.step.R_win, tracker.tracked_version, result.R_cam))
     assert tracker.refits and moved_frames > 1, (

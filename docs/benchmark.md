@@ -60,6 +60,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     |   nan     |        nan     |       0.023 |            0.023 |
 | holder_shadow_cut |   nan     |        nan     |       0.052 |            0.047 |
 | holder_shadow_lab |   nan     |        nan     |       0.053 |            0.050 |
+| jerky_diag        |     0.397 |          0.397 |       0.038 |            0.038 |
+| jerky_drop        |     0.502 |          0.502 |       0.039 |            0.039 |
+| lab_jerky_drop    |     0.273 |          0.273 |       0.022 |            0.014 |
 | lab_small_ball    |     0.165 |          0.165 |       0.046 |            0.042 |
 | lighting          |     0.253 |          0.253 |       0.020 |            0.020 |
 | low_contrast      |     0.346 |          0.346 |       0.029 |            0.029 |
@@ -77,7 +80,7 @@ in the last table are lab data and are not distributed with the repository.
 
 | dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:------------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop         |   nan     |        nan     |       0.153 |            0.153 |
+| ball_drop         |   nan     |        nan     |       0.130 |            0.130 |
 | clean_fly         |     0.671 |          0.671 |       0.039 |            0.039 |
 | constant_forward  |     0.577 |          0.577 |       0.032 |            0.032 |
 | constant_side     |     0.596 |          0.596 |       0.030 |            0.030 |
@@ -86,6 +89,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     |   nan     |        nan     |       0.048 |            0.048 |
 | holder_shadow_cut |   nan     |        nan     |       0.107 |            0.095 |
 | holder_shadow_lab |   nan     |        nan     |       0.109 |            0.098 |
+| jerky_diag        |     1.376 |          1.376 |       0.238 |            0.238 |
+| jerky_drop        |     2.421 |          2.421 |       0.277 |            0.277 |
+| lab_jerky_drop    |     1.848 |          1.848 |       0.146 |            0.141 |
 | lab_small_ball    |     0.432 |          0.432 |       0.091 |            0.081 |
 | lighting          |     0.686 |          0.686 |       0.042 |            0.042 |
 | low_contrast      |     0.902 |          0.902 |       0.061 |            0.061 |
@@ -112,6 +118,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     |   nan     |        nan     |       0.000 |            0.000 |
 | holder_shadow_cut |   nan     |        nan     |       0.000 |            0.000 |
 | holder_shadow_lab |   nan     |        nan     |       0.000 |            0.000 |
+| jerky_diag        |     0.000 |          0.000 |       0.001 |            0.001 |
+| jerky_drop        |     0.009 |          0.009 |       0.001 |            0.001 |
+| lab_jerky_drop    |     0.002 |          0.002 |       0.000 |            0.000 |
 | lab_small_ball    |     0.000 |          0.000 |       0.000 |            0.000 |
 | lighting          |     0.000 |          0.000 |       0.000 |            0.000 |
 | low_contrast      |     0.000 |          0.000 |       0.000 |            0.000 |
@@ -129,7 +138,7 @@ in the last table are lab data and are not distributed with the repository.
 
 | dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:------------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop         |   nan     |        nan     |       4.890 |            4.890 |
+| ball_drop         |   nan     |        nan     |       4.223 |            4.223 |
 | clean_fly         |    -0.227 |         -0.227 |      -0.032 |           -0.032 |
 | constant_forward  |    -0.017 |         -0.017 |       0.065 |            0.065 |
 | constant_side     |    -0.109 |         -0.109 |       0.228 |            0.228 |
@@ -138,6 +147,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     |   nan     |        nan     |       0.241 |            0.241 |
 | holder_shadow_cut |   nan     |        nan     |       0.808 |            0.832 |
 | holder_shadow_lab |   nan     |        nan     |       0.326 |            0.399 |
+| jerky_diag        |    21.076 |         21.076 |       3.359 |            3.359 |
+| jerky_drop        |    42.758 |         42.758 |       2.948 |            2.948 |
+| lab_jerky_drop    |    40.635 |         40.635 |       1.158 |            1.171 |
 | lab_small_ball    |    -1.327 |         -1.327 |      -0.010 |            0.052 |
 | lighting          |    -0.969 |         -0.969 |      -0.044 |           -0.044 |
 | low_contrast      |    -1.030 |         -1.030 |       0.151 |            0.151 |
@@ -155,7 +167,7 @@ in the last table are lab data and are not distributed with the repository.
 
 | dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:------------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop         |   nan     |        nan     |       0.442 |            0.442 |
+| ball_drop         |   nan     |        nan     |       0.350 |            0.350 |
 | clean_fly         |     0.085 |          0.085 |       0.039 |            0.039 |
 | constant_forward  |     0.903 |          0.903 |       0.078 |            0.078 |
 | constant_side     |     0.906 |          0.906 |       0.170 |            0.170 |
@@ -164,6 +176,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     |   nan     |        nan     |       0.107 |            0.107 |
 | holder_shadow_cut |   nan     |        nan     |       0.055 |            0.060 |
 | holder_shadow_lab |   nan     |        nan     |       0.090 |            0.105 |
+| jerky_diag        |     1.794 |          1.794 |       0.319 |            0.319 |
+| jerky_drop        |     6.821 |          6.821 |       0.209 |            0.209 |
+| lab_jerky_drop    |     2.786 |          2.786 |       0.047 |            0.044 |
 | lab_small_ball    |     0.188 |          0.188 |       0.043 |            0.049 |
 | lighting          |     0.024 |          0.024 |       0.027 |            0.027 |
 | low_contrast      |     0.135 |          0.135 |       0.051 |            0.051 |
@@ -181,33 +196,36 @@ in the last table are lab data and are not distributed with the repository.
 
 | dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:------------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop         |   nan     |        nan     |       3.005 |            2.824 |
-| clean_fly         |     2.100 |          2.100 |       2.469 |            3.040 |
-| constant_forward  |     2.000 |          2.000 |       2.452 |            2.711 |
-| constant_side     |     2.000 |          2.000 |       2.244 |            2.654 |
-| constant_turn     |     2.000 |          2.000 |       2.409 |            2.687 |
-| fast_forward      |     2.100 |          2.100 |       2.397 |            2.149 |
-| holder_shadow     |   nan     |        nan     |       2.450 |            2.329 |
-| holder_shadow_cut |   nan     |        nan     |       2.475 |            4.228 |
-| holder_shadow_lab |   nan     |        nan     |       3.034 |            5.297 |
-| lab_small_ball    |     6.900 |          6.900 |       2.708 |            5.311 |
-| lighting          |     2.100 |          2.100 |       2.589 |            2.292 |
-| low_contrast      |     2.100 |          2.100 |       2.435 |            2.485 |
-| motion_blur       |     2.000 |          2.000 |       2.538 |            2.335 |
-| noisy             |     4.300 |          4.400 |       2.718 |            2.464 |
-| occluded          |     2.000 |          2.000 |       2.367 |            2.314 |
-| offaxis           |     1.200 |          1.200 |       1.886 |            1.980 |
-| random_walk       |     2.200 |          2.200 |       2.571 |            2.388 |
-| saccades          |     2.000 |          2.000 |       2.385 |            2.379 |
-| sparse            |     2.100 |          2.100 |       2.327 |            2.378 |
-| speckle           |     2.200 |          2.200 |       3.010 |            2.786 |
-| static            |     2.000 |          2.000 |       1.614 |            1.438 |
+| ball_drop         |   nan     |        nan     |       2.794 |            2.798 |
+| clean_fly         |     2.100 |          2.100 |       2.235 |            2.269 |
+| constant_forward  |     2.000 |          2.000 |       2.106 |            2.112 |
+| constant_side     |     2.000 |          2.000 |       2.003 |            2.008 |
+| constant_turn     |     2.000 |          2.000 |       2.112 |            2.124 |
+| fast_forward      |     2.100 |          2.100 |       2.130 |            2.131 |
+| holder_shadow     |   nan     |        nan     |       2.247 |            2.276 |
+| holder_shadow_cut |   nan     |        nan     |       2.196 |            4.031 |
+| holder_shadow_lab |   nan     |        nan     |       2.716 |            5.174 |
+| jerky_diag        |     2.000 |          2.000 |       2.660 |            2.673 |
+| jerky_drop        |     2.000 |          2.000 |       2.597 |            2.588 |
+| lab_jerky_drop    |     8.900 |          9.000 |       4.840 |            7.185 |
+| lab_small_ball    |     6.900 |          6.900 |       2.704 |            5.072 |
+| lighting          |     2.100 |          2.100 |       2.276 |            2.281 |
+| low_contrast      |     2.100 |          2.100 |       2.210 |            2.208 |
+| motion_blur       |     2.000 |          2.000 |       2.235 |            2.237 |
+| noisy             |     4.300 |          4.400 |       2.596 |            2.591 |
+| occluded          |     2.000 |          2.000 |       2.168 |            2.170 |
+| offaxis           |     1.200 |          1.200 |       2.108 |            2.109 |
+| random_walk       |     2.200 |          2.200 |       2.376 |            2.376 |
+| saccades          |     2.000 |          2.000 |       2.361 |            2.352 |
+| sparse            |     2.100 |          2.100 |       2.294 |            2.283 |
+| speckle           |     2.200 |          2.200 |       2.930 |            2.928 |
+| static            |     2.000 |          2.000 |       1.447 |            1.456 |
 
 ## rotation scale (reported / true)
 
 | dataset           |   fictrac |   fictrac-fork |   spintrack |   spintrack-full |
 |:------------------|----------:|---------------:|------------:|-----------------:|
-| ball_drop         | nan       |      nan       |     0.99983 |          0.99983 |
+| ball_drop         | nan       |      nan       |     1.00006 |          1.00006 |
 | clean_fly         |   1.00134 |        1.00134 |     0.99950 |          0.99950 |
 | constant_forward  |   1.00027 |        1.00027 |     0.99992 |          0.99992 |
 | constant_side     |   0.99998 |        0.99998 |     1.00001 |          1.00001 |
@@ -216,6 +234,9 @@ in the last table are lab data and are not distributed with the repository.
 | holder_shadow     | nan       |      nan       |     0.99980 |          0.99980 |
 | holder_shadow_cut | nan       |      nan       |     0.99863 |          0.99855 |
 | holder_shadow_lab | nan       |      nan       |     0.99872 |          0.99854 |
+| jerky_diag        |   0.98336 |        0.98336 |     0.99577 |          0.99577 |
+| jerky_drop        |   0.96704 |        0.96704 |     1.00068 |          1.00068 |
+| lab_jerky_drop    |   0.97004 |        0.97004 |     1.00016 |          1.00020 |
 | lab_small_ball    |   0.99920 |        0.99920 |     0.99890 |          0.99889 |
 | lighting          |   1.00050 |        1.00050 |     0.99951 |          0.99951 |
 | low_contrast      |   1.00178 |        1.00178 |     0.99857 |          0.99857 |
@@ -242,7 +263,7 @@ does not turn about that axis at all.
 
 | dataset           | fictrac             | fictrac-fork        | spintrack        | spintrack-full   |
 |:------------------|:--------------------|:--------------------|:-----------------|:-----------------|
-| ball_drop         | nan                 | nan                 | 1.0003 +- 0.0060 | 1.0003 +- 0.0060 |
+| ball_drop         | nan                 | nan                 | 1.0019 +- 0.0052 | 1.0019 +- 0.0052 |
 | clean_fly         | 0.9988 +- 0.0012    | 0.9988 +- 0.0012    | 0.9999 +- 0.0002 | 0.9999 +- 0.0002 |
 | constant_forward  | 1.0003 +- 0.0009    | 1.0003 +- 0.0009    | 0.9999 +- 0.0001 | 0.9999 +- 0.0001 |
 | constant_side     | -                   | -                   | -                | -                |
@@ -251,6 +272,9 @@ does not turn about that axis at all.
 | holder_shadow     | nan                 | nan                 | 0.9997 +- 0.0003 | 0.9997 +- 0.0003 |
 | holder_shadow_cut | nan                 | nan                 | 0.9990 +- 0.0006 | 0.9989 +- 0.0006 |
 | holder_shadow_lab | nan                 | nan                 | 0.9994 +- 0.0003 | 0.9994 +- 0.0003 |
+| jerky_diag        | 0.9665 +- 0.0331    | 0.9665 +- 0.0331    | 0.9955 +- 0.0068 | 0.9955 +- 0.0068 |
+| jerky_drop        | 0.9850 +- 0.0261    | 0.9850 +- 0.0261    | 1.0010 +- 0.0044 | 1.0010 +- 0.0044 |
+| lab_jerky_drop    | 0.9845 +- 0.0296    | 0.9845 +- 0.0296    | 1.0007 +- 0.0017 | 1.0008 +- 0.0017 |
 | lab_small_ball    | 0.9986 +- 0.0009    | 0.9986 +- 0.0009    | 0.9998 +- 0.0002 | 0.9997 +- 0.0002 |
 | lighting          | 0.9978 +- 0.0014    | 0.9978 +- 0.0014    | 1.0001 +- 0.0002 | 1.0001 +- 0.0002 |
 | low_contrast      | 0.9977 +- 0.0018    | 0.9977 +- 0.0018    | 0.9995 +- 0.0004 | 0.9995 +- 0.0004 |
@@ -268,7 +292,7 @@ does not turn about that axis at all.
 
 | dataset           | fictrac           | fictrac-fork      | spintrack        | spintrack-full   |
 |:------------------|:------------------|:------------------|:-----------------|:-----------------|
-| ball_drop         | nan               | nan               | 0.9998 +- 0.0006 | 0.9998 +- 0.0006 |
+| ball_drop         | nan               | nan               | 0.9993 +- 0.0008 | 0.9993 +- 0.0008 |
 | clean_fly         | 1.0024 +- 0.0021  | 1.0024 +- 0.0021  | 0.9993 +- 0.0005 | 0.9993 +- 0.0005 |
 | constant_forward  | -                 | -                 | -                | -                |
 | constant_side     | -                 | -                 | -                | -                |
@@ -277,6 +301,9 @@ does not turn about that axis at all.
 | holder_shadow     | nan               | nan               | 0.9999 +- 0.0006 | 0.9999 +- 0.0006 |
 | holder_shadow_cut | nan               | nan               | 0.9986 +- 0.0011 | 0.9985 +- 0.0011 |
 | holder_shadow_lab | nan               | nan               | 0.9985 +- 0.0007 | 0.9983 +- 0.0009 |
+| jerky_diag        | 0.9877 +- 0.0055  | 0.9877 +- 0.0055  | 0.9958 +- 0.0033 | 0.9958 +- 0.0033 |
+| jerky_drop        | 0.9580 +- 0.0217  | 0.9580 +- 0.0217  | 1.0007 +- 0.0007 | 1.0007 +- 0.0007 |
+| lab_jerky_drop    | 0.9627 +- 0.0178  | 0.9627 +- 0.0178  | 0.9999 +- 0.0002 | 0.9999 +- 0.0002 |
 | lab_small_ball    | 0.9997 +- 0.0012  | 0.9997 +- 0.0012  | 0.9987 +- 0.0005 | 0.9987 +- 0.0005 |
 | lighting          | 1.0022 +- 0.0021  | 1.0022 +- 0.0021  | 0.9992 +- 0.0005 | 0.9992 +- 0.0005 |
 | low_contrast      | 1.0039 +- 0.0040  | 1.0039 +- 0.0040  | 0.9982 +- 0.0009 | 0.9982 +- 0.0009 |
@@ -294,7 +321,7 @@ does not turn about that axis at all.
 
 | dataset           | fictrac            | fictrac-fork       | spintrack        | spintrack-full   |
 |:------------------|:-------------------|:-------------------|:-----------------|:-----------------|
-| ball_drop         | nan                | nan                | 0.9768 +- 0.0143 | 0.9768 +- 0.0143 |
+| ball_drop         | nan                | nan                | 0.9845 +- 0.0130 | 0.9845 +- 0.0130 |
 | clean_fly         | 1.0201 +- 0.0182   | 1.0201 +- 0.0182   | 0.9988 +- 0.0035 | 0.9988 +- 0.0035 |
 | constant_forward  | -                  | -                  | -                | -                |
 | constant_side     | 1.0000 +- 0.0010   | 1.0000 +- 0.0010   | 1.0000 +- 0.0001 | 1.0000 +- 0.0001 |
@@ -303,6 +330,9 @@ does not turn about that axis at all.
 | holder_shadow     | nan                | nan                | 0.9999 +- 0.0041 | 0.9999 +- 0.0041 |
 | holder_shadow_cut | nan                | nan                | 0.9827 +- 0.0066 | 0.9801 +- 0.0065 |
 | holder_shadow_lab | nan                | nan                | 0.9818 +- 0.0080 | 0.9773 +- 0.0072 |
+| jerky_diag        | 0.6849 +- 0.3534   | 0.6849 +- 0.3534   | 0.9989 +- 0.0303 | 0.9989 +- 0.0303 |
+| jerky_drop        | 1.0693 +- 0.1595   | 1.0693 +- 0.1595   | 0.9753 +- 0.0152 | 0.9753 +- 0.0152 |
+| lab_jerky_drop    | 1.0489 +- 0.1967   | 1.0489 +- 0.1967   | 1.0021 +- 0.0056 | 1.0009 +- 0.0053 |
 | lab_small_ball    | 0.9758 +- 0.0215   | 0.9758 +- 0.0215   | 0.9776 +- 0.0070 | 0.9768 +- 0.0065 |
 | lighting          | 0.9415 +- 0.0305   | 0.9415 +- 0.0305   | 1.0010 +- 0.0029 | 1.0010 +- 0.0029 |
 | low_contrast      | 0.9737 +- 0.0323   | 0.9737 +- 0.0323   | 0.9938 +- 0.0054 | 0.9938 +- 0.0054 |
@@ -333,16 +363,16 @@ these recordings' own geometry it reads the known forward and turning ratios wit
 0.7%, and the known *sideslip* ratio 4 to 6 points low - so the side column carries
 an error bar this comparison has not pinned down, rather than agreement to a percent.
 
-Forward agrees to about a percent. **spintrack reports 1.5 to 4% less turning than
-FicTrac on the five trials the animal walked through, and 9% less on 008**, whose
+Forward agrees to within 3%. **spintrack reports 1.5 to 4.5% less turning than
+FicTrac on the five trials the animal walked through, and 5% less on 008**, whose
 correlations are the worst of the six and whose forward column the estimator refuses
 outright for want of a low-frequency signal to instrument. Nothing here says which
 tracker is right - that needs truth these recordings do not have - but it is
 systematic and it is on the component most of these experiments report.
 
 It is a **slow-turning** effect. Binned into 6 s windows by how fast the animal was
-actually turning, the ratio runs 0.933 +- 0.011 below 0.08 deg/frame and 0.971 to
-0.977 above 0.12. That is not, however, why no scene here shows it: re-rendering
+actually turning, the ratio runs 0.934 +- 0.011 below 0.08 deg/frame and 0.977
+above 0.12. That is not, however, why no scene here shows it: re-rendering
 this geometry with `fly_walk` scaled down to the real trials' own rate leaves
 spintrack within 0.2% of truth and FicTrac within 1.2%, with the ratio moving the
 wrong way (1.010, spintrack the higher). See `docs/verification.md`.
@@ -358,9 +388,9 @@ one operating point rather than a range that covers a real experiment.
 
 |   trial |   frames |   dropped |   median diff (deg) |   p95 diff (deg) |   turn corr |   forward scale |   turn scale |   side scale |   heading diff (deg) |   endpoint diff (%) |   tracking ms/frame |   fps incl. decode |
 |--------:|---------:|----------:|--------------------:|-----------------:|------------:|----------------:|-------------:|-------------:|---------------------:|--------------------:|--------------------:|-------------------:|
-|     005 |     6015 |         0 |               0.090 |            0.257 |       0.919 |           0.974 |        0.970 |        1.001 |               -1.925 |               0.125 |               3.362 |            238.516 |
-|     006 |     6015 |         0 |               0.114 |            0.307 |       0.952 |           1.000 |        0.985 |        1.004 |                0.726 |               0.256 |               3.544 |            229.435 |
-|     007 |     6012 |         0 |               0.084 |            0.282 |       0.942 |           1.004 |        0.978 |        1.006 |               -0.200 |               0.173 |               3.418 |            235.425 |
-|     008 |     6010 |         0 |               0.106 |            0.504 |       0.784 |         nan     |        0.911 |        0.960 |               -3.093 |               6.031 |               3.935 |            209.072 |
-|     009 |    12015 |         0 |               0.087 |            0.266 |       0.898 |           1.014 |        0.959 |        1.010 |                3.129 |               0.375 |               3.417 |            235.813 |
-|     012 |     6010 |         0 |               0.216 |            0.508 |       0.961 |           0.995 |        0.983 |        1.005 |               18.713 |               2.294 |               3.882 |            209.901 |
+|     005 |     6015 |         0 |               0.090 |            0.257 |       0.919 |           0.974 |        0.970 |        1.001 |               -1.925 |               0.125 |               3.214 |            246.831 |
+|     006 |     6015 |         0 |               0.114 |            0.305 |       0.951 |           0.997 |        0.986 |        1.004 |                0.809 |               0.259 |               3.476 |            231.486 |
+|     007 |     6012 |         0 |               0.084 |            0.281 |       0.942 |           1.004 |        0.977 |        1.006 |               -0.199 |               0.172 |               3.326 |            240.418 |
+|     008 |     6010 |         0 |               0.105 |            0.465 |       0.781 |         nan     |        0.947 |        0.963 |               -3.489 |               6.135 |               3.999 |            204.815 |
+|     009 |    12015 |         0 |               0.087 |            0.264 |       0.899 |           0.969 |        0.956 |        1.011 |                2.561 |               0.352 |               3.289 |            243.126 |
+|     012 |     6010 |         0 |               0.216 |            0.508 |       0.961 |           0.995 |        0.983 |        1.005 |               18.713 |               2.294 |               3.764 |            215.935 |

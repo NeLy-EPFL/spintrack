@@ -133,9 +133,10 @@ class Tracker:
         self._prev_ts: float | None = None
         self._prev_obs: np.ndarray | None = None
         self.geometry_version = 0
-        # The window frame the frame now being reported was tracked in. A re-fit during
-        # `process_frame` steps `geometry_version` past it, so anything kept alongside a
-        # result - a normalized window, an orientation - must be tagged with this.
+        # The window frame the frame now being reported was tracked in; anything kept
+        # alongside a result - a normalized window, an orientation - is tagged with it.
+        # The window only moves before a frame is tracked, so once `process_frame`
+        # returns this is `geometry_version`.
         self.tracked_version = 0
         self.center_initial = self.center.copy()
         self.refits: list = []
@@ -259,16 +260,20 @@ class Tracker:
         self, gray: np.ndarray, ts_ms: float = -1.0, wall_ms: float | None = None
     ) -> FrameResult | None:
         """Track one grayscale frame (2-D uint8); None if the frame was dropped."""
+        # The watch looks at this frame before it is tracked and moves the window onto
+        # the ball first. Moved after the step, the window a frame was tracked in was
+        # placed from the previous frame's look and trailed a moving ball by a frame's
+        # motion, up to 12 px a frame on trial 004's drop.
+        self._watch_center(gray)
+        # The window this frame is tracked in; the increment and orientation the step
+        # returns belong to it.
         self.tracked_version = self.geometry_version
-        # The window this frame is tracked in; `_watch_center` below may move it, and
-        # the increment and orientation the step returns belong to this one.
         R_wc = self.R_wc
         window = self.geometry.remap(gray)
         # Captured before the step, which overwrites both.
         r_prev, velocity = self.engine.R, self.engine.velocity
         step = self.engine.step(window)
         self._check_scale(gray, step, r_prev, velocity)
-        self._watch_center(gray, step)
         frame = self.frame
         self.frame += 1
         if not step.ok:
@@ -345,7 +350,7 @@ class Tracker:
                 self.scale_check = None
         return Q
 
-    def _watch_center(self, gray: np.ndarray, step) -> None:
+    def _watch_center(self, gray: np.ndarray) -> None:
         """Keep the tracking window on a ball that is moving in its holder."""
         if self.watch is None:
             return
@@ -413,9 +418,8 @@ class Tracker:
         """The 25 FicTrac columns for one tracked frame (also advances `path`).
 
         `R_wc` is the window-to-camera transform that `w_win` and `R_win` are written
-        in. It is not `self.R_wc` on a frame whose own window has just been re-fitted:
-        pairing the new window with the old orientation rotates the reported
-        camera-frame orientation by the window move.
+        in, taken when the frame was tracked: pairing a window moved since with the
+        orientation rotates the reported camera-frame orientation by the window move.
         """
         R_wc = self.R_wc if R_wc is None else R_wc
         w_cam = R_wc @ w_win

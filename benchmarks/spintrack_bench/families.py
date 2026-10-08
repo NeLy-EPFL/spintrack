@@ -13,6 +13,9 @@ _HOLDER = {"holder_shadow": 0.7, "holder_ambient": 0.08, "holder_elevation": 0.3
            "holder_softness": 0.1}  # fmt: skip
 
 
+_JERKS = [[300, 10, 0.10], [340, 8, 0.13], [372, 10, 0.12], [600, 300, -0.35]]
+
+
 def _fly(name: str, **kw) -> SceneSpec:
     base = {"name": name, "motion": {"kind": "fly_walk"}}
     base.update(kw)
@@ -57,6 +60,29 @@ FAMILIES: dict[str, SceneSpec] = {
         "ball_drop", occluders={"legs": 6, "body": True},
         ball_path={"kind": "bump", "start": 300, "end": 840, "amplitude_radii": 0.4,
                    "direction_deg": 90.0},
+    ),
+    # The ball drops in jerks, as 004's actually does: three of about a tenth of the
+    # radius over ten frames each, then back over 300 frames. `ball_drop` moves 0.002
+    # radii a frame at most, which no follower lags; these move up to 0.026.
+    "jerky_drop": _fly(
+        "jerky_drop", occluders={"legs": 6, "body": True},
+        ball_path={"kind": "steps", "steps": _JERKS, "direction_deg": 90.0},
+    ),
+    # Shorter and longer jerks, at an angle, on another texture.
+    "jerky_diag": _fly(
+        "jerky_diag", seed=7, occluders={"legs": 6, "body": True},
+        ball_path={"kind": "steps", "direction_deg": 60.0,
+                   "steps": [[250, 12, 0.08], [290, 6, 0.08], [330, 14, 0.15],
+                             [650, 200, -0.31]]},
+    ),
+    # The jerky drop at the lab rig's own geometry: a 506 px ball at a 1.2 deg
+    # half-angle in a 1600 x 1008 frame, which the window decimates 8:1.
+    "lab_jerky_drop": _fly(
+        "lab_jerky_drop", width=1600, height=1008, vfov_deg=2.3893, half_angle_deg=1.2,
+        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18,
+        q_factor=12, thr_ratio=0.7, sensor=_LAB_SENSOR,
+        occluders={"legs": 6, "body": True},
+        ball_path={"kind": "steps", "steps": _JERKS, "direction_deg": 90.0},
     ),
     # The ball holder shadows the bottom of the ball: a darkening fixed in the camera
     # frame that the texture rotates through, as in AN07B017_260414_Fly4_003.

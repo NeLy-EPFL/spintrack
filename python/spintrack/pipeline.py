@@ -84,6 +84,7 @@ def run(
     debug_video: str | None = None,
     refine_sweeps: int = 0,
     refined_out: str | None = None,
+    refined_parquet_out: str | None = None,
     summary_out: str | None = None,
     provenance: dict | None = None,
     checks: dict | None = None,
@@ -94,8 +95,9 @@ def run(
 
     `debug_video` writes an annotated video; `refine_sweeps > 0` keeps every normalized
     window in memory, re-estimates all orientations against the complete map afterwards
-    and writes the refined records to `refined_out`. The run quality summary always
-    lands in `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
+    and writes the refined records to `refined_out` (and as Parquet to
+    `refined_parquet_out`). The run quality summary always lands in
+    `RunStats.quality`; `summary_out` also writes it as a JSON sidecar.
 
     `two_pass_source` opens the same recording a second time: the ball is mapped in a
     throwaway first pass and this run starts from that map, so the opening frames are
@@ -190,9 +192,7 @@ def run(
                 obs16 = tracker.engine.last_obs.astype(np.float16)
                 # Orientations recorded before a window move are in the old window
                 # frame; `tracked_version` says which frame each one belongs to, and
-                # they are brought forward together once the run is over. It is not
-                # `geometry_version`: a frame whose own window moved was tracked in the
-                # frame before the move.
+                # they are brought forward together once the run is over.
                 keep.append((frame.index, frame.ts_ms, frame.wall_ms, obs16, R_win,
                              tracker.tracked_version))  # fmt: skip
             if progress is not None and stats.frames % 500 == 0:
@@ -301,6 +301,12 @@ def run(
         stats.refine = {**rstats, "frames": len(rows)}
         if refined_out:
             with DatWriter(refined_out) as w:
+                for row in rows:
+                    w.write(row)
+        if refined_parquet_out:
+            from spintrack.io.parquet import ParquetWriter
+
+            with ParquetWriter(refined_parquet_out, provenance) as w:
                 for row in rows:
                     w.write(row)
     return stats

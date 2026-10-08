@@ -6,9 +6,9 @@ pipelines only need the executable swapped.
 ## What will not match
 
 The two trackers do not report the same amount of turning. On six 60 s trials of one lab
-rig, spintrack reads 1.5 to 4% less turning than FicTrac on the five the animal walked
-through, and 9% less on the sixth, where it barely moved; forward motion agrees to about a
-percent, and sideslip to within the several percent the comparison itself can resolve.
+rig, spintrack reads 1.5 to 4.5% less turning than FicTrac on the five the animal walked
+through, and 5% less on the sixth, where it barely moved; forward motion agrees to within 3%,
+and sideslip to within the several percent the comparison itself can resolve.
 Neither tracker is known to be the right one - that needs ground truth the recordings do
 not have - and the difference does not reproduce on synthetic video: at this rig's geometry
 and its animals' own speeds, both trackers land within 1.2% of exact truth and the small
@@ -119,6 +119,8 @@ same semantics: frame counter (0-based, like FicTrac 2.1.2), delta rotation vect
 and lab frames, absolute rotation vectors, integrated position and heading, movement direction
 and speed, integrated forward/side motion, timestamps, sequence counter. Socket and serial
 messages are the same line prefixed with `FT, `.
+
+Each run also writes the same records as `<out>.parquet` (`--no-parquet` skips it; `--refine` adds `<out>-refined.parquet`). Its columns carry the names in `spintrack.io.dat.COLUMNS`, with `frame` and `seq` as int64 and the rest as float64 at full precision. Each field's metadata holds its unit, and the file metadata holds the spintrack version and the run's provenance as JSON. `pd.read_parquet` or `pyarrow.parquet.read_table` loads it.
 
 Two deliberate differences:
 

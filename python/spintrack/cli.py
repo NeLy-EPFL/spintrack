@@ -109,6 +109,11 @@ def _add_run(sub) -> None:
         action="store_true",
         help="do not write the run quality sidecar (<out>-summary.json)",
     )
+    p.add_argument(
+        "--no-parquet",
+        action="store_true",
+        help="do not write the records as Parquet (<out>.parquet) beside the .dat",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_run)
 
@@ -326,6 +331,13 @@ def cmd_run(args) -> int:
         )
         out_dir = config_path.parent if not Path(base).is_absolute() else Path()
         out_path = out_dir / f"{base}-{stamp}.dat"
+    parquet_out = None
+    if not args.no_parquet:
+        parquet_out = out_path.with_suffix(".parquet")
+        if parquet_out == out_path:
+            log.error("--out names the .dat file; its Parquet copy goes beside it")
+            source.close()
+            return 2
     recorders = [FileRecorder(out_path)]
     if args.udp or (cfg.sock_port > 0 and not args.tcp):
         host, port = (
@@ -385,6 +397,13 @@ def cmd_run(args) -> int:
         ),
         "c2a": _c2a_provenance(cfg),
     }
+    refined_parquet_out = None
+    if parquet_out is not None:
+        from spintrack.io.parquet import ParquetWriter
+
+        recorders.append(ParquetWriter(parquet_out, provenance))
+        if refined_out:
+            refined_parquet_out = str(Path(refined_out).with_suffix(".parquet"))
     checks = {"c2a_r": _c2a_line(provenance["c2a"])}
     if prepared is not None:
         checks["ball"] = prepared.line()
@@ -412,6 +431,7 @@ def cmd_run(args) -> int:
             two_pass_source=(lambda: open_source(src_spec)) if args.two_pass else None,
             refine_sweeps=args.refine,
             refined_out=refined_out,
+            refined_parquet_out=refined_parquet_out,
             summary_out=summary_out,
             provenance=provenance,
             checks=checks,
@@ -426,6 +446,8 @@ def cmd_run(args) -> int:
         stats.frames, stats.tracked, stats.dropped, stats.wall_s, stats.fps,
         stats.tracking_ms_per_frame,
     )  # fmt: skip
+    if parquet_out is not None:
+        log.info("parquet: %s", parquet_out)
     if stats.refine:
         log.info("refined: %s -> %s", stats.refine, refined_out)
     if debug_video:

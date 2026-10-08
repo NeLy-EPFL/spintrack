@@ -201,27 +201,73 @@ at all, which is a third of them there). Two details make it usable on every fra
 fit's outlier cut is fixed at 1% of the radius rather than estimated from the residuals,
 because the animal's body stands past the rim and a residual-based scale grows to
 accommodate it: seeded on its own previous answer, that fit climbs the animal's back and
-walks off the ball. And the look is seeded on the last accepted look carried by the
-estimated velocity, never on the smoothed position, whose lag on a fast drop puts the seed
-outside the look's capture range (about half the band).
+walks off the ball. And the look is seeded on the last accepted look carried by a velocity,
+never on the smoothed position, whose lag on a fast drop puts the seed outside the look's
+capture range (about half the band). A look that fails is tried again from where the last
+look left the ball, in case it has just stopped, and, while the ball rests, from where its
+last few looks were heading, in case it has just started to fall; without the second, a
+76 px ball (a 4 px band) was lost at the onset of a fall of 3-4 px a frame and never found
+again.
 
-An alpha-beta filter carries the position and velocity, with gains scheduled on the size of
-the innovation relative to the look's own scatter: slow while the looks scatter like noise
-about the prediction, fast while they run away from it. Neither pair does on its own - the
-fast pair puts the look's noise into the window on a smooth, slow excursion, the slow pair
-falls 50 px behind a drop. The window stays put while the filtered position is within a few
-pixels of it and the speed is low, so a still ball's window never moves; once either bound is
-exceeded for three frames running, the window follows the filter on every frame until the
-position has been still for thirty. `detect_ball`, the look that needs no seed, is kept only
-to recover a rim look that has failed for several frames in a row.
+While the ball rests, its looks feed a slow alpha-beta filter and the window does not move,
+so a still ball's window never moves. The filter is slow so that the animal cannot drag it:
+it pulls the look 3-8 px toward its body for up to 80 frames at a time. A move is followed
+once three looks in a row lie beyond 10 px (or 2% of the radius) of the window, counting
+looks the filter's gate or the residual gate refused. Testing the filter instead, as an
+earlier version did, let 004's ball fall 45 px before the window moved. A slow creep, the
+filtered position beyond a few pixels for 100 frames, only nudges the window 30% of the way
+towards it: on some recordings the looks wander with a 3 px standard deviation at rest, and
+following a creep, or moving all the way at once, put steps of up to 8 px - most of a
+degree of rotation each - into trials the earlier follower had left alone. A ball that has dropped can also
+show less of its rim (the frame's edge, the legs), which raised its residual 20-50% over
+the resting level on the synthetic drops, so the residual gate is learned again once a
+follow starts.
 
-Measured on trial 004, where the ball falls 240 px and comes back: the window's distance from
-an independent detector trajectory over the episode is 5-6 px (median) and 25 px (worst),
-against 6.2 and 110 for the cost-triggered follower this replaces, the episode's median
-photometric cost falls from 0.204 to 0.171 (an oracle-placed window gives 0.158), and the
-agreement of the reported rotation with an optical-flow cross-check over the episode rises
-from a correlation of 0.89 to 0.97. On the synthetic `ball_drop` scene the per-frame error
-over the episode is 0.065 deg against 0.070.
+While following, the window sits on a causal estimate of the looks rather than on a filter.
+A set of straight-line fits over the last 2 to 64 frames of looks is compared with each
+other and with the latest look (Lepski's rule), and the estimate leans on the longest fit
+whose value now stays within 1.25 times the move bound (5-6 px) of every shorter one's.
+Where the ball moves steadily, the long fits average the looks' jitter away; through a jerk
+they fall behind and the span shrinks to the last few looks. The alpha-beta filter with
+scheduled gains that this replaces lagged the jerk and then overshot it by 10 px. Three
+details decide how well it works:
+
+- The cut is soft: each fit fades out over the last fifth of the bound rather than being
+  dropped at it. With a hard cut the window jumped by up to the bound whenever a fit near it
+  flipped in or out, which right after a jerk happened from one frame to the next; the soft
+  cut took the p95 rotation error over the moves of the three jerky synthetic scenes from
+  0.70, 1.01 and 0.32 deg to 0.36, 0.42 and 0.20. A tighter bound is not the answer: the
+  looks step by 2-3 px when a leg crosses the rim, and at half the move bound the window
+  followed those steps (p95 0.44 deg against 0.15 on `ball_drop`'s slow excursion).
+- The fits only use looks from after the move began. A line through the resting ball's
+  looks and the moving one's describes neither, and after a jump it ran several pixels past
+  a ball that had stopped.
+- `detect_ball`, the look that needs no seed, recovers a rim look that has failed for
+  several frames in a row, and its buffer of downscaled frames is kept while a resting
+  ball's look is failing as well as while following. Kept only while following, as it was,
+  a resting ball that jumped farther in one frame than any seed reaches was lost for the
+  rest of the recording.
+
+Following ends once the window has stayed within half the bound for 60 frames, and the
+window is left at the median of those frames rather than on the last of them, which is as
+far off as the looks wander; at 30 frames,
+`ball_drop` was let go at the top of its excursion, where it moves half a pixel in 30 frames,
+and then trailed it by 10 px. The window is moved before the frame it was placed for is
+tracked, not after, which had left every frame tracked in the window placed from the
+previous frame's look.
+
+Measured on trial 004, whose ball falls 205 px in three jerks of 50-65 px, each over about
+ten frames (up to 12 px a frame), against a lag-free reference (each frame's rim look
+iterated to convergence): over the jerks the window each frame is tracked in is 5.2 px from
+the ball at p95 and 18 at worst (the frames before the move is confirmed), against 42 and 49
+for the filter-driven follower, which trailed the ball by eight frames. With exact truth, on
+`lab_jerky_drop`, a synthetic drop of the same shape at the rig's scale (1600 x 1008, a
+506 px ball), the rotation error over the jerks goes from 0.53 to 0.12 deg (median) and
+from 1.46 to 0.67 (p95). The optical-flow cross-check (`examples/crosscheck_optical_flow.py`)
+has to be run on a patch carried with the ball for this: a patch fixed in the image reads
+the fall itself, which a window that lags the ball also reads as rotation, so on a falling
+ball that version rewards lag. Carried with the ball, its residual along the fall over the
+jerks goes from 5.6 to 3.1 px rms.
 
 Everything is measured as a displacement from a reference taken over the first looks, never
 as an absolute position, so a systematic difference between the look and whatever fitted the
@@ -239,7 +285,7 @@ never moved either way) and it measured neutral to slightly worse on the benchma
 was not kept.
 
 What remains of the delay online is structural - the confirmation that keeps a still ball's
-window still, and the filter's lag on a fast drop - and `--two-pass` removes it, see below.
+window still - and `--two-pass` removes it, see below.
 
 ## Two passes over the recording
 
@@ -294,20 +340,32 @@ measurements show to be available.
 The second pass also knows where the ball went. The follower above measures the ball's
 silhouette on every frame of the first pass, and the second pass places its window on a
 trajectory planned from all of those looks at once (`refit.plan_window_trajectory`):
-interpolated over the frames without a look, cleaned with a five-frame median, smoothed with
-a zero-phase Gaussian, held at the ball's resting level by the same rule that keeps a still
-ball's window still online, and following each move from the frame the ball leaves that
-level rather than from the frame an online confirmation ends. The second pass measures
-nothing, which is also why it tracks faster than the first. On `ball_drop`, with exact
-truth, the window's distance from the ball over the episode goes from 7.8 px (p95) for the
-online follower to 2.2, and the episode's per-frame error from 0.056 deg (median) and 0.205
-(p95), for a second pass that follows the ball for itself, to 0.044 and 0.113. On trial
-004's fall, judged by the optical-flow cross-check over the episode, the residual along the
-fall goes from 4.31 px rms for the online run to 4.17 for a second pass that follows for
-itself and 3.82 for the planned window. The smoothing is six frames wide, and wider was
-better on both scenes up to the widest tried: a window offset that stays constant costs no
-rotation, only its change does, so the bias of smoothing an accelerating ball matters less
-than the look's noise.
+interpolated over the frames without a look, cleaned with a five-frame median, smoothed,
+held at the ball's resting level by the same rule that keeps a still ball's window still
+online, and following each move from the frame the ball leaves that level rather than from
+the frame an online confirmation ends. The second pass measures nothing, which is also why
+it tracks faster than the first.
+
+The smoothing is zero-phase and adapts its width to the motion. Each frame gets the widest
+of a set of Gaussians, up to 12 frames, whose estimate lies within half the move bound of
+every narrower one's (Lepski's rule again), and the chosen width is eased over a few frames
+so that the window does not step between estimates. Where the ball rests or drifts, the
+widest one wins: a window offset that stays constant costs no rotation, only its change
+does, so smoothing bias matters less there than the look's jitter. Through a jerk the wide
+ones are pulled off by the curvature and the width shrinks. The bound is in pixels rather
+than in units of the looks' noise because the noise is not what tells a jerk apart: the
+looks wander slowly and step by a few pixels as legs cross the rim, and a rule scaled to
+their frame-to-frame jitter took every such step for a jerk. The fixed six-frame Gaussian
+this replaces put the window up to 24 px behind 004's ball mid-jerk and started it moving
+before the ball did. Now, over the jerks, the planned window is 2.7 px from the ball at p95
+and 5.3 at worst, against 15 and 24, and the cross-check carried with the ball goes from
+3.7 to 2.0 px rms along the fall. With exact truth on `lab_jerky_drop`, the rotation error
+over the jerks goes from 0.34 to 0.068 deg (median) and from 0.98 to 0.14 (p95). On
+`ball_drop`, a slow 0.4-radius excursion, the episode's error is 0.041 deg (median) and 0.12
+(p95), against 0.044 and 0.11 with the fixed Gaussian. That p95 is the one number that went
+the wrong way, and both ways found of bringing it back - a nine-frame median before the
+smoothing, which removes most of the 2-3 px steps the legs put into the looks, or a looser
+bound that ignores them - made 004's own cross-check 6-11% worse.
 
 ## Offline refinement
 
