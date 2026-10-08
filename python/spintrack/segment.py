@@ -2,7 +2,7 @@
 
 The model only proposes the ball's silhouette; `spintrack.detect.ball_from_masks`
 measures the rim on the image itself. Optional: needs the `sam` extra (torch,
-transformers) and access to the gated `facebook/sam3` checkpoint on Hugging Face.
+transformers); the checkpoint downloads on first use.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ import numpy as np
 
 log = logging.getLogger("spintrack")
 
-# Meta's checkpoint, at a fixed commit. The repository is gated: request access on its
-# page, then log in with `hf auth login`.
-MODEL_ID = "facebook/sam3"
-REVISION = "3c879f39826c281e95690f02c7821c4de09afae7"
-ACCESS = (
-    f"request access at https://huggingface.co/{MODEL_ID}, then log in with "
-    "`hf auth login`"
+# Where SAM 3 loads from, in order, each at a fixed commit. The first is an ungated
+# copy of Meta's checkpoint, byte for byte (model.safetensors SHA-256 6d06f0a5...cc14a),
+# redistributed under the SAM License; Meta's own repository is gated (request access,
+# then `hf auth login`) and serves if the copy cannot be reached.
+SOURCES = (
+    ("tkclam/sam3", "4c7c7aa68a625b356934f4ed90597de58b74f3cf"),
+    ("facebook/sam3", "3c879f39826c281e95690f02c7821c4de09afae7"),
 )
 # Masks of both prompts are pooled: on the lab test set "ball" alone missed one rig's
 # ball that "sphere" found, and neither proposed a ball where there was none.
@@ -56,18 +56,21 @@ def _model():
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # The Hub's notices (an anonymous download "should" log in); failures still raise.
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     log.info("loading SAM 3 on %s (the first use downloads 3.4 GB)", device)
-    try:
-        processor = Sam3Processor.from_pretrained(MODEL_ID, revision=REVISION)
-        model = Sam3Model.from_pretrained(MODEL_ID, revision=REVISION, dtype=dtype)
-    except ImportError as exc:  # a dependency of the processor is missing
-        raise SegmenterUnavailable(f"{exc}".strip().splitlines()[0]) from exc
-    except OSError as exc:  # no access, offline and not cached, ...
-        first = str(exc).splitlines()[0]
-        raise SegmenterUnavailable(
-            f"cannot load {MODEL_ID} ({first}): {ACCESS}"
-        ) from exc
-    return model.to(device).eval(), processor, device, dtype
+    errors = []
+    for repo, revision in SOURCES:
+        try:
+            processor = Sam3Processor.from_pretrained(repo, revision=revision)
+            model = Sam3Model.from_pretrained(repo, revision=revision, dtype=dtype)
+        except ImportError as exc:  # a dependency of the processor is missing
+            raise SegmenterUnavailable(str(exc).strip().splitlines()[0]) from exc
+        except OSError as exc:  # unreachable, no access, offline and not cached
+            errors.append(f"{repo}: {str(exc).splitlines()[0]}")
+            continue
+        return model.to(device).eval(), processor, device, dtype
+    raise SegmenterUnavailable("cannot load SAM 3: " + "; ".join(errors))
 
 
 def ball_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
