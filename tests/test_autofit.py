@@ -1,20 +1,15 @@
 """Automatic preparation: ball into the config, vfov from the cost, and the refusals."""
 
-import sys
-
 import cv2
 import numpy as np
 import pytest
 
+from helpers import make_texture, render
 from spintrack.autofit import CAMERA_SOURCE_MESSAGE, fit_vfov, prepare_config
 from spintrack.camera import PinholeCamera
 from spintrack.config import Config
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.sphere import pixel_circle
-
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_detect import render
-from test_engine import make_texture
 
 CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 
@@ -115,98 +110,19 @@ def test_vfov_is_not_identifiable_on_a_near_orthographic_view(tmp_path):
     assert fit.flat_range[1] / fit.flat_range[0] >= 4.0, fit.flat_range
 
 
-def test_scale_check_does_not_change_tracking(tmp_path):
-    """It only reads the engine's state, so the output must be bit-for-bit identical."""
-    from spintrack.engine import TrackParams
-    from spintrack.io.sources import VideoSource
-    from spintrack.tracker import Tracker
+def test_calibrate_auto_creates_the_config_and_run_refuses_an_auto_vfov(tmp_path):
+    """`calibrate --auto` writes a new config once per fit; `run` wants a fixed vfov."""
+    from spintrack.cli import main
 
-    size, half = (160, 120), 0.28
-    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 60)
-    cfg = base_config(vfov=40.0, roi_c=list(CENTER), roi_r=half)
-    runs = []
-    for stride in (0, 5):
-        source = VideoSource(video)
-        tracker = Tracker(
-            cfg, source.width, source.height, TrackParams(scale_check_stride=stride)
-        )
-        rows = []
-        while (frame := source.read()) is not None:
-            result = tracker.process_frame(frame.image, frame.ts_ms)
-            rows.append(result.w_cam if result is not None else np.zeros(3))
-        source.close()
-        runs.append(np.array(rows))
-        if stride:
-            assert tracker.scale_check is not None
-    assert np.array_equal(runs[0], runs[1])
-
-
-def test_scale_check_reads_a_wrong_radius_on_a_rotating_ball(tmp_path):
-    """End to end: a ball tracked at its own radius, then 10% off either way."""
-    from spintrack.engine import TrackParams
-    from spintrack.io.sources import VideoSource
-    from spintrack.tracker import Tracker
-
-    size, half = (160, 120), 0.28
-    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 120)
-    read = {}
-    for scale in (1.0, 0.9, 1.1):
-        cfg = base_config(vfov=40.0, roi_c=list(CENTER), roi_r=half * scale)
-        source = VideoSource(video)
-        tracker = Tracker(
-            cfg, source.width, source.height, TrackParams(scale_check_stride=1)
-        )
-        while (frame := source.read()) is not None:
-            tracker.process_frame(frame.image, frame.ts_ms)
-        source.close()
-        read[scale] = tracker.scale_check.result()
-    # This renderer is not one of the calibration scenes and its ball is larger than any
-    # of them, so the tolerances are the check's own noise floor plus that.
-    assert read[1.0].verdict == "ok", read[1.0].line()
-    assert abs(read[1.0].radius_err_pct) < 2.0, read[1.0].line()
-    for scale, sign in ((0.9, -1.0), (1.1, 1.0)):
-        estimate = read[scale].radius_err_pct
-        assert read[scale].verdict == "fail", read[scale].line()
-        assert sign * estimate == pytest.approx(10.0, abs=4.0), read[scale].line()
-
-
-def test_radius_error_inversion_is_monotone_and_unbiased_at_its_zero():
-    from spintrack.autofit import (
-        RATIO_RESPONSE,
-        RATIO_ZERO,
-        radius_error_from_ratio,
-        ratio_at_correct_radius,
-    )
-
-    for degrees, _ in RATIO_ZERO:
-        half_angle = np.radians(degrees)
-        zero = ratio_at_correct_radius(half_angle)
-        # What a correct radius reads at this half-angle must read exactly zero error,
-        # not the 0.4-3.6% that taking it as a ratio of 1 would give.
-        assert radius_error_from_ratio(zero, half_angle) == pytest.approx(0.0, abs=1e-9)
-        estimates = [
-            radius_error_from_ratio(float(r), half_angle)
-            for r in np.linspace(0.6, 1.3, 40)
-        ]
-        assert np.all(np.diff(estimates) < 0), (
-            "a larger outer/inner ratio is a smaller ball"
-        )
-        # The calibration points must come back as the errors they were measured at.
-        for error, response in RATIO_RESPONSE:
-            assert radius_error_from_ratio(
-                response * zero, half_angle
-            ) == pytest.approx(error, abs=5e-4)
-
-
-def test_the_ratio_a_correct_radius_reads_follows_the_half_angle():
-    from spintrack.autofit import RATIO_ZERO, ratio_at_correct_radius
-
-    knots = [np.radians(a) for a, _ in RATIO_ZERO]
-    values = [ratio_at_correct_radius(a) for a in knots]
-    assert values == pytest.approx([r for _, r in RATIO_ZERO], rel=1e-6)
-    # Held flat outside the calibrated half-angles, monotone within them, and worth a
-    # few percent of ratio over the range: a 0.3 deg ball is not a 11 deg one.
-    assert ratio_at_correct_radius(np.radians(0.05)) == pytest.approx(values[0])
-    assert ratio_at_correct_radius(np.radians(40.0)) == pytest.approx(values[-1])
-    middle = ratio_at_correct_radius(np.radians(3.0))
-    assert values[1] < middle < values[2]
+    size, half = (320, 240), 0.15
+    write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
+    path = tmp_path / "config.txt"
+    for _ in range(2):
+        argv = ["calibrate", str(path), "--src", "ball.mp4", "--auto"]
+        assert main([*argv, "--c2a-angles", "0", "180", "0"]) == 0
+    cfg = Config.load(path)
+    assert cfg.src_fn == "ball.mp4" and cfg.has_ball() and cfg.c2a_r is not None
+    assert len(cfg.comments) == 1, cfg.comments  # one note, not one per run
+    cfg.vfov = None
+    cfg.save()
+    assert main(["run", str(path), "--max-frames", "5"]) == 2

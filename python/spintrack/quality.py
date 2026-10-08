@@ -1,17 +1,9 @@
-"""Run quality summary: cost statistics, map coverage and elevated-cost episodes.
+"""Run quality: what was tracked, and where tracking was harder than elsewhere in it.
 
-An *episode* is a contiguous stretch where tracking was measurably harder than in the
-rest of the same run. Two per-frame signals go into it, both expressed as a ratio to the
-run's own robust baseline: the photometric `cost` and the number of Gauss-Newton
-iterations the solver needed. A frame counts as elevated only when **both** are, because
-the cost on its own also rises whenever the ball simply turns fast or shows surface the
-map has not seen yet - on real trials those bouts reach 4-6x the run baseline, as high
-as an actual geometry failure. The iteration count does not move for them (3-4 either
-way) and jumps to 8-10 when the model no longer fits. See `episodes_above_baseline` for
-the measured constants.
-
-`.dat` files carry no iteration count, so `summary_from_dat` falls back to the cost
-alone and says so in `RunQuality.notes`; episodes found that way are far less specific.
+An *episode* is a stretch where both the photometric cost and the solver's iteration
+count exceed their run baselines. The cost alone also rises when the ball turns fast or
+shows surface the map has not seen; the iteration count rises only when the model stops
+fitting.
 """
 
 from __future__ import annotations
@@ -22,8 +14,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
-
-from spintrack.io.dat import read_dat
 
 
 @dataclass
@@ -36,7 +26,7 @@ class Episode:
     t1_s: float
     n: int
     median_cost: float
-    ratio: float  # median_cost / cost_baseline
+    ratio: float  # median_cost / cost_median
 
 
 @dataclass
@@ -44,32 +34,21 @@ class RunQuality:
     n_frames: int
     n_tracked: int
     n_dropped: int
-    cost_baseline: float  # median cost over accepted frames
-    cost_median: float
+    cost_median: float  # over accepted frames; the episodes' baseline
     cost_p90: float
     cost_p99: float
-    iters_median: float | None  # None when unavailable (summarize from .dat)
+    iters_median: float | None
     iters_p95: float | None
     sources: dict[str, int]  # map / prev / global / reset / lost counts
     turned_deg: float  # sum of |w_cam| in degrees over tracked frames
     map_coverage: float | None  # fraction of map cells with weight >= w_min
-    # Peak of the static illumination field, in normalized-intensity units, and the
-    # fraction of the window it dims by more than half. None when the correction is off.
-    illum_peak: float | None = None
-    illum_dim_frac: float | None = None
+    illumination: dict | None = None  # what the static illumination field is doing
     episodes: list[Episode] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
     checks: dict = field(default_factory=dict)
 
 
-COVERAGE_NOTE = (
-    "Unseen surface is a cap around the axis the ball turned least about; it shrinks "
-    "as the ball turns further and does not indicate bad tracking."
-)
-COST_ONLY_NOTE = (
-    "No solver iteration counts (summarized from a .dat): episodes come from the cost "
-    "alone and also fire on fast turning and on map warm-up."
-)
+# The `checks` entries the terminal block shows, in order; the sidecar keeps them all.
+SUMMARY_CHECKS = ("ball", "vfov", "ball moved", "radius")
 
 
 def running_median(x, k: int) -> np.ndarray:
@@ -132,15 +111,8 @@ def episodes_above_baseline(
     `smooth`-frame running median; a frame is elevated when both ratios exceed `factor`,
     so the cost and the solver have to agree. Dropped frames are elevated by definition.
     Runs are merged across gaps of up to `close_gap` frames and those shorter than
-    `min_len` are discarded.
-
-    The defaults were tuned on the three `AN07B017_260414_Fly4` trials and on the 17
-    synthetic benchmark scenes: no episode on any synthetic scene nor on trials 003 and
-    005, and 004's ball drop comes out as frames 1134-1643 at 4.7x the run's cost
-    baseline. Dropping the iteration term instead makes 003 report six episodes of the
-    same apparent severity, and thresholding the cost on its own spread (a MAD term)
-    only truncates 004's episode, because that spread is what the episode itself
-    creates.
+    `min_len` are discarded. The defaults find no episode on still or steadily tracked
+    recordings and one over a ball that drops in its holder.
     """
     cost = np.asarray(cost, dtype=np.float64)
     ok = np.asarray(ok, dtype=bool)
@@ -225,16 +197,10 @@ def summarize_run(
                 ratio=median / baseline if baseline > 0 else float("nan"),
             )
         )
-    notes = []
-    if map_coverage is not None:
-        notes.append(COVERAGE_NOTE)
-    if iters is None:
-        notes.append(COST_ONLY_NOTE)
     return RunQuality(
         n_frames=int(frames.size),
         n_tracked=int(ok.sum()),
         n_dropped=int((~ok).sum()),
-        cost_baseline=baseline,
         cost_median=baseline,
         cost_p90=float(np.percentile(accepted, 90)),
         cost_p99=float(np.percentile(accepted, 99)),
@@ -243,84 +209,35 @@ def summarize_run(
         sources=dict(counts),
         turned_deg=turned,
         map_coverage=map_coverage,
+        illumination=illumination,
         episodes=episodes,
-        notes=notes,
-        **(illumination or {}),
     )
 
 
-def summary_from_dat(path: str | Path, fps: float | None = None) -> RunQuality:
-    """Summarize an existing `.dat`; gaps in the frame column count as dropped."""
-    data = read_dat(path)
-    if data.shape[0] == 0:
-        raise ValueError(f"{path}: no records")
-    written = data[:, 0].astype(np.int64)
-    frames = np.arange(written[0], written[-1] + 1)
-    at = np.searchsorted(frames, written)
-    ok = np.zeros(frames.size, dtype=bool)
-    ok[at] = True
-    cost = np.full(frames.size, np.nan)
-    cost[at] = data[:, 4]
-    ts = np.interp(frames, written, data[:, 21])
-    w_cam = np.zeros((frames.size, 3))
-    w_cam[at] = data[:, 1:4]
-    # The .dat does not record which solve produced a row; only sequence resets show.
-    source = np.full(frames.size, "", dtype=object)
-    source[at[np.flatnonzero(np.diff(data[:, 22]) < 0) + 1]] = "reset"
-    return summarize_run(frames, ts, ok, cost, None, source, w_cam, fps)
-
-
 def format_summary(q: RunQuality) -> str:
-    """The terminal block (at most ~15 lines)."""
+    """The terminal block: frames, the ball's checks, the hard-tracking episodes."""
     lines = [
-        (
-            f"run quality: {q.n_frames} frames, {q.n_tracked} tracked, "
-            f"{q.n_dropped} dropped"
-        ),
-        f"cost: median {q.cost_median:.4g}, p90 {q.cost_p90:.4g}, p99 {q.cost_p99:.4g}",
+        f"run quality: {q.n_frames} frames, {q.n_tracked} tracked, "
+        + f"{q.n_dropped} dropped"
     ]
-    if q.iters_median is not None:
-        lines.append(
-            f"solver: {q.iters_median:.0f} iterations median, {q.iters_p95:.0f} at p95"
-        )
-    if q.sources:
-        parts = ", ".join(f"{k} {v}" for k, v in sorted(q.sources.items()))
-        lines.append(f"sources: {parts}")
-    turned = f"ball turned {q.turned_deg:.0f} deg"
-    if q.map_coverage is not None:
-        lines.append(
-            f"map coverage: {100 * q.map_coverage:.1f}% of the sphere, {turned}"
-        )
-    else:
-        lines.append(turned.capitalize())
-    if q.illum_peak is not None:
-        dimmed = (
-            f", {100 * q.illum_dim_frac:.1f}% of the window down-weighted below half"
-            if q.illum_dim_frac is not None
-            else ""
-        )
-        lines.append(
-            f"illumination: static field peaks at {q.illum_peak:.2f} of a "
-            f"normalized-intensity unit{dimmed}"
-        )
-    for key, value in q.checks.items():
-        if isinstance(value, str):
-            lines.append(f"{key}: {value}")
+    for key in SUMMARY_CHECKS:
+        if isinstance(q.checks.get(key), str):
+            lines.append(f"{key}: {q.checks[key]}")
     if not q.episodes:
-        lines.append("no episodes above the run baseline")
+        lines.append("hard tracking: none")
     else:
-        lines.append(f"episodes above the run baseline: {len(q.episodes)}")
-        for ep in q.episodes[:5]:
-            span = (
-                f"{ep.t0_s:.1f}-{ep.t1_s:.1f} s" if np.isfinite(ep.t0_s) else "no times"
+        parts = []
+        for ep in q.episodes[:3]:
+            when = f", {ep.t0_s:.1f}-{ep.t1_s:.1f} s" if np.isfinite(ep.t0_s) else ""
+            parts.append(
+                f"frames {ep.start}-{ep.end}{when} ({ep.ratio:.1f}x the median cost)"
             )
-            lines.append(
-                f"  frames {ep.start}-{ep.end} ({span}, {ep.n} frames): "
-                f"cost {ep.ratio:.1f}x baseline"
-            )
-        if len(q.episodes) > 5:
-            lines.append(f"  ... and {len(q.episodes) - 5} more (see the sidecar)")
-    lines.extend(f"note: {n}" for n in q.notes)
+        more = len(q.episodes) - 3
+        lines.append(
+            "hard tracking: "
+            + "; ".join(parts)
+            + (f"; {more} more" if more > 0 else "")
+        )
     return "\n".join(lines)
 
 

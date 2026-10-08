@@ -1,10 +1,10 @@
 """Interactive calibration window (tkinter, no extra dependencies).
 
-Keys: `c` mark ball rim points (Enter fits the circle), `i` draw an ignore polygon (Enter
-closes it), `s` mark the four corners of a calibration square (TL, TR, BR, BL; Enter solves;
-`p` cycles the plane xy/yz/xz), `a` set the camera position with sliders, `u` undo the last
-point, `w` write the config, `q` quit. The status bar shows the cursor angle about the ball
-center (a protractor).
+Keys: `c` mark ball rim points (Enter fits the circle), `i` draw an ignore polygon
+(Enter closes it), `s` mark the four corners of a calibration square (TL, TR, BR, BL;
+Enter solves; `p` cycles the plane xy/yz/xz), `a` set the camera position with sliders,
+`u` undo the last point, `w` write the config, `q` quit. The status bar shows the cursor
+angle about the ball center (a protractor).
 """
 
 from __future__ import annotations
@@ -13,11 +13,14 @@ from pathlib import Path
 
 import numpy as np
 
+from spintrack.calibrate.headless import open_config
 from spintrack.calibrate.session import CalibrationSession
-from spintrack.config import Config
 from spintrack.io.sources import open_source
 
-HELP = "c: rim points  i: ignore polygon  s: square corners  p: plane  a: angles  u: undo  Enter: confirm  w: write  q: quit"
+HELP = (
+    "c: rim points  i: ignore polygon  s: square corners  p: plane  a: angles  "
+    "u: undo  Enter: confirm  w: write  q: quit"
+)
 
 
 def _to_photo(tk, rgb: np.ndarray):
@@ -57,8 +60,16 @@ class CalibrationApp:
         ):
             var = tk.DoubleVar(value=init)
             tk.Label(frame, text=name).pack(side="left")
-            tk.Scale(frame, variable=var, from_=lo, to=hi, orient="horizontal", resolution=0.5,
-                     length=260, command=lambda _v: self._angles_changed()).pack(side="left")  # fmt: skip
+            tk.Scale(
+                frame,
+                variable=var,
+                from_=lo,
+                to=hi,
+                orient="horizontal",
+                resolution=0.5,
+                length=260,
+                command=lambda _v: self._angles_changed(),
+            ).pack(side="left")
             self.sliders[name] = var
         self.canvas.bind("<Button-1>", self._click)
         self.canvas.bind("<Motion>", self._motion)
@@ -111,7 +122,8 @@ class CalibrationApp:
         if self.mode == "circle":
             ok = s.fit_circle()
             msg = (
-                f"ball: center {np.round(s.center, 4)} half-angle {np.degrees(s.half_angle):.2f} deg"
+                f"ball: center {np.round(s.center, 4)} "
+                f"half-angle {np.degrees(s.half_angle):.2f} deg"
                 if ok
                 else "need 3+ points"
             )
@@ -176,12 +188,11 @@ class CalibrationApp:
 def calibrate(config_path: str | Path, src: str | None = None) -> int:
     """Open the calibration window for `config_path` (first frame of its source)."""
     config_path = Path(config_path)
-    cfg = Config.load(config_path)
-    spec = src if src is not None else cfg.src_fn
-    if not spec:
-        raise SystemExit("no source: set src_fn in the config or pass --src")
-    if not str(spec).isdigit() and not Path(spec).is_absolute():
-        spec = str(config_path.parent / spec)
+    try:
+        cfg = open_config(config_path, src)
+        spec = cfg.source(src)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     source = open_source(spec)
     frame = source.read()
     source.close()

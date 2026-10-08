@@ -157,8 +157,7 @@ def test_a_wrong_radius_rescales_the_in_plane_rotation_and_not_the_image_rotatio
     So a relative radius error `eps` costs about `1.9 eps` of a rotation about an axis
     in the image plane and nothing at all about the optical axis. Neither
     `autofit.DISAGREEMENT_WARN` nor the ball detector's warning should ever go back to
-    calling this 1:1: the in-plane cost is twice that, and the split between the two is
-    why `ScaleCheck` can see a radius error in the first place.
+    calling this 1:1: the in-plane cost is twice that.
     """
     eps = 0.05
     in_plane = RATE * np.array([1.0, 0.0, 0.0])
@@ -197,9 +196,9 @@ def test_lab_columns_apply_the_camera_to_animal_rotation_in_the_right_direction(
         expected,
     )
     # And the fictive path is where that reaches a reader: forward is `dr_lab` y, so a
-    # positive one runs along +x while the negative z turns the heading (`spintrack.path`,
-    # pinned against a circle in `test_path.py`). The endpoint has to be the one those
-    # increments integrate to, sign and all.
+    # positive one runs along +x while the negative z turns the heading
+    # (`spintrack.path`, pinned against a circle in `test_path.py`). The endpoint has to
+    # be the one those increments integrate to, sign and all.
     assert expected[1] > 0  # forward
     want = integrate_path(np.tile(expected, (len(rows) - 1, 1)))[-1]
     assert np.allclose(rows[-1, 14:16], want[:2], rtol=0.02)  # x, y

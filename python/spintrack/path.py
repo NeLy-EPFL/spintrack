@@ -9,11 +9,13 @@ initial heading and y to the initial right, matching FicTrac's output columns 15
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
-TWO_PI = 2.0 * np.pi
+TWO_PI = 2.0 * math.pi
+SUBSTEPS = 4  # FicTrac's; more does not help
 
 
 @dataclass
@@ -30,39 +32,59 @@ class PathStep:
 
 
 class PathIntegrator:
-    """Accumulate lab-frame rotation vectors into heading and 2-D position."""
+    """Accumulate lab-frame rotation vectors into heading and 2-D position.
+
+    A line-for-line port of FicTrac's `Trackball::updatePath`, so that the path columns
+    match FicTrac's to print precision given the same rotations: each step is walked in
+    four substeps along a direction turning with the heading.
+    """
 
     def __init__(self) -> None:
+        self.int_x = 0.0
+        self.int_y = 0.0
         self.reset()
 
     def reset(self) -> None:
+        """Restart heading and position; `int_x` and `int_y` carry on, as in FicTrac."""
         self.heading = 0.0
+        self.prev_heading = 0.0
         self.pos_x = 0.0
         self.pos_y = 0.0
-        self.int_x = 0.0
-        self.int_y = 0.0
 
     def step(self, dr_lab) -> PathStep:
-        dr = np.asarray(dr_lab, dtype=np.float64)
-        forward = float(dr[1])
-        side = -float(dr[0])
-        turn = -float(dr[2])
-        step_mag = float(np.hypot(forward, side))
-        step_dir = float(np.arctan2(side, forward)) % TWO_PI
-
-        # Exact integral of a step whose world direction turns uniformly by `turn`.
-        start = self.heading + step_dir
-        if abs(turn) > 1e-12:
-            mid = start + 0.5 * turn
-            gain = np.sin(0.5 * turn) / (0.5 * turn)
-        else:
-            mid, gain = start, 1.0
-        self.pos_x += step_mag * gain * np.cos(mid)
-        self.pos_y += step_mag * gain * np.sin(mid)
-
-        self.heading = (self.heading + turn) % TWO_PI
+        forward = float(dr_lab[1])
+        side = -float(dr_lab[0])
+        step_mag = math.sqrt(forward * forward + side * side)
+        step_dir = math.atan2(side, forward)
+        if step_dir < 0:
+            step_dir += TWO_PI
         self.int_x += forward
         self.int_y += side
+        heading = self.heading - float(dr_lab[2])
+        while heading < 0:
+            heading += TWO_PI
+        while heading >= TWO_PI:
+            heading -= TWO_PI
+        self.heading = heading
+        # Walk the step in four substeps, turning from the previous heading to this one.
+        step = step_mag / SUBSTEPS
+        turn = heading - self.prev_heading
+        while turn >= math.pi:
+            turn -= TWO_PI
+        while turn < -math.pi:
+            turn += TWO_PI
+        turn /= SUBSTEPS
+        dx, dy = forward, side
+        if step_mag != 0:
+            inv = 1.0 / step_mag
+            dx, dy = dx * inv, dy * inv
+        dx, dy = _rotate(dx, dy, self.prev_heading + turn / 2.0)
+        c, s = math.cos(turn), math.sin(turn)
+        for _ in range(SUBSTEPS):
+            self.pos_x += step * dx
+            self.pos_y += step * dy
+            dx, dy = dx * c - dy * s, dx * s + dy * c
+        self.prev_heading = heading
         return PathStep(
             forward,
             side,
@@ -74,6 +96,11 @@ class PathIntegrator:
             self.int_x,
             self.int_y,
         )
+
+
+def _rotate(x: float, y: float, angle: float) -> tuple[float, float]:
+    c, s = math.cos(angle), math.sin(angle)
+    return x * c - y * s, x * s + y * c
 
 
 def integrate_path(dr_lab: np.ndarray) -> np.ndarray:

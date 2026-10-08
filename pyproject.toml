@@ -15,7 +15,12 @@ keywords = ["trackball", "spherical treadmill", "fictive path", "drosophila", "t
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering",
 ]
@@ -35,6 +40,8 @@ spintrack = "spintrack.cli:main"
 
 [project.urls]
 Repository = "https://github.com/NeLy-EPFL/spintrack"
+Documentation = "https://github.com/NeLy-EPFL/spintrack/tree/main/docs"
+Changelog = "https://github.com/NeLy-EPFL/spintrack/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 python-source = "python"
@@ -42,7 +49,14 @@ module-name = "spintrack._core"
 features = ["pyo3/extension-module"]
 strip = true
 # Keep benchmark media and results out of the source distribution.
-exclude = ["benchmarks/data/**", "benchmarks/results/**", "dist/**", "target/**"]
+exclude = [
+    "benchmarks/data/**",
+    "benchmarks/results/**",
+    "dist/**",
+    "notes/**",
+    "plans/**",
+    "target/**",
+]
 
 [tool.uv]
 # Rebuild the extension when Rust sources change, not only on pyproject edits.
@@ -72,4 +86,4 @@ line-length = 88
 src = ["python", "tests", "benchmarks"]
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = ["E501", "I"]

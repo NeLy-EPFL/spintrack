@@ -1,12 +1,12 @@
 """Camera-to-animal rotation from where the camera sits around the animal.
 
 An alternative to the calibration square when no square can be placed: describe the
-camera position in the animal frame (x forward, y right, z down) with an azimuth (degrees
-around the animal's vertical axis, 0 = in front of the animal, 90 = at its right), an
-elevation (degrees above the animal's horizontal plane) and an optional twist (roll of the
-camera about its optical axis, degrees, positive = clockwise in the image). The camera is
-assumed to look at the ball center with its image-down axis as aligned with animal-down as
-the geometry allows.
+camera position in the animal frame (x forward, y right, z down) with an azimuth
+(degrees around the animal's vertical axis, 0 = in front of the animal, 90 = at its
+right), an elevation (degrees above the animal's horizontal plane) and an optional twist
+(roll of the camera about its optical axis, degrees, positive = clockwise in the image).
+The camera is assumed to look at the ball center with its image-down axis as aligned
+with animal-down as the geometry allows.
 """
 
 from __future__ import annotations
@@ -37,7 +37,9 @@ def camera_to_lab_from_angles(
 def c2a_from_angles(
     elevation_deg: float, azimuth_deg: float, twist_deg=0.0
 ) -> list[float]:
-    """FicTrac-style `c2a_r` (rotation vector of camera-to-lab) from the three angles."""
+    """FicTrac-style `c2a_r` (rotation vector of camera-to-lab) from the three
+    angles.
+    """
     return matrix_to_rotvec(
         camera_to_lab_from_angles(elevation_deg, azimuth_deg, twist_deg)
     ).tolist()

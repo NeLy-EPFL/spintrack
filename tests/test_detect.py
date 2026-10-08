@@ -1,46 +1,12 @@
 """Ball detection on rendered frames: accuracy, occlusion, partial views, refusal."""
 
-import sys
-
 import numpy as np
 import pytest
 
+from helpers import make_texture, render
 from spintrack.camera import PinholeCamera
 from spintrack.detect import DetectionError, detect_ball
 from spintrack.geometry import normalize, rotvec_to_matrix
-
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_engine import make_texture
-
-
-def render(texture, R, rng, size, center, half, occluders=True):
-    """One frame of a shaded, textured ball; optionally with things over its rim.
-
-    The occluders are the two shapes a real rig puts there: a dark blob straddling the
-    silhouette (surface texture, which bites into any thresholded outline) and a bright
-    bar touching the disc (the holder, which sticks out of it).
-    """
-    w, h = size
-    cam = PinholeCamera(w, h, 40.0)
-    xs, ys = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
-    rays = cam.rays(xs, ys)
-    radius = np.sin(half)
-    b = rays @ center
-    disc = b * b - (1 - radius * radius)
-    hit = disc >= 0
-    t = b - np.sqrt(np.where(hit, disc, 0))
-    normals = normalize(t[..., None] * rays - center)
-    albedo = texture((normals @ R).reshape(-1, 3)).reshape(h, w)
-    shade = 0.4 + 0.6 * np.clip(normals @ normalize(np.array([-0.3, -0.5, -0.8])), 0, 1)
-    img = np.where(hit, 30 + 220 * albedo * shade, 40.0) + rng.normal(0, 2, (h, w))
-    if occluders:
-        cx, cy, r = ball_circle(cam, center, half)
-        yy, xx = np.mgrid[0:h, 0:w]
-        blob = ((xx - cx) / (0.20 * r)) ** 2 + ((yy - (cy - r)) / (0.08 * r)) ** 2 < 1
-        img[blob] = 20.0
-        bar = (np.abs(xx - cx) < 0.25 * r) & (np.abs(yy - (cy + r)) < 0.04 * r)
-        img[bar] = 250.0
-    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 def ball_circle(cam, center, half):
@@ -87,8 +53,8 @@ def test_ball_partly_out_of_frame():
     """40% of the rim leaves the image; the visible arc still fixes the ball.
 
     Checked through `fit_ball`, the way the detection is actually consumed: this far off
-    axis the silhouette is an ellipse, so no circle describes it to better than 2.6 px and
-    a pixel-radius comparison would be measuring the reference, not the detector.
+    axis the silhouette is an ellipse, so no circle describes it to better than 2.6 px
+    and a pixel-radius comparison would be measuring the reference, not the detector.
     """
     from spintrack.sphere import fit_ball
 
@@ -122,35 +88,46 @@ def test_rim_points_are_a_fictrac_roi_circ():
     assert np.allclose(np.hypot(xy[:, 0] - det.cx, xy[:, 1] - det.cy), det.r, atol=2.0)
 
 
-def test_relocate_finds_a_known_ball_from_a_seed_a_few_pixels_off():
-    """The cheap look the moved-ball watch follows with: center only, radius given."""
-    from spintrack.detect import relocate_ball
+def test_rim_look_finds_a_known_ball_from_a_seed_a_few_pixels_off():
+    """The look the moved-ball watch follows with: one frame, radius given.
+
+    A seed most of a band off is pulled only part of the way in, so the look is
+    repeated from its answer, as the watch does.
+    """
+    from spintrack.detect import RimLook
 
     size, center, half = CASES[1]
-    frames = sequence(size, center, half, n=4)
+    frame = sequence(size, center, half, n=1)[0]
     cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
+    look = RimLook(r, max(8.0, 0.05 * r), max(2.0, 0.01 * r))
     for dx, dy in ((0.0, 0.0), (4.0, -3.0), (-5.0, 5.0)):
-        found = relocate_ball(frames, cx + dx, cy + dy, r)
+        found = look(frame, cx + dx, cy + dy)
+        found = look(frame, found.cx, found.cy)  # a far seed is pulled part of the way
         assert found.ok
         assert np.hypot(found.cx - cx, found.cy - cy) < 1.0, (dx, dy, found)
         assert found.residual_px < 0.02 * r
         assert found.polarity == 1.0  # the ball is brighter than the background
+    # With the radius free it finds that too, from a radius a few percent off.
+    free = RimLook(1.03 * r, max(8.0, 0.05 * r), max(2.0, 0.01 * r))(
+        frame, cx, cy, free_radius=True
+    )
+    assert abs(free.r / r - 1.0) < 0.01, free.r / r
 
 
-def test_relocate_says_so_when_the_rim_is_not_where_it_was_told():
+def test_rim_look_says_so_when_the_rim_is_not_where_it_was_told():
     """A look with no rim in its band must be refused, not answered with the seed.
 
     The residual is what catches it: a fit that has latched onto the wrong edge still
     covers most of the rim, and only its residual gives it away.
     """
-    from spintrack.detect import relocate_ball
+    from spintrack.detect import RimLook
 
     size, center, half = CASES[1]
-    frames = sequence(size, center, half, n=4)
+    frame = sequence(size, center, half, n=1)[0]
     cx, cy, r = ball_circle(PinholeCamera(size[0], size[1], 40.0), center, half)
-    good = relocate_ball(frames, cx, cy, r)
+    good = RimLook(r, max(8.0, 0.05 * r), max(2.0, 0.01 * r))(frame, cx, cy)
     try:
-        bad = relocate_ball(frames, cx, cy, 0.75 * r)
+        bad = RimLook(0.75 * r, max(8.0, 0.05 * r), max(2.0, 0.01 * r))(frame, cx, cy)
     except DetectionError:
         return
-    assert bad.residual_px > 5.0 * good.residual_px, (good, bad)
+    assert not bad.ok or bad.residual_px > 5.0 * good.residual_px, (good, bad)

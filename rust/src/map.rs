@@ -1,35 +1,23 @@
-//! The ball surface map: a grid of normalized intensities with confidences.
+//! The ball surface map: an equi-angular cubemap of normalized intensities with
+//! confidences.
 //!
-//! Two tessellations, both addressed by a continuous `(u, v)` into one row-major `(H, W)`
-//! array, so everything above this file sees the same thing. Cell `(i, j)` is centerd at
-//! `(j + 0.5, i + 0.5)`.
-//!
-//! `EqualArea`: `u = W * (atan2(px, pz) + pi) / (2 pi)` wraps around in longitude and
-//! `v = H * (1 - py) / 2` runs from the +y pole (top) to the -y pole (bottom).
-//!
-//! `Cube`: six square faces stacked into a `(6 n, n)` array, `v` running through them in
-//! the order `-x, +z, +x, -z, +y, -y`, `u` and the within-face part of `v` equi-angular
-//! across the face. Faces meet at seams rather than wrapping, which `cube_cell` resolves
-//! by re-projecting the direction of the cell it was asked for.
+//! Six square faces of `n x n` cells are stacked into one row-major `(6 n, n)` array in the
+//! order `-x, +z, +x, -z, +y, -y`, addressed by a continuous `(u, v)`: cell `(i, j)` is
+//! centered at `(j + 0.5, i + 0.5)`. Face coordinates are equi-angular
+//! (`s' = tan(pi s / 4)`), which keeps every cell close to square and the solid angle per
+//! cell within 1.41:1 over the sphere. Faces meet at seams, which `cube_cell` resolves by
+//! re-projecting the direction of the cell it was asked for.
 
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::PI;
 
-/// How the map tiles the sphere.
-///
-/// `EqualArea` gives every cell the same solid angle but not the same shape: cell extents
-/// are `(2 pi / W) cos(lat)` east-west and `(2 / H) / cos(lat)` north-south, so at 180x360
-/// an equatorial cell is 0.64 x 1.0 degrees while the polar row is 8.6 x 0.1, and
-/// `projection_jacobian`'s `du/dp` grows as `1/cos^2(lat)` along with it.
-///
-/// `Cube` is equi-angular: `s' = tan(pi s / 4)` on each face, one `tan` more than a plain
-/// gnomonic cube, which brings the solid angle per cell from a 5.2:1 spread between face
-/// center and corner down to 1.41:1 and makes every cell 0.87 degrees square at the same
-/// texel budget. `benchmarks/spintrack_bench/map_grid_sweep.py` measures what that buys.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Projection {
-    EqualArea,
-    Cube,
-}
+/// Weight below which a cell counts as unseen.
+pub const W_MIN: f32 = 0.1;
+/// Weight at which a cell counts as fully trusted (sample confidence 1).
+pub const W_SAT: f32 = 3.0;
+/// Cap on the accumulated map's weights, so that it keeps adapting.
+pub const W_MAX: f32 = 50.0;
+/// Cells kept around the current view when forgetting the rest of the map.
+pub const FORGET_MARGIN: usize = 1;
 
 /// Cube faces as `(forward, right, up)`, in the order they are stacked. Mirrored in
 /// `python/spintrack/maps.py`, which has to agree with this cell for cell.
@@ -88,8 +76,7 @@ fn eac_inv(s: f32) -> f32 {
 }
 
 /// Polynomial `atan` on `[-1, 1]` (max error ~1e-5 rad), several times faster than the
-/// libm call. Both projections go through it, on both the splatting and the sampling side,
-/// so the approximation error cancels out rather than accumulating.
+/// libm call. Splatting and sampling both go through it, so its error cancels.
 #[inline]
 fn atan_unit(z: f32) -> f32 {
     let a = z.abs();
@@ -100,23 +87,6 @@ fn atan_unit(z: f32) -> f32 {
                 + z2 * (0.193_543_46
                     + z2 * (-0.116_432_87 + z2 * (0.052_653_32 + z2 * (-0.011_721_2))))));
     if z < 0.0 { -r } else { r }
-}
-
-/// `atan2` built on `atan_unit` by range reduction.
-#[inline]
-pub fn fast_atan2(y: f32, x: f32) -> f32 {
-    let ax = x.abs();
-    let ay = y.abs();
-    let swap = ay > ax;
-    let (num, den) = if swap { (ax, ay) } else { (ay, ax) };
-    let mut a = atan_unit(if den > 0.0 { num / den } else { 0.0 });
-    if swap {
-        a = FRAC_PI_2 - a;
-    }
-    if x < 0.0 {
-        a = PI - a;
-    }
-    if y < 0.0 { -a } else { a }
 }
 
 /// Cells touched by the current frame's splat: a mask plus the list of indices, so that
@@ -152,9 +122,8 @@ impl Touched {
 
 #[derive(Clone)]
 pub struct Map {
-    pub w: usize,
-    pub h: usize,
-    pub projection: Projection,
+    /// Cells along a face side; the arrays are `(6 n, n)`.
+    pub n: usize,
     pub mean: Vec<f32>,
     pub weight: Vec<f32>,
 }
@@ -167,23 +136,12 @@ pub struct Sample {
 }
 
 impl Map {
-    pub fn new_with(projection: Projection, w: usize, h: usize) -> Map {
+    pub fn new(n: usize) -> Map {
         Map {
-            w,
-            h,
-            projection,
-            mean: vec![0.0; w * h],
-            weight: vec![0.0; w * h],
+            n,
+            mean: vec![0.0; 6 * n * n],
+            weight: vec![0.0; 6 * n * n],
         }
-    }
-
-    pub fn new(w: usize, h: usize) -> Map {
-        Map::new_with(Projection::EqualArea, w, h)
-    }
-
-    /// A cube map of `face x face` cells per face, stacked into `(6 face, face)`.
-    pub fn cube(face: usize) -> Map {
-        Map::new_with(Projection::Cube, face, 6 * face)
     }
 
     pub fn clear(&mut self) {
@@ -194,76 +152,51 @@ impl Map {
     /// Continuous map coordinates of a unit direction.
     #[inline]
     pub fn project(&self, p: [f32; 3]) -> (f32, f32) {
-        match self.projection {
-            Projection::EqualArea => {
-                let lon = fast_atan2(p[0], p[2]);
-                let u = (lon + PI) * (self.w as f32) / (2.0 * PI);
-                let v = (1.0 - p[1]) * 0.5 * (self.h as f32);
-                (u, v)
-            }
-            Projection::Cube => {
-                let face = face_of(p);
-                let (f, r, up) = FACES[face];
-                let d = dot(p, f);
-                let n = self.w as f32;
-                let s = eac(dot(p, r) / d);
-                let t = eac(dot(p, up) / d);
-                (0.5 * (s + 1.0) * n, (face as f32) * n + 0.5 * (1.0 - t) * n)
-            }
-        }
+        let face = face_of(p);
+        let (f, r, up) = FACES[face];
+        let d = dot(p, f);
+        let n = self.n as f32;
+        let s = eac(dot(p, r) / d);
+        let t = eac(dot(p, up) / d);
+        (0.5 * (s + 1.0) * n, (face as f32) * n + 0.5 * (1.0 - t) * n)
     }
 
     /// Gradient of `(u, v)` with respect to the direction `p` (unit), rows `du/dp`, `dv/dp`.
-    ///
-    /// The equal-area `du/dp` carries a `1 / cos^2(lat)` that is only nominally bounded, by
-    /// the floor on `rxz`. The cube has no such term: `p` always lies on the face it is
-    /// closest to, so `dot(p, forward) >= 1 / sqrt(3)`.
+    /// Bounded everywhere: `p` lies on the face it is closest to, so
+    /// `dot(p, forward) >= 1 / sqrt(3)`.
     #[inline]
     pub fn projection_jacobian(&self, p: [f32; 3]) -> ([f32; 3], [f32; 3]) {
-        match self.projection {
-            Projection::EqualArea => {
-                let rxz = (p[0] * p[0] + p[2] * p[2]).max(1e-12);
-                let ku = self.w as f32 / (2.0 * PI) / rxz;
-                let du = [ku * p[2], 0.0, -ku * p[0]];
-                let dv = [0.0, -0.5 * self.h as f32, 0.0];
-                (du, dv)
-            }
-            Projection::Cube => {
-                let face = face_of(p);
-                let (f, r, up) = FACES[face];
-                let d = dot(p, f);
-                let (s, t) = (dot(p, r) / d, dot(p, up) / d);
-                let k = 0.5 * (self.w as f32) * (4.0 / PI) / d;
-                let ku = k / (1.0 + s * s);
-                let kv = -k / (1.0 + t * t);
-                let du = [
-                    ku * (r[0] - s * f[0]),
-                    ku * (r[1] - s * f[1]),
-                    ku * (r[2] - s * f[2]),
-                ];
-                let dv = [
-                    kv * (up[0] - t * f[0]),
-                    kv * (up[1] - t * f[1]),
-                    kv * (up[2] - t * f[2]),
-                ];
-                (du, dv)
-            }
-        }
+        let face = face_of(p);
+        let (f, r, up) = FACES[face];
+        let d = dot(p, f);
+        let (s, t) = (dot(p, r) / d, dot(p, up) / d);
+        let k = 0.5 * (self.n as f32) * (4.0 / PI) / d;
+        let ku = k / (1.0 + s * s);
+        let kv = -k / (1.0 + t * t);
+        let du = [
+            ku * (r[0] - s * f[0]),
+            ku * (r[1] - s * f[1]),
+            ku * (r[2] - s * f[2]),
+        ];
+        let dv = [
+            kv * (up[0] - t * f[0]),
+            kv * (up[1] - t * f[1]),
+            kv * (up[2] - t * f[2]),
+        ];
+        (du, dv)
     }
 
-    /// Flat index of cube cell `(col, row)` of `face`, crossing the seam when either runs
-    /// off the face.
+    /// Flat index of cell `(col, row)` of `face`, crossing the seam when either runs off
+    /// the face.
     ///
-    /// The out-of-range case re-projects the direction of the cell it was asked for instead
-    /// of consulting an edge table: it cannot disagree with `project`, and it costs a `tan`
-    /// and an `atan2` on the few per cent of taps that fall on a seam. At a cube corner the
-    /// fourth neighbor does not exist and this lands on one of the other three, which is
-    /// the usual way to handle the eight cells where that happens.
+    /// Off the face it re-projects the direction of the requested cell rather than
+    /// consulting an edge table, so it cannot disagree with `project`. At a cube corner the
+    /// fourth neighbor does not exist and this lands on one of the other three.
     #[inline]
     fn cube_cell(&self, face: usize, col: i32, row: i32) -> usize {
-        let n = self.w as i32;
+        let n = self.n as i32;
         if col >= 0 && col < n && row >= 0 && row < n {
-            return (face * self.w + row as usize) * self.w + col as usize;
+            return (face * self.n + row as usize) * self.n + col as usize;
         }
         let size = n as f32;
         let s = eac_inv(2.0 * (col as f32 + 0.5) / size - 1.0);
@@ -275,133 +208,111 @@ impl Map {
         ((f2 * n + r2) * n + c2) as usize
     }
 
+    /// Face, top-left tap `(col, row)` and fractional position of a bilinear read at
+    /// `(u, v)`.
+    #[inline]
+    fn locate(&self, u: f32, v: f32) -> (usize, i32, i32, f32, f32) {
+        let n = self.n as i32;
+        let face = ((v as i32) / n).clamp(0, 5);
+        let uc = u - 0.5;
+        let vc = v - 0.5 - (face * n) as f32;
+        let (u0, v0) = (uc.floor(), vc.floor());
+        (face as usize, u0 as i32, v0 as i32, uc - u0, vc - v0)
+    }
+
     /// The four cells a bilinear read at `(u, v)` draws on, and its fractional position:
     /// `[(u0, v0), (u1, v0), (u0, v1), (u1, v1)]`.
     #[inline]
     fn cell_indices(&self, u: f32, v: f32) -> ([usize; 4], f32, f32) {
-        let uc = u - 0.5;
-        match self.projection {
-            Projection::EqualArea => {
-                let vc = v - 0.5;
-                let u0f = uc.floor();
-                let v0f = vc.floor();
-                let (fu, fv) = (uc - u0f, vc - v0f);
-                let w = self.w as i32;
-                let h = self.h as i32;
-                // u lies in [0, W], so u0 is in [-1, W]: one conditional wrap each side.
-                let mut u0 = u0f as i32;
-                if u0 < 0 {
-                    u0 += w;
-                } else if u0 >= w {
-                    u0 -= w;
-                }
-                let mut u1 = u0 + 1;
-                if u1 >= w {
-                    u1 -= w;
-                }
-                let (u0, u1) = (u0 as usize, u1 as usize);
-                let v0 = (v0f as i32).clamp(0, h - 1) as usize * self.w;
-                let v1 = (v0f as i32 + 1).clamp(0, h - 1) as usize * self.w;
-                ([v0 + u0, v0 + u1, v1 + u0, v1 + u1], fu, fv)
-            }
-            Projection::Cube => {
-                let n = self.w as i32;
-                let face = ((v as i32) / n).clamp(0, 5);
-                let vc = v - 0.5 - (face * n) as f32;
-                let u0f = uc.floor();
-                let v0f = vc.floor();
-                let (fu, fv) = (uc - u0f, vc - v0f);
-                let face = face as usize;
-                let (c0, r0) = (u0f as i32, v0f as i32);
-                (
-                    [
-                        self.cube_cell(face, c0, r0),
-                        self.cube_cell(face, c0 + 1, r0),
-                        self.cube_cell(face, c0, r0 + 1),
-                        self.cube_cell(face, c0 + 1, r0 + 1),
-                    ],
-                    fu,
-                    fv,
-                )
-            }
-        }
+        let (face, c0, r0, fu, fv) = self.locate(u, v);
+        (
+            [
+                self.cube_cell(face, c0, r0),
+                self.cube_cell(face, c0 + 1, r0),
+                self.cube_cell(face, c0, r0 + 1),
+                self.cube_cell(face, c0 + 1, r0 + 1),
+            ],
+            fu,
+            fv,
+        )
     }
 
-    /// The cell `(dcol, drow)` away, or `None` where the grid genuinely ends (the two
-    /// polar rows of the equal-area grid; the cube has no edges).
+    /// The 4x4 cells around a bilinear read at `(u, v)`, rows then columns, in the
+    /// coordinates of the face the read lands on, and the read's fractional position
+    /// within the middle 2x2.
+    ///
+    /// Gradients are differenced within this patch, so a cell across a seam is
+    /// differenced along the reading face's axes rather than its own, rotated ones.
     #[inline]
-    fn neighbor(&self, idx: usize, dcol: i32, drow: i32) -> Option<usize> {
-        match self.projection {
-            Projection::EqualArea => {
-                let row = (idx / self.w) as i32 + drow;
-                if row < 0 || row >= self.h as i32 {
-                    return None;
+    fn patch(&self, u: f32, v: f32) -> ([usize; 16], f32, f32) {
+        let (face, c0, r0, fu, fv) = self.locate(u, v);
+        let (c0, r0, n) = (c0 - 1, r0 - 1, self.n as i32);
+        let mut out = [0usize; 16];
+        if c0 >= 0 && c0 + 3 < n && r0 >= 0 && r0 + 3 < n {
+            let base = (face * self.n + r0 as usize) * self.n + c0 as usize;
+            for i in 0..4 {
+                for j in 0..4 {
+                    out[4 * i + j] = base + i * self.n + j;
                 }
-                let col = ((idx % self.w) as i32 + dcol).rem_euclid(self.w as i32);
-                Some(row as usize * self.w + col as usize)
             }
-            Projection::Cube => {
-                let n = self.w;
-                let (face, rem) = (idx / (n * n), idx % (n * n));
-                Some(self.cube_cell(face, (rem % n) as i32 + dcol, (rem / n) as i32 + drow))
+        } else {
+            for i in 0..4 {
+                for j in 0..4 {
+                    out[4 * i + j] = self.cube_cell(face, c0 + j as i32, r0 + i as i32);
+                }
             }
         }
-    }
-
-    /// Central-difference gradient of the mean at `idx`, one-sided at unseen neighbors;
-    /// the cell itself is known to be seen.
-    #[inline]
-    fn cell_gradient(&self, idx: usize, w_min: f32) -> (f32, f32) {
-        let m = self.mean[idx];
-        let seen = |n: Option<usize>| match n {
-            Some(i) if self.weight[i] >= w_min => self.mean[i],
-            _ => m,
-        };
-        let ml = seen(self.neighbor(idx, -1, 0));
-        let mr = seen(self.neighbor(idx, 1, 0));
-        let gx = if ml == m || mr == m {
-            mr - ml
-        } else {
-            0.5 * (mr - ml)
-        };
-        let mu = seen(self.neighbor(idx, 0, -1));
-        let md = seen(self.neighbor(idx, 0, 1));
-        let gy = if mu == m || md == m {
-            md - mu
-        } else {
-            0.5 * (md - mu)
-        };
-        (gx, gy)
+        (out, fu, fv)
     }
 
     /// Bilinear sample with a smooth gradient; `None` unless all four neighboring cells
-    /// have weight >= `w_min`. The gradient interpolates central differences of the
-    /// neighboring cells, which keeps the alignment Jacobian continuous across cells.
+    /// are seen. The gradient interpolates central differences of those cells (one-sided
+    /// at unseen neighbors), which keeps the alignment Jacobian continuous across cells.
     #[inline]
-    pub fn sample(&self, u: f32, v: f32, w_min: f32, w_sat: f32) -> Option<Sample> {
-        let ([i00, i10, i01, i11], fu, fv) = self.cell_indices(u, v);
+    pub fn sample(&self, u: f32, v: f32) -> Option<Sample> {
+        let (p, fu, fv) = self.patch(u, v);
         let (w00, w10, w01, w11) = (
-            self.weight[i00],
-            self.weight[i10],
-            self.weight[i01],
-            self.weight[i11],
+            self.weight[p[5]],
+            self.weight[p[6]],
+            self.weight[p[9]],
+            self.weight[p[10]],
         );
-        if w00 < w_min || w10 < w_min || w01 < w_min || w11 < w_min {
+        if w00 < W_MIN || w10 < W_MIN || w01 < W_MIN || w11 < W_MIN {
             return None;
         }
         let (m00, m10, m01, m11) = (
-            self.mean[i00],
-            self.mean[i10],
-            self.mean[i01],
-            self.mean[i11],
+            self.mean[p[5]],
+            self.mean[p[6]],
+            self.mean[p[9]],
+            self.mean[p[10]],
         );
         let top = m00 + fu * (m10 - m00);
         let bot = m01 + fu * (m11 - m01);
         let value = top + fv * (bot - top);
-        let (gx00, gy00) = self.cell_gradient(i00, w_min);
-        let (gx10, gy10) = self.cell_gradient(i10, w_min);
-        let (gx01, gy01) = self.cell_gradient(i01, w_min);
-        let (gx11, gy11) = self.cell_gradient(i11, w_min);
+        let seen = |k: usize, m: f32| {
+            if self.weight[p[k]] >= W_MIN {
+                self.mean[p[k]]
+            } else {
+                m
+            }
+        };
+        let diff = |a: f32, b: f32, m: f32| {
+            if a == m || b == m {
+                b - a
+            } else {
+                0.5 * (b - a)
+            }
+        };
+        let grad = |k: usize, m: f32| {
+            (
+                diff(seen(k - 1, m), seen(k + 1, m), m),
+                diff(seen(k - 4, m), seen(k + 4, m), m),
+            )
+        };
+        let (gx00, gy00) = grad(5, m00);
+        let (gx10, gy10) = grad(6, m10);
+        let (gx01, gy01) = grad(9, m01);
+        let (gx11, gy11) = grad(10, m11);
         let gxt = gx00 + fu * (gx10 - gx00);
         let gxb = gx01 + fu * (gx11 - gx01);
         let gyt = gy00 + fu * (gy10 - gy00);
@@ -410,7 +321,7 @@ impl Map {
         let dv = gyt + fv * (gyb - gyt);
         let wt = w00 + fu * (w10 - w00);
         let wb = w01 + fu * (w11 - w01);
-        let confidence = ((wt + fv * (wb - wt)) / w_sat).min(1.0);
+        let confidence = ((wt + fv * (wb - wt)) / W_SAT).min(1.0);
         Some(Sample {
             value,
             du,
@@ -419,38 +330,30 @@ impl Map {
         })
     }
 
-    /// Add one observation at `(u, v)` with bilinear footprint, decaying old evidence by
-    /// `lambda` and capping the weight at `w_max`; marks the cells in `touched` if given.
-    /// `scale` multiplies the footprint, so a less trustworthy pixel counts for less.
+    /// Add one observation of weight `w` at `(u, v)` with a bilinear footprint, capping
+    /// the cell weights at `w_max`; marks the cells in `touched` if given.
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     pub fn splat(
         &mut self,
         u: f32,
         v: f32,
         value: f32,
-        lambda: f32,
+        w: f32,
         w_max: f32,
-        scale: f32,
-        touched: Option<&mut Touched>,
+        mut touched: Option<&mut Touched>,
     ) {
-        if scale <= 0.0 {
-            return;
-        }
         let ([i00, i10, i01, i11], fu, fv) = self.cell_indices(u, v);
         let cells = [
-            (i00, scale * (1.0 - fu) * (1.0 - fv)),
-            (i10, scale * fu * (1.0 - fv)),
-            (i01, scale * (1.0 - fu) * fv),
-            (i11, scale * fu * fv),
+            (i00, w * (1.0 - fu) * (1.0 - fv)),
+            (i10, w * fu * (1.0 - fv)),
+            (i01, w * (1.0 - fu) * fv),
+            (i11, w * fu * fv),
         ];
-        let mut touched = touched;
         for (idx, b) in cells {
             if b <= 0.0 {
                 continue;
             }
-            let w_old = self.weight[idx] * lambda;
-            let w_new = w_old + b;
+            let w_new = self.weight[idx] + b;
             self.mean[idx] += b * (value - self.mean[idx]) / w_new;
             self.weight[idx] = w_new.min(w_max);
             if let Some(t) = touched.as_deref_mut() {
@@ -471,40 +374,19 @@ impl Map {
             .zip(&self.weight)
             .map(|(m, w)| m * w)
             .collect();
-        let cube = self.projection == Projection::Cube;
-        // A cube blurs face by face, clamping at their edges. A seam-correct blur would
-        // mean resampling the whole map, for a pyramid whose only job is to widen the
-        // basin of attraction; a one-cell artifact along twelve edges does not affect that.
-        let (sum_wm, sum_w) = if cube {
-            (
-                self.per_face(&wm, |src, n| box_blur(src, n, n, radius, false)),
-                self.per_face(&self.weight, |src, n| box_blur(src, n, n, radius, false)),
-            )
-        } else {
-            (
-                box_blur(&wm, self.w, self.h, radius, true),
-                box_blur(&self.weight, self.w, self.h, radius, true),
-            )
-        };
-        let w2 = (self.w / factor).max(1);
-        let mut out = if cube {
-            Map::cube(w2)
-        } else {
-            Map::new(w2, (self.h / factor).max(1))
-        };
-        let h2 = out.h;
-        for y in 0..h2 {
-            for x in 0..w2 {
-                // Sample the blurred field at the center of each decimated block; on a cube
-                // each face decimates on its own, so the row is taken within the face.
-                let yy = if cube {
-                    (y / w2) * self.w + ((y % w2) * factor + factor / 2).min(self.w - 1)
-                } else {
-                    (y * factor + factor / 2).min(self.h - 1)
-                };
-                let xx = (x * factor + factor / 2).min(self.w - 1);
-                let i = yy * self.w + xx;
-                let o = y * w2 + x;
+        // Faces are blurred one at a time, clamped at their edges: the pyramid only widens
+        // the basin of attraction, which a one-cell artifact along the seams does not hurt.
+        let sum_wm = self.per_face(&wm, |src, n| box_blur(src, n, n, radius));
+        let sum_w = self.per_face(&self.weight, |src, n| box_blur(src, n, n, radius));
+        let n2 = (self.n / factor).max(1);
+        let mut out = Map::new(n2);
+        for y in 0..6 * n2 {
+            for x in 0..n2 {
+                // The center of each decimated block, row taken within its face.
+                let yy = (y / n2) * self.n + ((y % n2) * factor + factor / 2).min(self.n - 1);
+                let xx = (x * factor + factor / 2).min(self.n - 1);
+                let i = yy * self.n + xx;
+                let o = y * n2 + x;
                 out.weight[o] = sum_w[i];
                 out.mean[o] = if sum_w[i] > 1e-6 {
                     sum_wm[i] / sum_w[i]
@@ -516,13 +398,13 @@ impl Map {
         out
     }
 
-    /// Apply a whole-image operation to each cube face in turn.
+    /// Apply a whole-image operation to each face in turn.
     fn per_face<T: Copy + Default, F: Fn(&[T], usize) -> Vec<T>>(
         &self,
         src: &[T],
         op: F,
     ) -> Vec<T> {
-        let n = self.w;
+        let n = self.n;
         let mut out = vec![T::default(); src.len()];
         for f in 0..6 {
             let span = f * n * n..(f + 1) * n * n;
@@ -531,13 +413,9 @@ impl Map {
         out
     }
 
-    /// Drop everything outside a `margin`-cell dilation of the `touched` cells.
-    pub fn forget_outside(&mut self, touched: &[u8], margin: usize) {
-        let keep = if self.projection == Projection::Cube {
-            self.per_face(touched, |src, n| dilate(src, n, n, margin, false))
-        } else {
-            dilate(touched, self.w, self.h, margin, true)
-        };
+    /// Drop everything outside a `FORGET_MARGIN`-cell dilation of the `touched` cells.
+    pub fn forget_outside(&mut self, touched: &[u8]) {
+        let keep = self.per_face(touched, |src, n| dilate(src, n, n, FORGET_MARGIN));
         for (i, k) in keep.iter().enumerate() {
             if *k == 0 {
                 self.weight[i] = 0.0;
@@ -547,8 +425,8 @@ impl Map {
     }
 }
 
-/// Mean over a `(2r+1)^2` window; longitude wraps when `wrap_u`, rows are clamped.
-pub fn box_blur(src: &[f32], w: usize, h: usize, radius: usize, wrap_u: bool) -> Vec<f32> {
+/// Mean over a `(2r+1)^2` window, clamped at the edges.
+pub fn box_blur(src: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
     let r = radius as i64;
     let mut tmp = vec![0.0f32; w * h];
     let norm = 1.0 / ((2 * r + 1) as f32);
@@ -558,12 +436,7 @@ pub fn box_blur(src: &[f32], w: usize, h: usize, radius: usize, wrap_u: bool) ->
         for x in 0..w as i64 {
             let mut s = 0.0f32;
             for d in -r..=r {
-                let xx = if wrap_u {
-                    (x + d).rem_euclid(w as i64)
-                } else {
-                    (x + d).clamp(0, w as i64 - 1)
-                };
-                s += row[xx as usize];
+                s += row[(x + d).clamp(0, w as i64 - 1) as usize];
             }
             out[x as usize] = s * norm;
         }
@@ -582,8 +455,8 @@ pub fn box_blur(src: &[f32], w: usize, h: usize, radius: usize, wrap_u: bool) ->
     out
 }
 
-/// Binary dilation with a square structuring element; `wrap_u` wraps in u, else clamps.
-pub fn dilate(mask: &[u8], w: usize, h: usize, margin: usize, wrap_u: bool) -> Vec<u8> {
+/// Binary dilation with a square structuring element, clamped at the edges.
+pub fn dilate(mask: &[u8], w: usize, h: usize, margin: usize) -> Vec<u8> {
     let r = margin as i64;
     let mut out = vec![0u8; w * h];
     for y in 0..h as i64 {
@@ -592,11 +465,7 @@ pub fn dilate(mask: &[u8], w: usize, h: usize, margin: usize, wrap_u: bool) -> V
             'outer: for dy in -r..=r {
                 let yy = (y + dy).clamp(0, h as i64 - 1) as usize;
                 for dx in -r..=r {
-                    let xx = if wrap_u {
-                        (x + dx).rem_euclid(w as i64)
-                    } else {
-                        (x + dx).clamp(0, w as i64 - 1)
-                    } as usize;
+                    let xx = (x + dx).clamp(0, w as i64 - 1) as usize;
                     if mask[yy * w + xx] != 0 {
                         hit = 1;
                         break 'outer;
@@ -612,33 +481,7 @@ pub fn dilate(mask: &[u8], w: usize, h: usize, margin: usize, wrap_u: bool) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn splat_then_sample_recovers_value() {
-        let mut m = Map::new(64, 32);
-        for du in [-0.4f32, 0.0, 0.4] {
-            for dv in [-0.4f32, 0.0, 0.4] {
-                m.splat(10.5 + du, 7.5 + dv, 2.0, 1.0, 100.0, 1.0, None);
-            }
-        }
-        let s = m.sample(10.5, 7.5, 0.1, 1.0).expect("seen");
-        assert!((s.value - 2.0).abs() < 1e-5);
-        assert!(m.sample(40.0, 7.5, 0.1, 1.0).is_none());
-    }
-
-    #[test]
-    fn fast_atan2_is_accurate() {
-        for &(y, x) in &[
-            (0.3f32, 0.9f32),
-            (-0.7, 0.2),
-            (0.5, -0.5),
-            (-0.1, -0.99),
-            (1.0, 0.0),
-            (0.0, -1.0),
-        ] {
-            assert!((fast_atan2(y, x) - y.atan2(x)).abs() < 2e-5, "{y} {x}");
-        }
-    }
+    use std::f32::consts::FRAC_PI_2;
 
     fn unit(v: [f32; 3]) -> [f32; 3] {
         let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -647,21 +490,32 @@ mod tests {
 
     /// Direction of the point at map coordinates `(u, v)`; the inverse of `project`.
     fn unproject(m: &Map, u: f32, v: f32) -> [f32; 3] {
-        match m.projection {
-            Projection::EqualArea => {
-                let lon = u / (m.w as f32) * 2.0 * PI - PI;
-                let y = 1.0 - 2.0 * v / (m.h as f32);
-                let r = (1.0 - y * y).max(0.0).sqrt();
-                [r * lon.sin(), y, r * lon.cos()]
-            }
-            Projection::Cube => {
-                let n = m.w as f32;
-                let face = ((v / n) as usize).min(5);
-                let s = eac_inv(2.0 * u / n - 1.0);
-                let t = eac_inv(1.0 - 2.0 * (v - face as f32 * n) / n);
-                unit(face_direction(face, s, t))
+        let n = m.n as f32;
+        let face = ((v / n) as usize).min(5);
+        let s = eac_inv(2.0 * u / n - 1.0);
+        let t = eac_inv(1.0 - 2.0 * (v - face as f32 * n) / n);
+        unit(face_direction(face, s, t))
+    }
+
+    /// Deterministic pseudo-random numbers in `[-1, 1)`.
+    fn lcg(mut seed: u32) -> impl FnMut() -> f32 {
+        move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 16777216.0 * 2.0 - 1.0
+        }
+    }
+
+    #[test]
+    fn splat_then_sample_recovers_value() {
+        let mut m = Map::new(32);
+        for du in [-0.4f32, 0.0, 0.4] {
+            for dv in [-0.4f32, 0.0, 0.4] {
+                m.splat(10.5 + du, 7.5 + dv, 2.0, 1.0, 100.0, None);
             }
         }
+        let s = m.sample(10.5, 7.5).expect("seen");
+        assert!((s.value - 2.0).abs() < 1e-5);
+        assert!(m.sample(25.0, 7.5).is_none());
     }
 
     /// The Jacobian must be the derivative of the projection, on every face.
@@ -695,63 +549,47 @@ mod tests {
 
     #[test]
     fn projection_is_consistent_with_jacobian() {
-        check_jacobian(&Map::new(360, 180), [0.3, 0.2, 0.9]);
-    }
-
-    #[test]
-    fn cube_projection_is_consistent_with_jacobian() {
-        let m = Map::cube(64);
+        let m = Map::new(64);
         // The center of each face, an edge, a corner, and a point either side of a seam.
-        for (f, r, u) in FACES {
-            check_jacobian(&m, f);
-            check_jacobian(&m, face_direction_of(f, r, u, 0.4, -0.7));
-            check_jacobian(&m, face_direction_of(f, r, u, 0.97, 0.93));
+        for face in 0..6 {
+            check_jacobian(&m, FACES[face].0);
+            check_jacobian(&m, face_direction(face, 0.4, -0.7));
+            check_jacobian(&m, face_direction(face, 0.97, 0.93));
         }
     }
 
-    fn face_direction_of(f: [f32; 3], r: [f32; 3], u: [f32; 3], s: f32, t: f32) -> [f32; 3] {
-        [
-            f[0] + s * r[0] + t * u[0],
-            f[1] + s * r[1] + t * u[1],
-            f[2] + s * r[2] + t * u[2],
-        ]
-    }
-
     #[test]
-    fn cube_projection_round_trips() {
-        let m = Map::cube(48);
-        let mut seed = 12345u32;
-        let mut next = || {
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            (seed >> 8) as f32 / 16777216.0 * 2.0 - 1.0
-        };
+    fn projection_round_trips() {
+        let m = Map::new(48);
+        let mut next = lcg(12345);
         for _ in 0..2000 {
             let p = unit([next(), next(), next()]);
             let (u, v) = m.project(p);
-            assert!((0.0..m.w as f32).contains(&u), "u {u}");
-            assert!((0.0..m.h as f32).contains(&v), "v {v}");
+            assert!((0.0..m.n as f32).contains(&u), "u {u}");
+            assert!((0.0..(6 * m.n) as f32).contains(&v), "v {v}");
             let q = unproject(&m, u, v);
             assert!(dot(p, q) > 1.0 - 1e-6, "{p:?} -> {q:?}");
         }
     }
 
     #[test]
-    fn cube_seams_join_neighboring_faces() {
+    fn seams_join_neighboring_faces() {
         let n = 32;
-        let m = Map::cube(n);
+        let m = Map::new(n);
         // A texel at the face center spans pi/2 / n; the seam neighbor of an edge cell
         // must be its actual neighbor on the sphere, not a clamp back onto the same cell.
         let limit = 1.5 * FRAC_PI_2 / n as f32;
         for face in 0..6 {
-            for k in 0..n {
+            for k in 0..n as i32 {
+                let last = n as i32 - 1;
                 for (col, row, dcol, drow) in [
-                    (0i32, k as i32, -1i32, 0i32),
-                    (n as i32 - 1, k as i32, 1, 0),
-                    (k as i32, 0, 0, -1),
-                    (k as i32, n as i32 - 1, 0, 1),
+                    (0, k, -1, 0),
+                    (last, k, 1, 0),
+                    (k, 0, 0, -1),
+                    (k, last, 0, 1),
                 ] {
                     let idx = (face * n + row as usize) * n + col as usize;
-                    let other = m.neighbor(idx, dcol, drow).expect("cube has no edges");
+                    let other = m.cube_cell(face, col + dcol, row + drow);
                     assert_ne!(other, idx, "face {face} cell ({col}, {row})");
                     let a = unproject(&m, col as f32 + 0.5, (face * n) as f32 + row as f32 + 0.5);
                     let b = unproject(&m, (other % n) as f32 + 0.5, (other / n) as f32 + 0.5);
@@ -763,8 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn cube_splat_conserves_weight_over_a_seam() {
-        let n = 16;
+    fn splat_conserves_weight_over_a_seam() {
         for (u, v) in [
             (8.5f32, 8.5f32),
             (0.0, 8.5),
@@ -772,10 +609,47 @@ mod tests {
             (8.5, 16.0),
             (0.0, 0.0),
         ] {
-            let mut m = Map::cube(n);
-            m.splat(u, v, 1.0, 1.0, 1e6, 1.0, None);
+            let mut m = Map::new(16);
+            m.splat(u, v, 1.0, 1.0, 1e6, None);
             let total: f32 = m.weight.iter().sum();
             assert!((total - 1.0).abs() < 1e-5, "({u}, {v}) deposited {total}");
         }
+    }
+
+    /// On a texture linear in the direction, the sampled gradient must match the true
+    /// tangent gradient where the taps straddle a seam too, whose neighboring face has
+    /// rotated axes.
+    #[test]
+    fn gradient_is_right_across_seams() {
+        let mut m = Map::new(104);
+        let a = [0.3f32, -0.8, 0.5];
+        for idx in 0..m.mean.len() {
+            let (row, col) = (idx / m.n, idx % m.n);
+            m.mean[idx] = dot(a, unproject(&m, col as f32 + 0.5, row as f32 + 0.5));
+            m.weight[idx] = 1.0;
+        }
+        let mut next = lcg(777);
+        let mut errors = Vec::new();
+        while errors.len() < 2000 {
+            let p = unit([next(), next(), next()]);
+            let (u, v) = m.project(p);
+            let (cells, _, _) = m.cell_indices(u, v);
+            let ap = dot(a, p);
+            let t = [a[0] - ap * p[0], a[1] - ap * p[1], a[2] - ap * p[2]];
+            let t_norm = dot(t, t).sqrt();
+            if cells.iter().all(|&c| c / (m.n * m.n) == face_of(p)) || t_norm < 0.2 {
+                continue;
+            }
+            let s = m.sample(u, v).expect("seen");
+            let (du, dv) = m.projection_jacobian(p);
+            let g: Vec<f32> = (0..3).map(|i| s.du * du[i] + s.dv * dv[i]).collect();
+            let gp = dot([g[0], g[1], g[2]], p);
+            let e: Vec<f32> = (0..3).map(|i| g[i] - gp * p[i] - t[i]).collect();
+            errors.push(dot([e[0], e[1], e[2]], [e[0], e[1], e[2]]).sqrt() / t_norm);
+        }
+        errors.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let (median, max) = (errors[errors.len() / 2], errors[errors.len() - 1]);
+        // Differencing each tap along its own face's axes fails this by a wide margin.
+        assert!(median < 0.12 && max < 0.4, "median {median}, max {max}");
     }
 }

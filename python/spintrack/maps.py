@@ -1,15 +1,11 @@
-"""Save and load surface maps, including conversion of FicTrac sphere-map templates.
+"""Save, load and render surface maps, including FicTrac sphere-map templates.
 
 spintrack's native format is an `.npz` with `mean` and `weight` arrays (float32, shape
-`(map_h, map_w)`) plus the window size they were built for. Version 3 also names the
-projection, though the shape gives it away: an equal-area map is `(h, 2h)` and a cube
-map `(6 face, face)`, so `projection_of` can read it off an array of either. Version 2
-may also carry the static illumination fields (`illum_bias`, `illum_gain`, `illum_wt`,
-shaped like the window): those describe the rig rather than the ball, and on the lab
-recordings they come out near-identical from one trial to the next, so a run can start
-from a measured field instead of learning it again. FicTrac templates are PNG images
-whose pixels are 0 (dark), 255 (bright) or 128 (unseen) on an equal-area grid that is
-mirrored both ways relative to spintrack's, so they are flipped and rescaled on import.
+`(6 face, face)`: the cube faces stacked as in `rust/src/map.rs`), the window size they
+were built for and, optionally, the static illumination field (`illum_bias`, shaped like
+the window), which describes the rig rather than the ball. Maps on the equal-area grid
+`(h, 2h)` - FicTrac's PNG templates (0 dark, 255 bright, 128 unseen, mirrored both ways
+relative to spintrack) and older native maps - are read too and resampled onto the cube.
 """
 
 from __future__ import annotations
@@ -21,7 +17,7 @@ import cv2
 import numpy as np
 
 FORMAT_VERSION = 3
-ILLUM_KEYS = ("illum_bias", "illum_gain", "illum_wt")
+ILLUM_KEYS = ("illum_bias", "illum_gain")
 UNSEEN = 128  # the mid-gray FicTrac uses for a tile it has never looked at
 CONTRAST = 40.0  # normalized intensity per gray level, shared by every map rendering
 
@@ -79,9 +75,9 @@ def projection_of(shape: tuple[int, int]) -> str:
 def map_directions(shape: tuple[int, int]) -> np.ndarray:
     """Unit vector of every map cell, in the ball's body frame, shaped `(h, w, 3)`.
 
-    Inverse of the projection the solver uses: for an equal-area map, longitude about
-    the window y axis and latitude by equal area, so every cell covers the same solid
-    angle; for a cube map, the six faces of `cube_directions` stacked in `_FACE_ORDER`.
+    For a cube map, the six faces of `cube_directions` stacked in `_FACE_ORDER`, as the
+    solver projects them; for an equal-area map, longitude about the window y axis and
+    latitude by equal area.
     """
     h, w = shape
     if projection_of(shape) == "cube":
@@ -229,20 +225,6 @@ def _taps(
     """`_tap_cells` plus the weights of the cells it lands on."""
     flat, share = _tap_cells(mean.shape, dirs)
     return flat, share, weight.reshape(-1)[flat]
-
-
-def sample_map(
-    mean: np.ndarray, weight: np.ndarray, dirs: np.ndarray, w_min: float = 0.1
-) -> tuple[np.ndarray, np.ndarray]:
-    """Read the map along `dirs`, mirroring `Map::sample` in `rust/src/map.rs`.
-
-    Plain bilinear in `mean`, so any array on the same grid can be passed in its place;
-    a direction counts as seen only when all four cells it draws on are, which is the
-    rule the solver uses to decide a pixel has anything to match against.
-    """
-    flat, share, taps = _taps(mean, weight, dirs)
-    value = np.einsum("k...,k...->...", share, mean.reshape(-1)[flat])
-    return value.astype(np.float32), np.all(taps >= w_min, axis=0)
 
 
 def resample_map(

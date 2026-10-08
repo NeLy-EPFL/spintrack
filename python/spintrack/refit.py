@@ -1,234 +1,123 @@
-"""Follow a ball that moves in its holder, without losing the surface map.
+"""Follow a ball that moves in its holder, so its movement is not read as rotation.
 
-A ball that sinks in its holder mid-recording leaves the tracking window looking at the
-wrong part of the image, and the solver quietly absorbs the translation into the
-rotation: a window left `d` pixels behind the ball reads the ball's own movement as a
-rotation of about `d / r` radians. The photometric cost cannot say where the ball is. By
-the time it has risen the map has been built through the displaced window and the two
-agree with each other, and on the lab ball it is flat over +-6 px of window shift
-anyway. So the window is placed by measuring the ball's silhouette, on every frame.
+A window left `d` pixels behind the ball reads the ball's own movement as a rotation of
+about `d / r`, and the photometric cost cannot tell, so `CenterWatch` measures the
+silhouette on every frame (`detect.RimLook`) and says where the window should be. The
+look's radius is measured on the first frames rather than taken from the config: a look
+held even half a percent too large climbs whatever stands past the rim. While the ball
+rests its looks feed a slow filter and the window stays put, because the animal at the
+rim pulls the look a few pixels for tens of frames; a move is followed once several
+looks in a row lie well away from the window, and then the window sits on a causal
+estimate that averages the looks while the ball moves steadily and shrinks to the last
+few through a jerk. Positions are displacements from a reference taken over the first
+looks, so the config's circle and the look need not agree.
 
-The measurement is `detect.relocate_ball`: the rim of a circle of the *known* radius,
-fitted in a band about where the ball is predicted to be, from the current frame alone
-(0.7 ms on a 1600 x 1008 frame with a 518 px ball, of the 1.2 ms per frame the whole
-follower costs there). Two details make it usable on every frame.
-
-- The fit's outlier cut is fixed at 1% of the radius, annealed down from the band,
-  rather than estimated from the residuals. On trial 004 the animal's body stands past
-  the rim at the top of the ball, and a scale taken from the residuals grows to
-  accommodate those rays: a look seeded on the previous answer then climbs the animal's
-  back a few pixels per frame and walks off the ball (250 px in 400 frames). With the
-  fixed cut the same iteration stays within a couple of pixels of one place.
-- The seed is the last accepted look carried by a velocity, never the smoothed
-  position. The look tolerates a seed up to about half its band off and pulls larger
-  errors part of the way in, so a look whose answer lands far from its seed is repeated
-  once from that answer, and a look that fails is tried again from where the last look
-  left the ball (it may have stopped) and, while the ball rests, from where its last few
-  looks were heading (it may have started to fall). Seeded on the smoothed position,
-  004's fall put the seed 12-27 px behind, the rim fraction collapsed and the ball was
-  lost for 25 frames.
-
-While the ball rests, its looks feed a slow alpha-beta filter and the window does not
-move at all: the look scatters about a pixel per axis and excursions of up to 5 px last
-tens of frames (the animal at the rim), and a window that chased them would turn each
-one into rotation. A look farther than `INNOVATION_GATE` of the band from the filter is
-not believed, and the filter's gains are slow so that a few frames of such an excursion
-cannot carry it past `T_MOVE`, which on the synthetic `lab_small_ball` put 0.26 deg
-spikes into a run whose ball never moved. A move is followed once `CONFIRM_FRAMES` looks
-in a row lie beyond `T_MOVE_FAST` of the window; a creep, the filtered position beyond
-`T_MOVE` for `CONFIRM_SLOW_FRAMES`, only nudges the window a step towards it. The
-animal's body pulls the look 3-8 px toward itself for up to 80 frames at a time, and
-each such excursion taken for a move cost `lab_small_ball` a tenth of its p95 error and
-2 deg/min of drift. The fast
-test is made on the looks themselves, counting those the filter's gate or the residual
-gate refused. Made on the filter, 004's first jerk let the ball fall 45 px before the
-window moved; and a ball that has dropped can show less of its rim (the frame's edge,
-the legs), which on the synthetic drops raises its residual 20-50% over the resting
-level.
-
-While following, the window sits on `causal_estimate` of the looks taken since the move
-began: it leans on the longest of a set of straight-line fits over the last 2 to 64
-frames whose value now stays within `FOLLOW_BOUND` times `T_MOVE` of every shorter
-one's and of the latest look. Where the ball moves steadily the long fits average the
-looks' jitter away; through a jerk they fall behind, and the span shrinks to the last
-few looks, so the window keeps up rather than lagging and then overshooting as a filter
-of fixed gains does. The cut is soft (each fit fades out as it nears the bound): with a
-hard one the window jumped by up to the bound whenever a fit flipped in or out, which
-right after a jerk happened from one frame to the next. The fits never reach back past
-the start of the move, where a line through the resting ball and the moving one ran
-several pixels past a ball that had stopped. A moving ball's look is judged against its
-own seed rather than the filter, its residual is learned afresh at the new place, and
-following ends once the window has stayed within half of `T_MOVE` for `STILL_FRAMES`,
-leaving it at the median of those frames rather than on the last of them.
-`detect.detect_ball` on a downscaled buffer, the look that needs no seed, recovers a
-rim look that has failed for `COAST_FRAMES` in a row; its buffer is kept while
-following and while a resting ball's look is failing, so a ball that jumps farther in a
-frame than any seed reaches is found again. The window is moved before the frame it was
-placed for is tracked (`Tracker.process_frame`), not after.
-
-Measured on trial 004, whose ball falls 205 px in three jerks of 50-65 px, each over
-about ten frames (up to 12 px a frame), and climbs back over 400 frames, against a
-lag-free reference (each frame's rim look iterated to convergence): over the jerks, the
-window each frame is tracked in is 5.2 px from the ball at p95 and 18 at worst, against
-42 and 49 for the filter-driven follower this replaces, which trailed the ball by eight
-frames and overshot each jerk by 10 px. The optical-flow cross-check, run on a patch
-carried with the ball, goes from 5.6 to 3.1 px rms along the fall over the jerks. (A
-patch fixed in the image reads the fall itself, which a window that lags the ball also
-reads as rotation, so that version of the check rewards lag.) With exact truth, on a
-synthetic drop of the same shape at the rig's scale (`lab_jerky_drop`), the rotation
-error over the jerks goes from 0.53 to 0.12 deg (median) and from 1.46 to 0.67 (p95),
-and on `ball_drop`'s slow excursion from 0.060 to 0.053 (median) and 0.20 to 0.16
-(p95).
-
-Every position is a displacement from a reference taken over the first accepted looks,
-never an absolute position, so a systematic difference between the look and whatever
-fitted the config's circle (3.5 px on 004) does not move a still ball's window. The map
-is not thrown away when the window moves: it is stored in the window frame at `R = I`,
-which is the ball's own body frame, so changing the window only re-expresses the current
-orientation. See `Tracker.refit_center`.
-
-The delay that remains online is structural: the confirmation that keeps a still ball's
-window still. With two passes over a recording (`Tracker.prime_from`) it goes. The
-first pass records every look it believed, `plan_window_trajectory` turns them into a
-window position per frame - interpolated, median-cleaned, smoothed by
-`_adaptive_filter`, held at the resting level by the rule above and following each move
-from the frame the ball left that level - and `ScriptedWatch` replays it in the second
-pass, which therefore measures nothing and runs faster. The smoothing is zero-phase, up
-to 12 frames wide where the ball rests or drifts and narrower through a jerk. The fixed
-six-frame Gaussian it replaces put the window up to 24 px behind 004's ball mid-jerk and
-started it moving before the ball did; over the jerks the planned window is now 2.7 px
-from the ball at p95 and 5.3 at worst, against 15 and 24, and the cross-check above goes
-from 3.7 to 2.0 px rms. With exact truth on `lab_jerky_drop` the rotation error over the
-jerks goes from 0.34 to 0.068 deg (median) and from 0.98 to 0.14 (p95). On `ball_drop`,
-a slow 0.4-radius excursion, it is 0.041 deg over the episode (median, 0.044 before)
-and 0.12 (p95, 0.11 before): the legs crossing the rim step the looks by 2-3 px, and a
-nine-frame median or a looser bound that ignored those steps there cost 004's own
-cross-check 6-11%.
+A second pass over the same recording replays a trajectory planned from all of the first
+pass's looks at once (`plan_window_trajectory`, `ScriptedWatch`), without the online
+confirmation delay.
 """
 
 from __future__ import annotations
 
 import logging
+from array import array
 from collections import deque
-from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
+from spintrack.detect import DetectionError, RimLook, detect_ball
+
 log = logging.getLogger("spintrack")
 
-# Half-width of the rim band, as a fraction of the radius with a floor for small balls,
-# and the wider band used once a look has failed. The band is the look's capture range:
-# on 004, at rest and mid-fall, a seed half a band off still lands within 2 px of the
-# answer from a good seed, and one a full band off finds nothing.
+# Half-width of the rim band (the look's capture range) and of the wider band used once
+# a look has failed, as fractions of the radius with floors for small balls.
 BAND_RADII = 0.05
 BAND_MIN_PX = 4.0
 BAND_WIDE_RADII = 0.10
-# Tukey cut of the rim fit's radial residual (see the module docstring), and how far
-# from its seed a look may land before it is repeated from where it landed.
+# The rim fit's fixed outlier cut; a look landing farther than this share of the band
+# from its seed is repeated from where it landed.
 CUT_RADII = 0.01
 CUT_MIN_PX = 2.0
 RELOOK_BAND_FRACTION = 0.25
-# What a look must show to be believed: rays that found a rim point, the directions
-# those points cover, and a residual under this multiple of the running median residual
-# of the run's looks. The gate is relative because the residual is a property of the
-# recording (blur, compression, ball size): 1.6 px on 004, where a look pulled 5 px off
-# by the animal reads 3-6. Until enough looks are in, 1% of the radius stands in for the
-# median.
+# What a look must show to be believed: rim rays found, directions covered, and a
+# residual under a multiple of the running median of the run's own looks, since blur,
+# compression and ball size set the residual.
 MIN_RIM_FRACTION = 0.3
 MIN_ARC_FRACTION = 0.25
+# A ball that has moved can show less of its rim (the frame's edge, occluders fixed in
+# the image), so a followed ball's look needs less of it.
+MIN_RIM_FRACTION_FOLLOWING = 0.2
 RESIDUAL_FACTOR = 1.2
 RESIDUAL_HISTORY = 200
 RESIDUAL_MIN_LOOKS = 20
+# Frames of free-radius looks whose median radius becomes the look's, then the looks
+# that set the reference. A silhouette radius this far from the config's is a warning,
+# unless too little of the rim is in view to tell (an ellipse's arc off the axis).
+RADIUS_FRAMES = 30
 REFERENCE_LOOKS = 60
-# Gains of the alpha-beta filter that watches a resting ball. They are slow on purpose:
-# a few frames of the animal pulling the look must not carry the filtered position past
-# `T_MOVE`, which on the synthetic `lab_small_ball` put 0.26 deg spikes into a run whose
-# ball never moved.
+RADIUS_WARN = 0.03
+RADIUS_MIN_ARC = 0.4
+# Gain of the resting ball's filter: slow, so the animal pulling the look for a few
+# frames cannot carry it past `T_MOVE`.
 ALPHA = 0.1
-BETA = 0.005
 SCATTER_MIN_PX = 0.1
-# A look farther than this fraction of the band from where it was expected is not
-# believed, unless three in a row are; and how many failed looks the follower coasts
-# through before the window freezes and the seed-independent detection is asked instead.
-# A resting ball's look is expected where the slow filter puts it, a moving ball's at
-# its own seed.
+# A look farther than this share of the band from where it was expected is not
+# believed unless three in a row are. After `COAST_FRAMES` failed looks the window
+# freezes and the seed-free detection is asked.
 INNOVATION_GATE = 0.75
 COAST_FRAMES = 8
-# The bound a resting ball's displacement must pass to count as a move: the larger of an
-# absolute floor, a fraction of the radius and a multiple of the median innovation seen
-# while still, so it sits above the look's own scatter on any recording. (A speed
-# trigger was tried and dropped: it brought the follow on 004's drop forward by two
-# frames and fired on the occluder excursions of the still synthetic scenes.)
+# A resting ball counts as displaced beyond the largest of a floor, a share of the
+# radius and a multiple of its looks' scatter.
 T_MOVE_PX = 4.0
 T_MOVE_RADII = 0.01
 T_MOVE_SCATTER = 4.0
-# A move is followed once `CONFIRM_FRAMES` looks in a row (at most two frames apart)
-# lie beyond `T_MOVE_FAST` (an absolute distance with a floor as a fraction of the
-# radius); once the filtered position has stayed beyond `T_MOVE` for
-# `CONFIRM_SLOW_FRAMES`, the window is only nudged `CREEP_STEP` of the way to it. The
-# fast bound is absolute because the look's excursions toward the animal's body are
-# 3-8 px on any ball measured (an 80 px synthetic one and the 518 px lab one alike),
-# while a drop worth following is tens of pixels. It is judged on the looks themselves,
-# not on the filter: the filter is slow so that the animal cannot drag it, and on 004's
-# first jerk it let the ball fall 45 px before the window moved.
+# A move is followed once `CONFIRM_FRAMES` looks lie beyond `T_MOVE_FAST`, which is
+# above the animal's pull on the look (3-8 px on any ball). A slow creep past `T_MOVE`
+# for `CONFIRM_SLOW_FRAMES` only nudges the window `CREEP_STEP` of the way, since moving
+# all the way would also follow the looks' wander.
 CONFIRM_FRAMES = 3
 CONFIRM_SLOW_FRAMES = 100
 CREEP_STEP = 0.3
 T_MOVE_FAST_PX = 10.0
 T_MOVE_FAST_RADII = 0.02
-# While following, `causal_estimate` places the window from the believed looks of up to
-# the last `FOLLOW_SPANS[-1]` frames, fading out a span as it comes within `FOLLOW_SOFT`
-# of the bound (`FOLLOW_BOUND` times `T_MOVE`) of a shorter one. Against exact truth the
-# soft cut at this bound took the p95 rotation error over the moves of the three jerky
-# synthetic scenes from 0.70, 1.01 and 0.32 deg (a hard cut at `T_MOVE`) to 0.36, 0.42
-# and 0.20, and kept `ball_drop`'s at 0.16; a tighter bound follows the 2-3 px steps the
-# legs put into the looks. The next look is seeded on the looks' own velocity, an
-# exponential mean of their frame-to-frame steps with weight `LOOK_VEL_EMA` on the
-# newest.
+# While following, line fits over these spans of recent looks, each faded out as it
+# nears `FOLLOW_BOUND * t_move` of a shorter one (`causal_estimate`). The next look is
+# seeded on an exponential mean of the looks' steps.
 FOLLOW_SPANS = (2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
 FOLLOW_BOUND = 1.25
 FOLLOW_SOFT = 0.2
 LOOK_VEL_EMA = 0.5
-# Following ends when the window has spread less than this fraction of `T_MOVE` over
-# `STILL_FRAMES` frames and moved less than `V_STILL` px per frame across them. Ending
-# too early is the costlier mistake: a ball that pauses and moves on is not followed
-# again until it is `T_MOVE_FAST` away, while a window that follows a stopped ball only
-# takes on its looks' slow wander. At 30 frames `ball_drop` was let go at the top of its
-# excursion, where it moves half a pixel in 30 frames, and its window then lagged 10 px.
+# Following ends once the window has spread less than `STILL_SPREAD * t_move` and moved
+# less than `V_STILL` px a frame over `STILL_FRAMES`. Ending early is the costlier
+# mistake: a ball that pauses and moves on is not followed again until it is far off.
 STILL_FRAMES = 60
 STILL_SPREAD = 0.5
 V_STILL = 0.05
-# Planning the window from a whole recording's looks (`plan_window_trajectory`): the
-# looks are cleaned with a median over `PLAN_MEDIAN` frames, which removes isolated
-# wrong looks, then smoothed by `_adaptive_filter` with Gaussians of up to `PLAN_SIGMA`
-# frames, held within `PLAN_BOUND` times `T_MOVE` of the narrower ones. `PLAN_LOOKBACK`
-# is how far back from the frame where the smoothed looks leave the resting level to
-# look for the frame where they last sat within the look's scatter of it, so that the
-# window leaves along the ball rather than stepping onto it, and `CATCHUP` is the share
-# of the remaining gap to a new target (the looks where a move starts, the level where
-# it ends) left open each frame.
-PLAN_SIGMA = 12.0
-PLAN_SIGMAS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0)
+# A window this many radii from where it started has left the ball (a ball moves a
+# fraction of its radius in its holder; a look climbing the animal runs on): stop.
+MAX_SHIFT_RADII = 1.0
+# Planning from a whole recording: a median over `PLAN_MEDIAN` frames removes isolated
+# wrong looks; then the widest of `PLAN_SIGMAS` that stays within `PLAN_BOUND * t_move`
+# of the narrower ones, eased over `PLAN_WIDTH_EASE` frames; a move is traced back up to
+# `PLAN_LOOKBACK` frames to where it left the resting level; and `CATCHUP` of the gap to
+# a new target is left open each frame, so the window does not step.
+PLAN_SIGMAS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0)
 PLAN_BOUND = 0.5
 PLAN_WIDTH_EASE = 2.0
 PLAN_MEDIAN = 5
 PLAN_LOOKBACK = 60
 CATCHUP = 0.7
-# The seed-independent look's buffer: this many frames, every `COARSE_STRIDE`-th, halved
-# until the ball's radius would fall below `COARSE_MIN_RADIUS` (at most
-# `COARSE_MAX_SCALE` times). The stride is what erases the rotating surface texture from
-# the temporal quantile. The span is also this look's lag: it describes the middle of
-# the buffer.
+# The seed-free look: a detection on `COARSE_BUFFER` frames, every `COARSE_STRIDE`-th
+# (which erases the rotating texture), downscaled while the radius stays above
+# `COARSE_MIN_RADIUS`. It describes the middle of its buffer, `COARSE_LAG` frames ago.
 COARSE_BUFFER = 12
 COARSE_STRIDE = 2
 COARSE_MIN_RADIUS = 120.0
 COARSE_MAX_SCALE = 4
 COARSE_LAG = (COARSE_BUFFER - 1) * COARSE_STRIDE / 2.0
 RECOVER_EVERY = 4  # frames between detections while the rim look keeps failing
-# A recovery detection must fit a circle of the known radius: on 004 the detections the
-# animal fools are also 5-25% off in radius.
-RECOVER_RADIUS_TOL = 0.02
+RECOVER_RADIUS_TOL = 0.02  # detections the animal fools are off in radius too
 
 
 def coarse_scale(radius_px: float) -> int:
@@ -255,77 +144,36 @@ def downscale(image, scale: int) -> tuple[np.ndarray, int]:
     return out, done
 
 
-@dataclass
-class RefitEvent:
-    """One stretch of frames over which the window followed a moving ball."""
-
-    start: int
-    end: int
-    origin_px: tuple[float, float]  # where the config put the ball
-    last_px: tuple[float, float]
-    farthest_px: tuple[float, float]
-    rim_fraction: float  # of the last look that placed the window
-
-    def extend(self, frame: int, center, rim_fraction: float) -> None:
-        self.end = frame
-        self.last_px = (float(center[0]), float(center[1]))
-        if self._distance(self.last_px) > self._distance(self.farthest_px):
-            self.farthest_px = self.last_px
-        self.rim_fraction = rim_fraction
-
-    def _distance(self, point) -> float:
-        return float(
-            np.hypot(point[0] - self.origin_px[0], point[1] - self.origin_px[1])
-        )
-
-    @property
-    def max_shift_px(self) -> float:
-        return self._distance(self.farthest_px)
-
-    def as_dict(self) -> dict:
-        return {
-            "start": self.start,
-            "end": self.end,
-            "origin_px": list(self.origin_px),
-            "farthest_px": list(self.farthest_px),
-            "max_shift_px": self.max_shift_px,
-            "rim_fraction": self.rim_fraction,
-        }
-
-
 class CenterWatch:
     """Follow a ball that moves in its holder, and say where the window should be.
 
-    A rim look per frame. While the ball rests, the looks feed a slow alpha-beta filter
-    and the window stays put; it starts following when the last `CONFIRM_FRAMES` looks
-    all lie beyond `T_MOVE_FAST` of it, or the filtered position has stayed beyond
-    `T_MOVE` for `CONFIRM_SLOW_FRAMES`. While following, the window sits every frame on
-    `causal_estimate` of the recent looks, until it has been still for `STILL_FRAMES`.
-    See the module docstring.
+    `update` returns the window center for a frame (source pixels), or None to leave the
+    window where it is. `episodes` lists the window's moves as `[start, end, peak px]`.
     """
 
     def __init__(self, origin_px, radius_px: float):
         self.origin_px = np.asarray(origin_px, dtype=np.float64)
-        self.radius_px = float(radius_px)
-        self.band = max(BAND_MIN_PX, BAND_RADII * self.radius_px)
-        self.band_wide = max(2.0 * BAND_MIN_PX, BAND_WIDE_RADII * self.radius_px)
-        self.cut = max(CUT_MIN_PX, CUT_RADII * self.radius_px)
+        self.radius_config = float(radius_px)
+        self.radius_measured: float | None = None
+        self.radius_arc = 0.0  # share of directions the radius looks saw rim in
+        self._set_radius(radius_px)
         self.polarity: float | None = None
-        # Where the ball was before anything happened, as the rim look sees it.
-        # Positions below are in the look's own coordinates; `update` returns them as
-        # offsets from `origin_px`, so the config's circle and the look need not agree.
-        self.reference_px: np.ndarray | None = None
+        self._radius_looks: list[np.ndarray] = []
+        self._radius_arcs: list[float] = []
         self._reference_looks: list[np.ndarray] = []
-        # The resting ball's filtered position and velocity; while following, where the
-        # window is, and the looks' velocity.
-        self.pos: np.ndarray | None = None
-        self.vel = np.zeros(2)
-        self.window_px: np.ndarray | None = None  # where the window is
+        self._reference_seed: np.ndarray | None = None
+        # Positions are in the look's own coordinates; `update` returns them as offsets
+        # from `origin_px`, so the config's circle and the look need not agree.
+        self.reference_px: np.ndarray | None = None
+        self.pos: np.ndarray | None = None  # resting: filtered; following: estimated
+        self.vel = np.zeros(2)  # the looks' velocity, while following
+        self.window_px: np.ndarray | None = None
         self.following = False
+        self.stopped_at: int | None = None
         self.rim_fraction = 0.0
-        # Every look the filter believed, as `(frame, position, rim fraction)`, for a
-        # second pass over the same frames to plan the window from (see `replay`).
-        self.looks: list[tuple[int, np.ndarray, float]] = []
+        self.episodes: list[list] = []
+        # Every believed look as flat `frame, x, y, rim fraction`, for a second pass.
+        self._looks = array("d")
         self._last_look: tuple[int, np.ndarray] | None = None
         self._seed: np.ndarray | None = None
         self._doubtful: tuple[np.ndarray, float] | None = None
@@ -336,31 +184,45 @@ class CenterWatch:
             maxlen=CONFIRM_FRAMES
         )
         self._failed = 0  # looks that failed in a row
-        self._unbelieved = 0  # looks that landed outside the innovation gate in a row
+        self._unbelieved = 0  # looks outside the innovation gate in a row
         self._residuals: deque[float] = deque(maxlen=RESIDUAL_HISTORY)
         self._innovations: deque[float] = deque(maxlen=RESIDUAL_HISTORY)
         self._confirm = 0
         self._history: deque[np.ndarray] = deque(maxlen=STILL_FRAMES)
         self.coarse: deque[np.ndarray] = deque(maxlen=COARSE_BUFFER)
-        self.scale = coarse_scale(self.radius_px)
         self._next_recovery = 0
         self._previous_seen: tuple[int, np.ndarray] | None = None
 
-    # ----- measurements -----
-    def _look(self, gray, seed, band: float) -> np.ndarray | None:
-        """The rim look about `seed`, or None when it is not to be believed."""
-        from spintrack.detect import DetectionError, relocate_ball
+    def _set_radius(self, radius: float) -> None:
+        self.radius_px = float(radius)
+        self.band = max(BAND_MIN_PX, BAND_RADII * self.radius_px)
+        self.band_wide = max(2.0 * BAND_MIN_PX, BAND_WIDE_RADII * self.radius_px)
+        self.cut = max(CUT_MIN_PX, CUT_RADII * self.radius_px)
+        self.scale = coarse_scale(self.radius_px)
+        self._narrow = RimLook(self.radius_px, self.band, self.cut)
+        self._wide = RimLook(self.radius_px, self.band_wide, self.cut)
 
+    @property
+    def looks(self) -> np.ndarray:
+        """Believed looks as rows of `frame, x, y, rim fraction`."""
+        return np.frombuffer(self._looks, dtype=np.float64).reshape(-1, 4).copy()
+
+    def _record(self, frame: int, xy, rim: float | None = None) -> None:
+        rim = self.rim_fraction if rim is None else rim
+        self._looks.extend((frame, xy[0], xy[1], rim))
+
+    # ----- measurements -----
+    def _look(self, gray, seed, wide: bool = False) -> np.ndarray | None:
+        """The rim look about `seed`, or None when it is not to be believed."""
         try:
-            found = relocate_ball(
-                [gray],
+            found = (self._wide if wide else self._narrow)(
+                gray,
                 float(seed[0]),
                 float(seed[1]),
-                self.radius_px,
                 self.polarity,
-                band=band,
-                cut=self.cut,
-                min_rim_fraction=MIN_RIM_FRACTION,
+                min_rim_fraction=(
+                    MIN_RIM_FRACTION_FOLLOWING if self.following else MIN_RIM_FRACTION
+                ),
                 min_arc_fraction=MIN_ARC_FRACTION,
             )
         except DetectionError as exc:
@@ -390,67 +252,66 @@ class CenterWatch:
         return np.array([found.cx, found.cy])
 
     def _measure(self, frame: int, gray) -> np.ndarray | None:
-        """One measurement of the ball, seeded on the last look plus the velocity.
+        """One look at the ball, from the best seed that finds it.
 
-        When that look fails, two other seeds are tried in turn: a ball that has just
-        stopped is where the last look left it, not where its velocity would carry it,
-        and a resting ball that has just started to fall is where its last few looks
-        were heading, which the slow filter does not know yet. Without the second, a
-        ball whose band is small (4 px on a 76 px ball) was lost at the onset of a fall
-        of 3-4 px a frame and never found again.
+        A resting ball is looked for where the filter puts it, which a look that has
+        started to climb the animal cannot drag along. A moving ball is looked for where
+        its last look and velocity put it. The fallbacks are the last look itself (a
+        ball that has just stopped) and, at rest, where the last few looks were heading
+        (a ball that has just started to fall).
         """
         self._doubtful = None
-        others = []
-        if self._last_look is None:
-            seed = self.pos
-        else:
-            last_frame, last = self._last_look
-            seed = last + self.vel * (frame - last_frame)
-            others.append(last)
-            if not self.following and len(self._recent) > 1:
+        last_frame, last = self._last_look
+        dt = frame - last_frame
+        seeds = [last + self.vel * dt, last]
+        if not self.following:
+            seeds.insert(0, self.pos)
+            if len(self._recent) > 1:
                 (f0, p0, _), (f1, p1, _) = self._recent[0], self._recent[-1]
                 if f1 == last_frame:
-                    others.append(last + (p1 - p0) / (f1 - f0) * (frame - last_frame))
-        band = self.band if self._failed == 0 else self.band_wide
-        seen = self._look(gray, seed, band)
-        for other in others:
+                    seeds.append(last + (p1 - p0) / (f1 - f0) * dt)
+        wide = self._failed > 0
+        reach = RELOOK_BAND_FRACTION * (self.band_wide if wide else self.band)
+        seed = seeds[0]
+        seen = self._look(gray, seed, wide)
+        for other in seeds[1:]:
             if seen is not None:
                 break
-            if np.hypot(*(other - seed)) > RELOOK_BAND_FRACTION * band:
+            if np.hypot(*(other - seed)) > reach:
                 seed = other
-                seen = self._look(gray, seed, band)
-        if seen is not None and np.hypot(*(seen - seed)) > RELOOK_BAND_FRACTION * band:
-            again = self._look(gray, seen, band)
+                seen = self._look(gray, seed, wide)
+        # The look pulls a far seed only part of the way in, so a far answer is checked.
+        if seen is not None and np.hypot(*(seen - seed)) > reach:
+            again = self._look(gray, seen, wide)
             if again is not None:
                 seen = again
         self._seed = seed
         if seen is None and not self.following and self._doubtful is None:
-            self._probe(frame, gray, band)
+            self._probe(frame, gray, wide)
         if seen is None:
             self._failed += 1
             return None
         self._failed = 0
-        if self.following and self._last_look is not None:
-            gap = frame - self._last_look[0]
-            step = (seen - self._last_look[1]) / gap if gap <= COAST_FRAMES else 0.0
+        if self.following:
+            step = (seen - last) / dt if dt <= COAST_FRAMES else 0.0
             self.vel = self.vel + LOOK_VEL_EMA * (step - self.vel)
         self._last_look = (frame, seen)
         return seen
 
-    def _probe(self, frame: int, gray, band: float) -> None:
-        """Look where the evidence of a move is heading, if it has run ahead.
+    def _probe(self, frame: int, gray, wide: bool) -> None:
+        """Look where the evidence of a move is heading, when it has run ahead.
 
-        The looks that count towards a move (`_recent`) include ones refused for their
-        residual, which seed nothing; once they lead, the believed looks are left behind
-        on a ball that has dropped out of their band. This look follows the evidence
-        instead, and what it finds counts towards the move but seeds nothing either.
+        The looks that count towards a move include ones refused for their residual,
+        which seed nothing; on a small ball falling fast the believed looks are then
+        left behind on a ball that has dropped out of their band. What this look finds
+        counts towards the move but seeds nothing either.
         """
         if len(self._recent) < 2:
             return
         (f0, p0, _), (f1, p1, _) = self._recent[0], self._recent[-1]
-        if self._last_look is not None and f1 == self._last_look[0]:
+        if f1 == self._last_look[0]:
             return
-        seen = self._look(gray, p1 + (p1 - p0) / (f1 - f0) * (frame - f1), band)
+        seen = self._look(gray, p1 + (p1 - p0) / (f1 - f0) * (frame - f1), wide)
         if seen is not None:
             self._doubtful = (seen, self.rim_fraction)
 
@@ -458,11 +319,8 @@ class CenterWatch:
         """Find the ball wherever it is, from the downscaled buffer; source pixels.
 
         Returns `(position, velocity)`, the velocity being what the previous such look
-        implies. The position describes `COARSE_LAG` frames ago, so both are needed to
-        say where the ball is now: on trial 004 it falls 50 px in that time.
+        implies: the position describes `COARSE_LAG` frames ago.
         """
-        from spintrack.detect import DetectionError, detect_ball
-
         if len(self.coarse) < COARSE_BUFFER:
             return None
         try:
@@ -480,7 +338,7 @@ class CenterWatch:
             velocity = (seen - previous[1]) / (frame - previous[0])
         return seen, velocity
 
-    # ----- the filter -----
+    # ----- the resting ball -----
     def scatter(self) -> float | None:
         """Median innovation while still: what a look does about a good prediction."""
         if len(self._innovations) < RESIDUAL_MIN_LOOKS:
@@ -494,15 +352,58 @@ class CenterWatch:
             bound = max(bound, T_MOVE_SCATTER * scatter)
         return bound
 
+    def _measure_radius(self, gray) -> None:
+        """Free-radius looks on the first frames; their median radius is the look's.
+
+        Each look is repeated from its own answer, so a config circle a few percent off
+        converges before it counts.
+        """
+        looks = self._radius_looks
+        if looks:
+            seed = np.median(looks, axis=0)
+        else:
+            seed = np.r_[self.origin_px, self.radius_px]
+        for _ in range(3):
+            try:
+                found = RimLook(seed[2], self.band, self.cut)(
+                    gray, seed[0], seed[1], self.polarity, free_radius=True
+                )
+            except DetectionError as exc:
+                log.debug("radius look refused: %s", exc)
+                return
+            self.polarity = found.polarity
+            seed = np.array([found.cx, found.cy, found.r])
+        if not found.ok:
+            return
+        looks.append(seed)
+        self._radius_arcs.append(found.arc_fraction)
+        if len(looks) < RADIUS_FRAMES:
+            return
+        cx, cy, radius = np.median(looks, axis=0)
+        self.radius_measured = float(radius)
+        self.radius_arc = float(np.median(self._radius_arcs))
+        self._set_radius(radius)
+        self._reference_seed = np.array([cx, cy])
+        change = radius / self.radius_config - 1.0
+        warn = abs(change) > RADIUS_WARN and self.radius_arc >= RADIUS_MIN_ARC
+        log.log(
+            logging.WARNING if warn else logging.DEBUG,
+            "ball silhouette radius %.1f px, %+.1f%% from the config's %.1f px",
+            radius, 100 * change, self.radius_config,
+        )  # fmt: skip
+
     def _take_reference(self, frame: int, gray) -> None:
         """Median of the first `REFERENCE_LOOKS` accepted looks; nothing moves yet."""
+        if self.radius_measured is None:
+            self._measure_radius(gray)
+            return
         looks = self._reference_looks
-        seed = self.origin_px if not looks else np.median(looks, axis=0)
-        seen = self._look(gray, seed, self.band)
+        seed = self._reference_seed if not looks else np.median(looks, axis=0)
+        seen = self._look(gray, seed)
         if seen is None:
             return
         looks.append(seen)
-        self.looks.append((frame, seen, self.rim_fraction))
+        self._record(frame, seen)
         if len(looks) < REFERENCE_LOOKS:
             return
         self.reference_px = np.median(looks, axis=0)
@@ -516,64 +417,61 @@ class CenterWatch:
         )
 
     def _filter(self, frame: int, gray) -> None:
-        """Predict, measure, correct."""
-        if not self.following:
-            self.pos = self.pos + self.vel
+        """Measure, then update the resting filter or the track being followed."""
         seen = self._measure(frame, gray)
         if seen is None and self._doubtful is not None and not self.following:
-            # A look refused only for its residual still says where the rim is. It
-            # seeds nothing, so a look that climbs the animal cannot build on it, but it
-            # counts towards a move: a ball that has dropped can show less of its rim
-            # than it did at rest (the frame's edge, the legs), and its residual rises
-            # with it - to 1.2-1.5 times the resting median on the synthetic drops.
+            # A look refused only for its residual seeds nothing, so a look that climbs
+            # the animal cannot build on it, but it counts towards a move: a ball that
+            # has dropped can show less of its rim, and its residual rises with it.
             xy, rim = self._doubtful
             self._recent.append((frame, xy, rim))
         if seen is not None:
             self._recent.append((frame, seen, self.rim_fraction))
-            # A resting ball's look is judged against the filter, which an animal at
-            # the rim cannot drag along; a moving ball's against its own seed, since
-            # the filter is not following it.
+            # A resting ball's look is judged against the filter, which the animal
+            # cannot drag; a moving ball's against its own seed.
             expected = self._seed if self.following else self.pos
             off = float(np.hypot(*(seen - expected)))
             if off > INNOVATION_GATE * self.band and self._unbelieved < 3:
                 self._unbelieved += 1
                 return
             self._unbelieved = 0
-            self.looks.append((frame, seen, self.rim_fraction))
+            self._record(frame, seen)
             self._track.append((frame, seen))
             if not self.following:
                 innovation = seen - self.pos
                 self._innovations.append(float(np.hypot(*innovation)))
                 self.pos = self.pos + ALPHA * innovation
-                self.vel = self.vel + BETA * innovation
+                self.vel = np.zeros(2)
             return
         if self._failed <= COAST_FRAMES:
             return
         # The rim look has lost the ball. Coasting further would drift away from a ball
-        # that has stopped, so the window freezes and the look that needs no seed is
-        # asked.
+        # that has stopped, so the window freezes and the seed-free look is asked.
         self.vel = np.zeros(2)
-        if frame >= self._next_recovery:
-            self._next_recovery = frame + RECOVER_EVERY
-            found = self._detect(frame)
-            if found is not None:
-                seen, velocity = found
-                self.pos = seen + velocity * COARSE_LAG
-                self.vel = velocity
-                self._last_look = (frame, self.pos.copy())
-                self._track.clear()
-                self._failed = 0
-                log.info(
-                    "frame %d: the rim look lost the ball; a detection puts it %.1f px "
-                    "from where it started",
-                    frame, float(np.hypot(*(self.pos - self.reference_px))),
-                )  # fmt: skip
+        if frame < self._next_recovery:
+            return
+        self._next_recovery = frame + RECOVER_EVERY
+        found = self._detect(frame)
+        if found is None:
+            return
+        seen, velocity = found
+        self.pos = seen + velocity * COARSE_LAG
+        self.vel = velocity
+        self._last_look = (frame, self.pos.copy())
+        self._track.clear()
+        self._failed = 0
+        log.info(
+            "frame %d: the rim look lost the ball; a detection puts it %.1f px from "
+            "where it started",
+            frame, float(np.hypot(*(self.pos - self.reference_px))),
+        )  # fmt: skip
 
     def _moved_away(self, frame: int, bound: float) -> bool:
         """Whether the last `CONFIRM_FRAMES` looks, all recent, lie beyond `bound`.
 
-        Those looks are the start of the move, and the resting ball's gate will have
-        refused some of them, so they are taken into the track that the window follows.
+        Those looks are the start of the move, and the resting filter's gate will have
+        refused some of them, so they become the track the window follows. A line
+        through the resting ball's looks and the moving one's describes neither.
         """
         recent = list(self._recent)
         if len(recent) < CONFIRM_FRAMES or recent[-1][0] != frame:
@@ -582,14 +480,28 @@ class CenterWatch:
             return False
         if any(np.hypot(*(xy - self.window_px)) <= bound for _, xy, _ in recent):
             return False
-        believed = {f for f, _, _ in self.looks[-2 * CONFIRM_FRAMES :]}
-        self.looks.extend((f, xy, rim) for f, xy, rim in recent if f not in believed)
-        self.looks.sort(key=lambda e: e[0])
-        # The window follows from these looks alone: a line through the resting ball's
-        # looks and the moving one's describes neither, and after a jump it ran several
-        # pixels past a ball that had stopped.
+        believed = set(self._looks[-4 * 2 * CONFIRM_FRAMES :: 4])
+        for f, xy, rim in recent:
+            if f not in believed:
+                self._record(f, xy, rim)
         self._track = deque(((f, xy) for f, xy, _ in recent), FOLLOW_SPANS[-1])
         return True
+
+    def _start_following(self, frame: int) -> None:
+        self.following = True
+        # The looks that showed the move seed the next look, carried by their velocity.
+        (f0, p0, _), (f1, p1, _) = self._recent[0], self._recent[-1]
+        self.vel = (p1 - p0) / (f1 - f0)
+        self._last_look = (f1, p1)
+        # The rim the band sees at the new place is not the one it saw at rest.
+        self._residuals.clear()
+        self._history.clear()
+        self.coarse.clear()
+        self.episodes.append([frame, frame, 0.0])
+        log.info(
+            "frame %d: the ball is %.1f px from where the window looks; following it",
+            frame, float(np.hypot(*(p1 - self.window_px))),
+        )  # fmt: skip
 
     def _estimate(self, frame: int) -> np.ndarray:
         """Where the ball is on `frame`; where the window is when the looks ran out."""
@@ -600,15 +512,34 @@ class CenterWatch:
         bound = FOLLOW_BOUND * self.t_move()
         return causal_estimate(t, xy, bound, FOLLOW_SOFT * bound)
 
+    def _target(self, frame: int) -> np.ndarray:
+        """The window center for `frame`, in source pixels; stops a runaway follow."""
+        shift = float(np.hypot(*(self.window_px - self.reference_px)))
+        episode = self.episodes[-1]
+        episode[1] = frame
+        if shift > MAX_SHIFT_RADII * self.radius_px:
+            log.warning(
+                "frame %d: the window ran %.0f px, a whole ball radius, from where "
+                "it started; the ball follower stops and the window goes back",
+                frame, shift,
+            )  # fmt: skip
+            self.stopped_at = frame
+            self.following = False
+            self.window_px = self.reference_px.copy()
+            return self.origin_px.copy()
+        episode[2] = max(episode[2], shift)
+        return self.origin_px + (self.window_px - self.reference_px)
+
     # ----- per frame -----
     def update(self, frame: int, gray) -> np.ndarray | None:
         """Feed one frame; returns where the window should be centered, or None."""
+        if self.stopped_at is not None:
+            return None
         if self.reference_px is None:
             self._take_reference(frame, gray)
             return None
-        # The seed-independent look's buffer is kept while following and while a
-        # resting ball's look is failing, which is when it may be needed; a resting ball
-        # seen again empties it, since it would describe a ball that has moved since.
+        # The seed-free look's buffer is kept while following and while a resting
+        # ball's look is failing; a resting ball seen again empties it.
         if self.following or self._failed > 0:
             if frame % COARSE_STRIDE == 0:
                 small, self.scale = downscale(gray, self.scale)
@@ -617,16 +548,9 @@ class CenterWatch:
             self.coarse.clear()
         self._filter(frame, gray)
         if not self.following:
-            bound = self.t_move()
-            fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * self.radius_px)
-            far = float(np.hypot(*(self.pos - self.window_px))) > bound
+            far = float(np.hypot(*(self.pos - self.window_px))) > self.t_move()
             self._confirm = self._confirm + 1 if far else 0
             if self._confirm >= CONFIRM_SLOW_FRAMES:
-                # A slow creep nudges the window a step towards where the filter puts
-                # the ball. Following it frame by frame would follow the looks' wander
-                # too, which on some recordings has a 3 px standard deviation at rest,
-                # and moving all the way at once put steps of up to 8 px - most of a
-                # degree of rotation each - into recordings the old follower nudged.
                 self._confirm = 0
                 self.window_px = self.window_px + CREEP_STEP * (
                     self.pos - self.window_px
@@ -636,25 +560,12 @@ class CenterWatch:
                     "window moves towards it",
                     frame, float(np.hypot(*(self.pos - self.reference_px))),
                 )  # fmt: skip
-                return self.origin_px + (self.window_px - self.reference_px)
+                self.episodes.append([frame, frame, 0.0])
+                return self._target(frame)
+            fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * self.radius_px)
             if not self._moved_away(frame, fast):
                 return None
-            self.following = True
-            # The looks that showed the move seed the next look, carried by their own
-            # velocity.
-            (f0, p0, _), (f1, p1, _) = self._recent[0], self._recent[-1]
-            self.vel = (p1 - p0) / (f1 - f0)
-            self._last_look = (f1, p1)
-            # The rim the band sees at the new place is not the one it saw at rest, so
-            # the residual a look is judged by is learned again.
-            self._residuals.clear()
-            self._history.clear()
-            self.coarse.clear()
-            log.info(
-                "frame %d: the ball is %.1f px from where the window looks; following "
-                "it",
-                frame, float(np.hypot(*(self._recent[-1][1] - self.window_px))),
-            )  # fmt: skip
+            self._start_following(frame)
         self.pos = self._estimate(frame)
         self._history.append(self.pos.copy())
         if len(self._history) == STILL_FRAMES:
@@ -674,45 +585,44 @@ class CenterWatch:
                     frame, float(np.hypot(*(self.pos - self.reference_px))),
                 )  # fmt: skip
         self.window_px = self.pos.copy()
-        return self.origin_px + (self.window_px - self.reference_px)
+        return self._target(frame)
 
     def replay(self, n_frames: int) -> ScriptedWatch | None:
         """The window trajectory a second pass over the same frames should follow.
 
-        None when no reference was ever taken (the rim look never worked here), in which
-        case the second pass is better off watching for itself.
+        None when there is nothing to plan from (the rim look never locked on) or the
+        follower stopped, in which case the second pass is better off watching itself.
         """
-        if self.reference_px is None:
+        if self.reference_px is None or self.stopped_at is not None:
             return None
-        scatter = self.scatter()
-        if scatter is None:
-            scatter = T_MOVE_PX / T_MOVE_SCATTER
+        scatter = self.scatter() or T_MOVE_PX / T_MOVE_SCATTER
         trajectory, rim, episodes = plan_window_trajectory(
             self.looks, n_frames, self.reference_px, self.radius_px, scatter
         )
-        return ScriptedWatch(
-            self.origin_px, self.reference_px, trajectory, rim, episodes
-        )
+        return ScriptedWatch(self, trajectory, rim, episodes)
 
 
 def span_estimates(t: np.ndarray, xy: np.ndarray) -> np.ndarray:
     """The latest look, then each `FOLLOW_SPANS` line fit's value at `t = 0`.
 
-    Shape `(1 + len(FOLLOW_SPANS), 2)`, NaN where a span holds fewer than two looks.
+    `t` is ascending and at most 0. Shape `(1 + len(FOLLOW_SPANS), 2)`, NaN where a span
+    holds fewer than two looks. Sums from the newest look back give every span at once.
     """
-    out = np.full((1 + len(FOLLOW_SPANS), 2), np.nan)
+    spans = np.asarray(FOLLOW_SPANS)
+    out = np.full((1 + len(spans), 2), np.nan)
     if len(t) == 0:
         return out
-    out[0] = xy[int(np.argmax(t))]
-    for k, span in enumerate(FOLLOW_SPANS, start=1):
-        sel = t > -span
-        if int(sel.sum()) < 2:
-            continue
-        ts, ps = t[sel], xy[sel]
-        tm = ts.mean()
-        sxx = float(np.sum((ts - tm) ** 2))
-        slope = ((ts - tm)[:, None] * (ps - ps.mean(axis=0))).sum(axis=0) / sxx
-        out[k] = ps.mean(axis=0) - slope * tm
+    out[0] = xy[-1]
+    tr, xr = t[::-1], xy[::-1]
+    n = np.arange(1, len(t) + 1)
+    st, stt = np.cumsum(tr), np.cumsum(tr * tr)
+    sx, stx = np.cumsum(xr, axis=0), np.cumsum(tr[:, None] * xr, axis=0)
+    count = np.searchsorted(-tr, spans)  # looks with t > -span
+    has = count >= 2
+    i = count[has] - 1
+    tm = st[i] / n[i]
+    slope = (stx[i] - tm[:, None] * sx[i]) / (stt[i] - n[i] * tm**2)[:, None]
+    out[1:][has] = sx[i] / n[i][:, None] - slope * tm[:, None]
     return out
 
 
@@ -721,27 +631,19 @@ def causal_estimate(
 ) -> np.ndarray:
     """The ball's position at `t = 0` from looks at times `t <= 0` (at least one).
 
-    A straight line is fitted to the looks of the last `span` frames for each span in
-    `FOLLOW_SPANS`, and the estimate leans on the longest span whose value at `t = 0`
-    lies within `bound` of every shorter span's, and of the latest look itself
-    (Lepski's rule, as `_adaptive_filter` applies it to a whole recording). A line is
-    unbiased while the ball moves steadily, so a long span averages the looks' jitter
-    away; through a jerk it is not, and the span shrinks to the last few looks.
-    Starting from the latest look rather than from the shortest line keeps a run of
-    failed looks from being bridged by extrapolating the last two looks' jitter.
-
-    The cut is soft: each span survives with a logistic weight of how far inside the
-    bound it stays (`softness` wide), and the estimate is the spans' values weighted by
-    the chance that each is the longest to survive. A hard cut moved the window by up to
-    `bound` whenever a span near it flipped in or out, which after a jerk happened from
-    one frame to the next and was rotation of its own.
+    The estimate leans on the longest line fit whose value lies within `bound` of every
+    shorter span's and of the latest look (Lepski's rule): a line is unbiased while the
+    ball moves steadily, so a long span averages the looks' jitter away, and through a
+    jerk the span shrinks to the last few looks. The cut is soft - each span survives
+    with a logistic weight of its margin, `softness` wide - because a hard one moved the
+    window by up to `bound` whenever a span flipped in or out.
     """
     ests = span_estimates(t, xy)
     ests = ests[np.isfinite(ests[:, 0])]
-    survive = np.ones(len(ests))
-    for j in range(1, len(ests)):
-        margin = bound - float(np.hypot(*(ests[j] - ests[:j]).T).max())
-        survive[j] = survive[j - 1] / (1.0 + np.exp(-margin / softness))
+    gaps = np.hypot(*(ests[:, None, :] - ests[None, :, :]).transpose(2, 0, 1))
+    worst = np.tril(gaps, -1).max(axis=1)[1:]  # each span against every shorter one
+    keep = 1.0 / (1.0 + np.exp(-(bound - worst) / softness))
+    survive = np.r_[1.0, np.cumprod(keep)]
     longest = survive - np.r_[survive[1:], 0.0]
     return (longest[:, None] * ests).sum(axis=0) / longest.sum()
 
@@ -770,25 +672,19 @@ def _gaussian_filter(x: np.ndarray, sigma: float) -> np.ndarray:
     )
 
 
-def _adaptive_filter(x: np.ndarray, sigma_max: float, bound: float) -> np.ndarray:
+def _adaptive_filter(x: np.ndarray, bound: float) -> np.ndarray:
     """Zero-phase Gaussian smoothing whose width adapts to the motion, per frame.
 
-    Each frame gets the widest of the Gaussians in `PLAN_SIGMAS` (up to `sigma_max`)
-    whose estimate lies within `bound` of every narrower one's and of `x` itself, or
-    within the typical size of that difference over the recording if it is larger
-    (Lepski's rule). Where the ball rests or drifts, every width agrees and the widest
-    averages the looks' jitter away; where it jerks, the wide ones are pulled off by
-    the curvature and the width shrinks, so the window keeps up with the ball instead
-    of being smeared over the jerk. The bound is in pixels rather than in units of the
-    looks' noise because that noise is not what tells a jerk apart: the looks wander
-    slowly and step by a few pixels as legs cross the rim (2-3 px in a frame on
-    `ball_drop`), and a rule scaled to their frame-to-frame jitter took every such step
-    for a jerk. The chosen width is eased over a few frames, since stepping between two
-    estimates would be a jitter of its own.
+    Each frame gets the widest of `PLAN_SIGMAS` whose estimate lies within `bound` of
+    every narrower one's and of `x` itself, or within the typical size of that
+    difference over the recording if larger (Lepski's rule). The bound is in pixels: the
+    legs crossing the rim step the looks by a few pixels, and a bound scaled to the
+    looks' jitter took every such step for a jerk. The chosen width is eased over a few
+    frames, since stepping between two estimates would be a jitter of its own.
     """
     from numpy.lib.stride_tricks import sliding_window_view
 
-    ests = [x] + [_gaussian_filter(x, s) for s in PLAN_SIGMAS if s <= sigma_max]
+    ests = [x] + [_gaussian_filter(x, s) for s in PLAN_SIGMAS]
     width = np.zeros(len(x))
     alive = np.ones(len(x), dtype=bool)
     for j in range(1, len(ests)):
@@ -797,7 +693,7 @@ def _adaptive_filter(x: np.ndarray, sigma_max: float, bound: float) -> np.ndarra
             alive &= d <= max(float(np.median(d)), bound)
         width[alive] = j
     # The narrowest width within a couple of easing lengths, then eased: the width
-    # starts shrinking before a jerk rather than at it, and recovers after it.
+    # starts shrinking before a jerk rather than at it.
     reach = int(np.ceil(2.0 * PLAN_WIDTH_EASE))
     pad = np.pad(width, reach, mode="edge")
     width = sliding_window_view(pad, 2 * reach + 1).min(axis=-1)
@@ -811,47 +707,37 @@ def _adaptive_filter(x: np.ndarray, sigma_max: float, bound: float) -> np.ndarra
 
 
 def plan_window_trajectory(
-    looks,
-    n_frames: int,
-    reference_px,
-    radius_px: float,
-    scatter: float,
-    sigma: float | None = None,
+    looks, n_frames: int, reference_px, radius_px: float, scatter: float
 ) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:
     """Where the window should have been on every frame, from all the looks at once.
 
-    `looks` are `(frame, position, rim fraction)` as `CenterWatch` records them. They
-    are interpolated over the frames without one, cleaned with a `PLAN_MEDIAN`-frame
-    median and smoothed with a zero-phase Gaussian of `sigma` frames. The window then
-    holds the ball's resting level - `reference_px` to begin with - until the smoothed
-    looks leave it by more than `T_MOVE`. An excursion that never reaches `T_MOVE_FAST`
-    and lasts less than `CONFIRM_SLOW_FRAMES` is the animal at the rim, not a move, and
-    is ignored as the online rule ignores it. A move is followed from the last frame the
-    looks sat within the scatter of the level (at most `PLAN_LOOKBACK` frames before the
-    departure) until they have stayed within `STILL_SPREAD * T_MOVE` of each other for
-    `STILL_FRAMES`, where their median becomes the new level. The window reaches a new
-    target - the looks where a move starts, the level where it ends - by closing
-    `1 - CATCHUP` of the remaining gap per frame rather than stepping onto it, as it
-    does online.
-    Returns the per-frame window position, the rim fraction of the look on each frame
-    (NaN where there was none) and the moves as `(start, stop, peak px)`.
+    `looks` are rows of `frame, x, y, rim fraction` (`CenterWatch.looks`). They are
+    interpolated over the frames without one, median-cleaned and smoothed by
+    `_adaptive_filter`. The window holds the ball's resting level - `reference_px` to
+    begin with - until the smoothed looks leave it by more than `T_MOVE`; an excursion
+    that never reaches `T_MOVE_FAST` and is shorter than `CONFIRM_SLOW_FRAMES` is the
+    animal at the rim and is ignored, as online. A move is followed from the last frame
+    the looks sat within the scatter of the level until they have stayed within
+    `STILL_SPREAD * T_MOVE` for `STILL_FRAMES`, where their median becomes the new
+    level. Returns the per-frame window position, the rim fraction of the look on each
+    frame (NaN where there was none) and the moves as `(start, stop, peak px)`.
     """
-    sigma = PLAN_SIGMA if sigma is None else sigma
     n = int(n_frames)
     reference = np.asarray(reference_px, dtype=np.float64)
+    looks = np.asarray(looks, dtype=np.float64).reshape(-1, 4)
+    frames = looks[:, 0].astype(int)
+    inside = (frames >= 0) & (frames < n)
     pos = np.full((n, 2), np.nan)
     rim = np.full(n, np.nan)
-    for frame, xy, fraction in looks:
-        if 0 <= frame < n:
-            pos[frame] = xy
-            rim[frame] = fraction
+    pos[frames[inside]] = looks[inside, 1:3]
+    rim[frames[inside]] = looks[inside, 3]
     valid = np.flatnonzero(np.isfinite(pos[:, 0]))
     if valid.size < 2:
         return np.tile(reference, (n, 1)), rim, []
     idx = np.arange(n)
     s = np.stack([np.interp(idx, valid, pos[valid, k]) for k in range(2)], 1)
     t_move = max(T_MOVE_PX, T_MOVE_RADII * radius_px, T_MOVE_SCATTER * scatter)
-    s = _adaptive_filter(_median_filter(s, PLAN_MEDIAN), sigma, PLAN_BOUND * t_move)
+    s = _adaptive_filter(_median_filter(s, PLAN_MEDIAN), PLAN_BOUND * t_move)
     t_fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * radius_px)
     near = max(1.0, scatter)
     # Where the window is meant to be: the level while the ball rests, the looks while
@@ -907,16 +793,18 @@ def plan_window_trajectory(
 class ScriptedWatch:
     """`CenterWatch`'s interface for a window trajectory planned in advance.
 
-    Built by `CenterWatch.replay` for the second of two passes over a recording: the
-    first pass measured the ball on every frame, so the second can put the window where
-    the ball was on each frame, from the frame it left its resting place, without the
-    confirmation delay and the filter lag an online follower pays to keep a still ball's
-    window still.
+    Built by `CenterWatch.replay` for the second of two passes over a recording, which
+    puts the window where the first pass saw the ball, from the frame it left its
+    resting place.
     """
 
-    def __init__(self, origin_px, reference_px, trajectory, rim_fraction, episodes):
-        self.origin_px = np.asarray(origin_px, dtype=np.float64)
-        self.reference_px = np.asarray(reference_px, dtype=np.float64)
+    def __init__(self, watch: CenterWatch, trajectory, rim_fraction, episodes):
+        self.origin_px = watch.origin_px
+        self.reference_px = watch.reference_px
+        self.radius_config = watch.radius_config
+        self.radius_measured = watch.radius_measured
+        self.radius_arc = watch.radius_arc
+        self.stopped_at = None
         self.trajectory = np.asarray(trajectory, dtype=np.float64)
         self._rim = np.asarray(rim_fraction, dtype=np.float64)
         self.episodes = list(episodes)
@@ -933,3 +821,48 @@ class ScriptedWatch:
     def replay(self, n_frames: int) -> ScriptedWatch:
         """A plan replays as itself."""
         return self
+
+
+def watch_checks(watch) -> dict[str, str]:
+    """The run summary's lines on where the ball sat and how big it looked."""
+    if watch.reference_px is None:
+        return {"ball moved": "not measured (the rim look never locked on)"}
+    if watch.episodes:
+        moves = ", ".join(
+            f"frames {int(a)}-{int(b)} ({c:.0f} px)" for a, b, c in watch.episodes[:3]
+        )
+        if len(watch.episodes) > 3:
+            moves += f" and {len(watch.episodes) - 3} more"
+    else:
+        moves = "no"
+    if watch.stopped_at is not None:
+        moves += (
+            f"; the follower stopped at frame {watch.stopped_at}: the window ran "
+            f"{MAX_SHIFT_RADII:g} ball radius from where it started"
+        )
+    out = {"ball moved": moves}
+    if watch.radius_measured is not None:
+        change = watch.radius_measured / watch.radius_config - 1.0
+        out["radius"] = (
+            f"silhouette {watch.radius_measured:.1f} px, config "
+            f"{watch.radius_config:.1f} px ({100 * change:+.1f}%)"
+        )
+        if watch.radius_arc < RADIUS_MIN_ARC:
+            out["radius"] += ", too little rim in view to compare"
+        elif abs(change) > RADIUS_WARN:
+            out["radius"] += ": check the config's ball, the rotation scale is off"
+    return out
+
+
+def watch_record(watch) -> dict:
+    """The follower's results for the sidecar."""
+    return {
+        "reference_px": None
+        if watch.reference_px is None
+        else [float(v) for v in watch.reference_px],
+        "radius_config_px": watch.radius_config,
+        "radius_measured_px": watch.radius_measured,
+        "radius_arc": watch.radius_arc,
+        "episodes": [[int(a), int(b), float(c)] for a, b, c in watch.episodes],
+        "stopped_at": watch.stopped_at,
+    }

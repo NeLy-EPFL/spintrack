@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -14,10 +15,17 @@ from spintrack.config import Config
 from spintrack.geometry import rotation_between
 from spintrack.io.dat import read_dat
 
-FICTRAC_UPSTREAM = Path("~/fictrac-upstream/bin/fictrac").expanduser()
-FICTRAC_FORK = Path("~/.local/opt/fictrac-fork/src-copy/bin/fictrac").expanduser()
-
-BINARIES = {"fictrac": FICTRAC_UPSTREAM, "fictrac-fork": FICTRAC_FORK}
+# The C++ builds are local; point the environment at others.
+BINARIES = {
+    "fictrac": Path(
+        os.environ.get("FICTRAC_BIN", "~/fictrac-upstream/bin/fictrac")
+    ).expanduser(),
+    "fictrac-fork": Path(
+        os.environ.get(
+            "FICTRAC_FORK_BIN", "~/.local/opt/fictrac-fork/src-copy/bin/fictrac"
+        )
+    ).expanduser(),
+}
 
 
 @dataclass
@@ -110,10 +118,11 @@ def _parse_log(text: str, result: RunResult) -> None:
 def window_to_camera_frame(dat: np.ndarray, center) -> np.ndarray:
     """Re-express FicTrac's "camera" rotation vectors in the true camera frame.
 
-    FicTrac reports its delta and absolute rotation vectors (columns 1-3 and 8-10) in its
-    tracking-window frame, whose z axis points at the ball center, but labels them as camera
-    coordinates. For an on-axis ball the two frames coincide; for an off-axis ball they differ
-    by the rotation taking +z onto the ball center direction, which this undoes.
+    FicTrac reports its delta and absolute rotation vectors (columns 1-3 and 8-10) in
+    its tracking-window frame, whose z axis points at the ball center, but labels them
+    as camera coordinates. For an on-axis ball the two frames coincide; for an off-axis
+    ball they differ by the rotation taking +z onto the ball center direction, which
+    this undoes.
     """
     out = np.array(dat, dtype=np.float64, copy=True)
     R = rotation_between(
@@ -121,4 +130,21 @@ def window_to_camera_frame(dat: np.ndarray, center) -> np.ndarray:
     )
     for sl in (slice(1, 4), slice(8, 11)):
         out[:, sl] = dat[:, sl] @ R.T
+    return out
+
+
+def fictrac_lab_frame(dat: np.ndarray, center, cam_to_lab) -> np.ndarray:
+    """Put FicTrac's lab-frame increments (columns 5-7) in the true lab frame.
+
+    FicTrac applies `c2a_r` to its window-frame vectors (see `window_to_camera_frame`),
+    so its lab columns are rotated by the ball's off-axis angle: `C R C^T` undoes it.
+    On a rig whose sideslip and turning are correlated this is worth percents of
+    turning.
+    """
+    out = np.array(dat, dtype=np.float64, copy=True)
+    R = rotation_between(
+        np.array([0.0, 0.0, 1.0]), np.asarray(center, dtype=np.float64)
+    )
+    C = np.asarray(cam_to_lab, dtype=np.float64)
+    out[:, 5:8] = dat[:, 5:8] @ (C @ R @ C.T).T
     return out

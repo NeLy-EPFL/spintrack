@@ -19,8 +19,8 @@ def track_video(
     video_path: Path | None = None,
     overrides: dict | None = None,
     max_frames: int | None = None,
-) -> tuple[np.ndarray, dict]:
-    """Returns (dat rows (M, 25), timing dict)."""
+) -> tuple[np.ndarray, dict, Tracker]:
+    """Returns (dat rows (M, 25), timing dict, the tracker)."""
     config_path = Path(config_path)
     cfg = Config.load(config_path)
     params = TrackParams()
@@ -57,5 +57,8 @@ def track_video(
         "wall_s": wall,
         "fps_total": n / wall if wall > 0 else np.nan,
         "tracking_ms_per_frame": 1e3 * t_track / max(n, 1),
+        # A ball that moved in its holder: FicTrac's fixed window reads that as
+        # rotation.
+        "ball_moves": len(getattr(tracker.watch, "episodes", [])),
     }
-    return np.array(rows), timing
+    return np.array(rows), timing, tracker

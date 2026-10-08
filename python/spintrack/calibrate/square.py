@@ -2,8 +2,8 @@
 
 The user marks the four corners (top-left, top-right, bottom-right, bottom-left as seen
 in the image) of a square lying in one of the animal's coordinate planes. Solving the
-square's pose gives the rotation between camera and animal frames; the square's true size
-is irrelevant for the rotation.
+square's pose gives the rotation between camera and animal frames; the square's true
+size is irrelevant for the rotation.
 
 Animal frame (FicTrac convention): x forward, y right, z down.
 """
@@ -83,6 +83,8 @@ def camera_to_lab_from_square(corners_xy, camera: Camera, plane: str) -> np.ndar
 
 
 def c2a_from_square(corners_xy, camera: Camera, plane: str) -> tuple[list[float], list]:
-    """FicTrac-style `(c2a_r, c2a_t)`: rotation vector of camera-to-lab, and translation."""
+    """FicTrac-style `(c2a_r, c2a_t)`: rotation vector of camera-to-lab, and
+    translation.
+    """
     R, t = square_pose(corners_xy, camera, plane)
     return matrix_to_rotvec(R.T).tolist(), t.tolist()

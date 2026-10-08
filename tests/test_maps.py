@@ -1,9 +1,8 @@
 """Saving, loading and localizing against surface-map templates."""
 
-import sys
-
 import numpy as np
 
+from helpers import make_texture, render_window
 from spintrack.camera import PinholeCamera
 from spintrack.engine import TrackEngine, TrackParams
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
@@ -15,13 +14,9 @@ from spintrack.maps import (
     projection_of,
     render_map,
     resample_map,
-    sample_map,
     save_map,
 )
 from spintrack.sphere import source_mask, window_geometry
-
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_engine import make_texture, render_window
 
 CAM = PinholeCamera(320, 240, 40.0)
 CENTER = normalize(np.array([0.05, -0.03, 1.0]))
@@ -54,7 +49,8 @@ def test_saved_map_localises_a_fresh_engine(tmp_path):
     mean2, weight2 = load_map(path, a.map_shape)
     assert np.array_equal(mean2, mean) and np.array_equal(weight2, weight)
 
-    # A new engine with the saved map finds the absolute orientation of a mid-sequence frame.
+    # A new engine with the saved map finds the absolute orientation of a mid-sequence
+    # frame.
     b = TrackEngine(geom, TrackParams(global_search=True))
     b.load_map(mean2, weight2, frozen=True)
     R_mid = rotvec_to_matrix([0.03 * 20, 0.02 * 20, 0.0])
@@ -70,18 +66,25 @@ def test_saved_map_localises_a_fresh_engine(tmp_path):
     assert np.array_equal(b.export_map()[0], mean2)
 
 
-def test_sample_map_reads_cell_centers_exactly():
-    """`sample_map` inverts `map_directions`, so both agree with `Map::project` in Rust."""
-    rng = np.random.default_rng(0)
-    mean = rng.standard_normal((18, 36)).astype(np.float32)
-    weight = np.ones_like(mean)
-    value, seen = sample_map(mean, weight, map_directions(mean.shape))
-    assert np.allclose(value, mean, atol=1e-5), np.abs(value - mean).max()
-    assert seen.all()
+def test_map_directions_agree_with_the_solver():
+    """`map_directions` is where the solver reads each cell (`Map::project` in Rust)."""
+    geom = window_geometry(CAM, CENTER, HALF, 60, source_mask(CAM, CENTER, HALF))
+    engine = TrackEngine(geom, TrackParams())
+    dirs = map_directions(engine.map_shape)
+    weight = np.ones(engine.map_shape, np.float32)
+    for k in range(3):
+        engine.core.set_map(dirs[..., k].astype(np.float32), weight)
+        value, conf = engine.core.render(np.eye(3))
+        got = value.reshape(-1)[geom.index]
+        # Bilinear on a curved grid, not exact; a misplaced cell would be off by ~1.
+        assert np.abs(got - geom.surface[:, k]).max() < 0.01, k
+        assert (conf.reshape(-1)[geom.index] > 0).all()
 
 
 def test_cube_faces_meet_at_their_seams():
-    """The net is an unfolded dice: neighboring faces have to line up along their edge."""
+    """The net is an unfolded dice: neighboring faces have to line up along their
+    edge.
+    """
     n = 32
     faces = cube_directions(n)
     texel = 0.5 * np.pi / n  # angular size of a face-center texel
@@ -103,7 +106,9 @@ def test_cube_and_equal_area_shapes_are_told_apart():
 
 
 def test_resample_survives_a_change_of_projection():
-    """A map saved before the cube existed, or a FicTrac template, has to keep loading."""
+    """A map saved before the cube existed, or a FicTrac template, has to keep
+    loading.
+    """
     dirs = map_directions((90, 180))
     mean = (dirs[..., 0] * dirs[..., 1] + 0.5 * dirs[..., 2]).astype(np.float32)
     weight = np.full(mean.shape, 5.0, dtype=np.float32)
@@ -128,7 +133,9 @@ def test_a_cube_map_renders_on_either_grid():
 
 
 def test_net_tiles_join_at_their_seams_and_face_the_camera():
-    """The drawn net is one continuous surface, seen from outside, centered on the camera."""
+    """The drawn net is one continuous surface, seen from outside, centered on the
+    camera.
+    """
     from spintrack.maps import _NET_TILES, NET_LABELS, _tile_directions
 
     n = 32
@@ -161,18 +168,11 @@ def test_net_tiles_join_at_their_seams_and_face_the_camera():
 
 def test_cube_net_draws_the_window_at_identity():
     """A map splatted from one window at R = I shows that window in the near tile."""
-    from spintrack.maps import _NET_TILES, _tile_directions, sample_map
-
     face = 40
-    dirs = _tile_directions(face, *_NET_TILES[(1, 1)])
-    # A pattern on the sphere that is the direction's x coordinate: brighter to the right.
-    mean = np.zeros((6 * 52, 52), np.float32)
-    from spintrack.maps import map_directions
-
-    mean[:] = map_directions(mean.shape)[..., 0]
+    # A pattern on the sphere that is the direction's x coordinate: brighter to the
+    # right.
+    mean = map_directions((6 * 52, 52))[..., 0].astype(np.float32)
     weight = np.full(mean.shape, 5.0, np.float32)
     img = render_map(mean, weight, layout="cube", face=face)
     near = img[face : 2 * face, face : 2 * face].astype(float)
     assert near[:, -1].mean() > near[:, 0].mean() + 20  # +x drawn on the right
-    value, seen = sample_map(mean, weight, dirs)
-    assert seen.all() and value[face // 2, -1] > 0.5 > value[face // 2, 0]

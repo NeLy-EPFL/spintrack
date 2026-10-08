@@ -1,8 +1,8 @@
 """Ray-cast renderer for a textured ball seen by a calibrated camera.
 
-Only the ball's bounding box is ray-cast (supersampled); the rest of the frame is a static
-background. Shading (Lambert + specular) depends on the surface normal, which is fixed per
-pixel, so only the albedo lookup changes with the ball orientation.
+Only the ball's bounding box is ray-cast (supersampled); the rest of the frame is a
+static background. Shading (Lambert + specular) depends on the surface normal, which is
+fixed per pixel, so only the albedo lookup changes with the ball orientation.
 """
 
 from __future__ import annotations
@@ -30,10 +30,11 @@ class LightingSpec:
     flicker_hz: float = 100.0
     drift_amp: float = 0.0  # slow fractional gain drift over the clip
     # Shadow cast by the holder the ball sits in: the surface is progressively occluded
-    # from the lamps below `holder_elevation` (as a fraction of the ball radius, measured
-    # down the image from the center), losing up to `holder_shadow` of its illumination
-    # over `holder_softness` radii. Fixed in the camera frame, like the rest of the
-    # shading, so it darkens the texture that rotates past it rather than moving with it.
+    # from the lamps below `holder_elevation` (as a fraction of the ball radius,
+    # measured down the image from the center), losing up to `holder_shadow` of its
+    # illumination over `holder_softness` radii. Fixed in the camera frame, like the
+    # rest of the shading, so it darkens the texture that rotates past it rather than
+    # moving with it.
     holder_shadow: float = 0.0
     holder_elevation: float = 0.45
     holder_softness: float = 0.25
@@ -109,10 +110,11 @@ class Renderer:
             self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
 
     def set_center(self, center, half_angle: float | None = None) -> None:
-        """Point the ball at `center`, rebuilding everything that depends on where it is.
+        """Point the ball at `center`, rebuilding everything that depends on where it
+        is.
 
-        Costs about 0.1 s at 3x supersampling, so scenes call it only on the frames where
-        the ball has actually moved.
+        Costs about 0.1 s at 3x supersampling, so scenes call it only on the frames
+        where the ball has actually moved.
         """
         camera, sensor = self.camera, self.sensor
         h, w = camera.height, camera.width
@@ -196,7 +198,9 @@ class Renderer:
     def render(
         self, R_prev: np.ndarray, R: np.ndarray, index: int, n_frames: int
     ) -> np.ndarray:
-        """uint8 frame for orientation `R`, with motion blur from `R_prev` if configured."""
+        """uint8 frame for orientation `R`, with motion blur from `R_prev` if
+        configured.
+        """
         sensor = self.sensor
         if sensor.exposure > 0 and sensor.exposure_steps > 1:
             w = matrix_to_rotvec(R @ R_prev.T)

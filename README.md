@@ -1,175 +1,101 @@
 # spintrack
 
-Track the 3D rotation of a spherical treadmill ("trackball") under a tethered animal from a
-single camera, and reconstruct the animal's fictive path. A pip-installable successor to
-[FicTrac](https://github.com/rjdmoore/fictrac) (Moore et al. 2014): same configuration files
-and output format, a compiled Rust core, and a solver whose per-frame rotation error on
-synthetic ground truth is 3-20x smaller (median 13x over the 16 scenes both systems track),
-at 2.5x FicTrac's speed on the lab's geometry and about 15% slower than it on scenes where
-the ball fills the frame.
+spintrack measures the 3D rotation of a trackball (spherical treadmill) under a tethered animal from a single camera and integrates the animal's fictive path. It is a successor to [FicTrac](https://github.com/rjdmoore/fictrac) (Moore et al. 2014): it reads FicTrac config files and writes FicTrac's 25-column `.dat`, so existing rigs and analysis code keep working. Instead of matching a thresholded window against a binary map, it aligns every frame photometrically against a floating-point map of the ball's surface, with sub-pixel Gauss-Newton steps in a Rust core. On synthetic scenes with exact ground truth its median per-frame error is 0.014-0.053 deg where FicTrac's is 0.17-0.50 deg, and at the lab's window size it needs about a third of FicTrac's time per frame.
 
 ## Install
 
-```bash
-uv add spintrack      # or: pip install spintrack
-```
-
-Prebuilt wheels for Linux, macOS and Windows (Python >= 3.11). No CMake, OpenCV, NLopt or
-Boost to build.
-
-## Use
-
-New to a rig, with no FicTrac config? [docs/first-run.md](docs/first-run.md) takes a clip to
-a tracked file and explains which numbers in the run summary to trust.
+spintrack is not on PyPI yet; wheels will come with the first release. Install from a clone, which builds the Rust extension and so needs a [Rust toolchain](https://rustup.rs) and Python 3.11 or newer:
 
 ```bash
-spintrack run config.txt                 # FicTrac config, writes <video>-<timestamp>.dat and .parquet
-spintrack run config.txt --src ball.mp4  # override the source (video path or camera index)
-spintrack run config.txt --udp 127.0.0.1:1111 --print
-spintrack run config.txt --debug-video --refine 2 --save-map ball.npz
-spintrack run config.txt --two-pass      # map the ball, then track it again from the map
-spintrack calibrate config.txt --auto    # find the ball (and vfov) in the recording
-spintrack calibrate config.txt --c2a-angles 0 180 0   # camera behind the animal
-spintrack calibrate config.txt           # click rim points, ignore regions, animal axes
-spintrack summarize camera.dat --fps 100 # run quality of an existing .dat
-spintrack map ball.npz --layout cube     # look at the ball's surface map
+git clone https://github.com/NeLy-EPFL/spintrack
+cd spintrack
+uv sync            # or, in an environment of your own: pip install .
 ```
 
-`--debug-video` writes an annotated video: the ball with its orientation axes and the
-trail the animal has walked over its surface, the tracking window, the fictive path, the
-surface map as an unfolded dice centered on the face the camera sees, and the static
-illumination field. It encodes H.264 with PyAV's bundled
-FFmpeg, so no system `ffmpeg` is needed. `--refine N` re-estimates every frame offline
-against a map of its neighbors (50 frames either side), which sharpens the per-frame
-increments and recovers dropped frames; it does not remove drift. `--save-map` /
-`--load-map` (also FicTrac sphere-map PNGs) carry a surface map between runs. A loaded
-map counts as a prior: its weights are capped so that the frames being tracked replace
-its content quickly, because a map from another time matches them poorly. `--frozen-map`
-keeps it fixed instead, which suits a template the run must not alter but not a map of a
-different recording (a frozen map of trial 003's own first pass lost track of the ball
-within 100 frames). `--two-pass` maps the ball in a throwaway first pass over the
-recording and tracks it again from the finished map, so the opening frames see a whole
-ball instead of one visible cap; it fixes the cold start, and on the lab recording
-measured it also closes loops a little tighter than the first pass, but the drift that
-accumulates over a recording is not what it is for. If the ball moved in its holder, the
-second pass also places the window on the trajectory the first pass measured, without the
-online follower's delay. `spintrack map` renders a saved map as a picture, either as a
-Lambert equal-area rectangle or unfolded onto a cube.
+Streaming over a serial port needs the `serial` extra (`uv sync --extra serial` or `pip install ".[serial]"`).
 
-The surface map is an equi-angular cubemap; `--map-projection equal_area` switches to
-FicTrac's Lambert cylindrical grid, which is what a like-for-like comparison against
-FicTrac wants. Maps convert between the two on load.
+## Quick start
 
-### The lighting stays out of the ball's texture
+The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball.
 
-A ball sitting in a holder is darker near the holder, and that darkness belongs to the rig,
-not to the ball. Because the lamps do not turn with the ball, spintrack can tell the two
-apart: it measures what stays put in the camera frame and subtracts it, so the surface map
-holds texture rather than a shadow smeared around the sphere. The field takes a few hundred
-frames to converge, so `--load-illumination` starts it from one measured on the same rig
-before - the fields alone, out of a map written by `--save-map`, without that recording's
-ball. `--no-illumination` turns the whole thing off. See
-[docs/algorithm.md](docs/algorithm.md#static-illumination).
+```console
+$ uv run spintrack run examples/sample/config.txt --debug-video
+spintrack 0.1.0: examples/sample/sample.mp4 (800x504, 100 fps, 1050 frames)
+done: 1050 frames, 0 dropped, 5.8 s (182 fps)
+run quality: 1050 frames, 1050 tracked, 0 dropped
+ball moved: no
+radius: silhouette 258.4 px, config 259.8 px (-0.6%)
+hard tracking: none
+wrote sample.dat, sample.parquet, sample-summary.json, sample-debug.mp4 in examples/sample
+```
 
-### The geometry does not have to be hand-measured
+For a rig of your own, `spintrack calibrate config.txt --src clip.mp4 --auto --c2a-angles 0 180 0` writes a config from a recording; the [user guide](docs/guide.md) explains each step.
 
-A config without `roi_circ`/`roi_c` gets its ball found in the recording, and `vfov : auto`
-gets the field of view fitted from the photometric cost. `spintrack calibrate CONFIG --auto`
-does the same and writes the numbers back, so a headless machine never needs the click-based
-calibrator. Detection refuses rather than guessing when it is not sure: a ball radius that is
-5% wrong makes every reported speed about 7% wrong. `vfov` is only fitted when the cost has a
-real minimum; where the ball is small in the frame the cost is flat and the run says so,
-because there any value in the flat range tracks identically.
+## What you get
 
-`c2a_r` is now required: without it the lab-frame and forward/side columns would be
-camera-frame values wearing a different name. Write it with `--c2a-angles`, or
-`c2a_r : { 0, 0, 0 }` to say "camera frame is the animal frame" on purpose.
+Each run writes, next to the config (or into `--out`), files named after the video or the config's `output_fn`:
 
-### Every run says how it went
+- `NAME.dat`: FicTrac's 25 columns, one row per tracked frame.
+- `NAME.parquet`: the same records with named columns and units.
+- `NAME-summary.json`: run quality and the provenance of every geometric input.
+- `NAME-debug.mp4` with `--debug-video`: the frame, the tracking window, the surface map and the path, for checking a run by eye.
+- `NAME-map.npz` with `--save-map`: the ball's surface map, to start a later run from.
 
-Each run ends with a quality block and writes `<out>-summary.json`: cost percentiles,
-dropped frames, solver effort, map coverage, and the frame ranges where tracking was
-measurably harder than in the rest of the same run. It also reports two checks that need no
-ground truth - whether the ball's assumed radius is consistent with what the inner and outer
-parts of the window each imply, and whether the ball moved in its holder mid-recording. If it
-did, the tracking window follows it instead of quietly turning the movement into rotation.
-`spintrack summarize X.dat` produces the same summary from an existing file (without the
-solver-effort part, which a `.dat` does not carry).
+[docs/output.md](docs/output.md) lists every column with its unit, frame and sign.
+
+## Python
+
+```python
+import spintrack
+
+track = spintrack.track("examples/sample/config.txt")  # the run, without the files
+df = track.to_pandas()  # needs pandas; columns by name: forward_total, heading, ...
+print(track.quality.n_dropped, df[["forward_total", "side_total", "heading"]].tail())
+```
+
+For a live camera, feed frames from your own capture code to a `Tracker`. The config must already describe the ball, so calibrate on a recorded clip first.
 
 ```python
 from spintrack import Config, Tracker
-from spintrack.io.sources import VideoSource
 
 cfg = Config.load("config.txt")
-src = VideoSource("trial.mp4")
-tracker = Tracker(cfg, src.width, src.height)
-for frame in src:
-    # None when the frame is dropped
-    result = tracker.process_frame(frame.image, frame.ts_ms)
-    if result is not None:
-        print(result.heading, result.w_lab)
+tracker = Tracker(cfg, width, height)
+for gray, ts_ms in frames():  # your camera SDK: 2-D uint8 images, timestamps in ms
+    res = tracker.process_frame(gray, ts_ms)
+    if res is not None:  # None: the frame could not be tracked
+        print(res.forward, res.side, res.turn, res.heading)  # rad, this frame
 ```
-
-Live cameras: feed grayscale frames from your own capture code (pypylon, PySpin, OpenCV, ...)
-to `Tracker.process_frame`. spintrack does not bundle camera SDKs.
-
-## How it works
-
-FicTrac binarizes the tracking window and searches a rotation that best matches a binary
-surface map with a derivative-free optimizer. spintrack instead normalizes the window
-photometrically, keeps a floating-point surface map, and aligns the two with Gauss-Newton
-iterations using analytic derivatives (sub-pixel, a few iterations per frame), with an
-anti-aliased window, robust weights against occluders, a coarse-to-fine fallback for
-saccades, an estimate of the rig's static illumination that keeps it out of the map, a
-window that follows a ball moving in its holder, and an optional global relocalization.
-Details in [docs/algorithm.md](docs/algorithm.md), and what has been checked against what
-in [docs/verification.md](docs/verification.md).
 
 ## Accuracy and speed
 
-Synthetic scenes with exact ground truth (1000 frames each, 100 fps; FicTrac 2.1.2 run as a
-black box on the same videos). Median per-frame rotation error in degrees; full tables in
-[docs/benchmark.md](docs/benchmark.md).
+| | FicTrac 2.1.2 | spintrack |
+|---|---|---|
+| Median per-frame rotation error, synthetic scenes | 0.17-0.50 deg | 0.014-0.053 deg |
+| Synthetic scenes lost | `speckle` (fine texture, 90 deg error) | none |
+| Turning on real recordings, against an independent referee | about 2% high | within about 1% |
+| Forward walking, same recordings | 0.6-1.4% high | within about 1% |
+| Tracking time per frame, one core, 120x120 window | about 7 ms | about 2 ms |
 
-| scene            | FicTrac | spintrack |
-|------------------|--------:|----------:|
-| clean fly walk   |   0.243 |     0.019 |
-| lab-like, q12    |   0.165 |     0.046 |
-| low contrast     |   0.346 |     0.029 |
-| occluded by legs |   0.275 |     0.036 |
-| saccades         |   0.242 |     0.017 |
-| motion blur      |   0.304 |     0.092 |
-| fine speckle     |  90.266 |     0.020 |
+The synthetic scenes have exact ground truth; the error ranges leave out `static` and `motion_blur`, and FicTrac was not run on four of the 24 scenes. On a ball rendered without any of spintrack's geometry code, the reported rotation is 1.0000 times the true one, within 0.05%. The real recordings are six 60 s trials of one rig, scored against a direct rigid-sphere image registration that shares no code with either tracker. End to end, including H.264 decoding of 1600x1008 frames, spintrack runs at about 400 fps on a 32-core workstation. Scenes, methods and full tables: [docs/benchmark.md](docs/benchmark.md).
 
-Absolute scale is separate from that error and is what matters for a reported speed: over
-these scenes the reported rotation is 0.9986 to 1.0001 times the true one, and on a ball
-rendered without any of spintrack's own geometry code it is 1.0000 within 0.04%
-(`tests/test_scale.py`). What is left is calibration rather than code - a relative error in
-the ball's assumed radius costs about twice as much of the reported rotation about any axis
-in the image plane. `motion_blur` is the one scene where the scale moves, to 0.969: at an
-exposure of 0.8 of the frame period the reported rotation is the average over the exposure
-rather than the instantaneous one, and the integrated path stays exact. See
-[docs/verification.md](docs/verification.md).
+## FicTrac compatibility
 
-Tracking time per frame at the lab's settings (120x120 window, one core): FicTrac ~7 ms,
-spintrack ~2.5 ms with every check on, ~1.7 ms with the ball follower and the radius check
-off (~2 ms and ~1.4 ms at FicTrac's default 60x60 window). On six real 60 s trials
-(1600x1008 HEVC, 100 fps) spintrack agrees with FicTrac to a median 0.1 deg per frame and
-runs at ~240 fps including decoding (~3.5 ms of tracking per frame, of which the silhouette
-measurement that follows a moving ball is about 1.2 and the radius check about 0.2).
+- FicTrac `config.txt` files work as they are, as long as they set `c2a_r` (the camera-to-animal rotation), which spintrack requires. YAML and TOML files with the same keys work too.
+- The `.dat` file and the UDP, TCP and serial streams have FicTrac's 25 columns and line format, and the path columns are integrated exactly as FicTrac does.
+- The rotation columns are in the true camera and lab frames. FicTrac writes its tracking-window frame as the camera frame, which inflates its turning wherever sideslip and turning are correlated, so re-track old FicTrac data instead of pooling it with spintrack's. See [docs/fictrac.md](docs/fictrac.md).
 
 ## Develop
 
 ```bash
-uv sync               # builds the Rust extension via maturin (Python >= 3.11)
+uv sync                                    # builds the extension with maturin
 uv run pytest -q
-uv run ruff check . && cargo fmt --check && cargo clippy --all-targets -- -D warnings
-uv run --group bench python benchmarks/bench.py synth   # render the benchmark scenes
-uv run --group bench python benchmarks/bench.py run --systems fictrac spintrack --pin-cpu 2
+uv run ruff check . && uv run ruff format --check .
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+uv run --group bench python benchmarks/bench.py --help   # see docs/benchmark.md
 ```
 
-## License
+[docs/algorithm.md](docs/algorithm.md) describes the tracker for maintainers.
 
-Apache-2.0. spintrack shares no code with FicTrac; it reads FicTrac's `config.txt` files and
-writes the same 25-column `.dat` output so existing pipelines keep working. See
-[docs/migration-from-fictrac.md](docs/migration-from-fictrac.md).
+## License and citation
+
+Apache-2.0. spintrack shares no code with FicTrac. If you use it, cite it with the metadata in [CITATION.cff](CITATION.cff), and cite FicTrac: Moore, R. J. D. et al. (2014), FicTrac: a visual method for tracking spherical motion and generating fictive animal paths, *J. Neurosci. Methods* 225, 106-119.

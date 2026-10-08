@@ -22,8 +22,8 @@ def map_fidelity(dataset: Path, tracker, truth: dict) -> float:
 
     The map is built in the window frame the tracker started in, so the ground truth has
     to be rotated into it: window -> camera by `R_wc0`, camera -> body by the true
-    orientation of the first frame. Correlation, not error, because the map holds locally
-    normalized intensity rather than albedo.
+    orientation of the first frame. Correlation, not error, because the map holds
+    locally normalized intensity rather than albedo.
     """
     spec = SceneSpec.from_json((Path(dataset) / "scene.json").read_text())
     texture = spec.texture.build(np.random.default_rng(spec.seed))
@@ -40,7 +40,9 @@ def map_fidelity(dataset: Path, tracker, truth: dict) -> float:
 def run_spintrack(
     dataset: Path, overrides: dict | None = None
 ) -> tuple[np.ndarray, dict]:
-    """Track `dataset/video.mp4`; return (est_cam (N,3) with NaN for dropped frames, timing)."""
+    """Track `dataset/video.mp4`; return (est_cam (N,3) with NaN for dropped frames,
+    timing).
+    """
     dataset = Path(dataset)
     cfg = Config.load(dataset / "config.txt")
     params = TrackParams()
@@ -82,15 +84,7 @@ def run_spintrack(
         "tracking_ms_per_frame": 1e3 * t_track / n_frames,
         "frames_prev_fallback": sources["prev"],
         "frames_lost": sources["lost"],
-        "n_refits": len(tracker.refits),
+        "n_refits": len(getattr(tracker.watch, "episodes", [])),
     }
     timing["map_corr"] = map_fidelity(dataset, tracker, truth)
-    photo = tracker.engine.photometry
-    if photo.active:
-        field = photo.residual_field()
-        seen = photo.mask & (photo.acc_n > 1.0)
-        if seen.any():
-            # What is left in the camera frame that the ball-fixed map cannot explain.
-            timing["static_bias_rms"] = float(np.sqrt((field[seen] ** 2).mean()))
-            timing["static_bias_p99"] = float(np.percentile(np.abs(field[seen]), 99))
     return est, timing

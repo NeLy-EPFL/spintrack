@@ -46,6 +46,7 @@ def test_parquet_writer_row_groups_and_metadata(tmp_path):
     table = pq.read_table(path)
     assert table.column_names == list(COLUMNS)
     assert table.schema.field("seq").type == pa.int64()
-    assert table.schema.field("ts").metadata[b"unit"] == b"ms"
+    assert table.schema.field("timestamp").metadata[b"unit"] == b"ms"
+    assert table.schema.field("forward_total").metadata[b"unit"] == b"ball radii"
     assert json.loads(table.schema.metadata[b"provenance"]) == {"source": "ball.mp4"}
     assert np.array_equal(np.column_stack([c.to_numpy() for c in table.columns]), rows)

@@ -10,54 +10,36 @@ from pathlib import Path
 
 from spintrack import __version__
 
+log = logging.getLogger("spintrack")
 
-def _add_run(sub) -> None:
+RUN_DESCRIPTION = """\
+Track the ball in the recording (or camera) a FicTrac config describes. Writes
+NAME.dat (FicTrac's 25 columns), NAME.parquet (the same records, with named columns)
+and NAME-summary.json (the run quality) next to the config, where NAME is the config's
+output_fn or the video's name.
+"""
+
+
+def _add_run(sub, common) -> None:
     p = sub.add_parser(
-        "run", help="track a video or camera described by a FicTrac config"
+        "run",
+        parents=[common],
+        help="track a video or camera described by a FicTrac config",
+        description=RUN_DESCRIPTION,
     )
     p.add_argument("config", help="config.txt (FicTrac format), .yaml or .toml")
     p.add_argument(
         "--src", default=None, help="override src_fn: video path or camera index"
     )
     p.add_argument(
-        "--out", default=None, help="output .dat path (default: next to the video)"
-    )
-    p.add_argument(
-        "--udp", default=None, metavar="HOST:PORT", help="stream records over UDP"
-    )
-    p.add_argument(
-        "--tcp", default=None, metavar="HOST:PORT", help="stream records over TCP"
-    )
-    p.add_argument(
-        "--serial", default=None, metavar="PORT[:BAUD]", help="stream over serial"
-    )
-    p.add_argument("--print", action="store_true", help="print records to the terminal")
-    p.add_argument("--max-frames", type=int, default=None)
-    p.add_argument(
-        "--all-pixels", action="store_true", help="solve on every window pixel"
-    )
-    p.add_argument(
-        "--save-map",
-        nargs="?",
-        const="auto",
+        "--out",
         default=None,
-        metavar="PATH",
-        help="write the final map (default path: <out>-map.npz)",
+        metavar="DIR|PATH",
+        help="a directory to write into, or a .dat or .parquet path that names "
+        "every output",
     )
     p.add_argument(
-        "--load-map",
-        default=None,
-        metavar="PATH",
-        help="start from a saved map (.npz or a FicTrac sphere-map .png)",
-    )
-    p.add_argument(
-        "--frozen-map", action="store_true", help="never update the loaded map"
-    )
-    p.add_argument(
-        "--load-illumination",
-        default=None,
-        metavar="PATH",
-        help="start from the illumination fields of a saved map, without its map",
+        "--overwrite", action="store_true", help="replace outputs of an earlier run"
     )
     p.add_argument(
         "--two-pass",
@@ -65,96 +47,60 @@ def _add_run(sub) -> None:
         help="map the ball in a first pass, then re-track from that map",
     )
     p.add_argument(
-        "--map-projection",
-        choices=("equal_area", "cube"),
-        default=None,
-        help="how the surface map tiles the sphere (default: cube)",
+        "--max-frames", type=int, default=None, metavar="N", help="stop after N frames"
     )
     p.add_argument(
         "--debug-video",
-        nargs="?",
-        const="auto",
+        action="store_true",
+        help="also write an annotated video, NAME-debug.mp4",
+    )
+    p.add_argument(
+        "--debug-axes",
+        action="store_true",
+        help="draw the ball's axes in the debug video (implies --debug-video)",
+    )
+    p.add_argument(
+        "--save-map", action="store_true", help="also write the final map, NAME-map.npz"
+    )
+    p.add_argument(
+        "--load-map",
         default=None,
         metavar="PATH",
-        help="write an annotated debug video (default path: <out>-debug.mp4)",
+        help="start from a saved map (.npz or a FicTrac sphere-map .png)",
     )
-    p.add_argument(
-        "--refine",
-        type=int,
-        default=0,
-        metavar="SWEEPS",
-        help="after tracking, re-estimate all frames against the complete map",
+    live = p.add_argument_group("streaming (FicTrac's line format)")
+    live.add_argument(
+        "--udp", default=None, metavar="HOST:PORT", help="stream records over UDP"
     )
-    p.add_argument(
-        "--refine-out",
-        default=None,
-        metavar="PATH",
-        help="refined .dat (default: <out>-refined.dat)",
+    live.add_argument(
+        "--tcp", default=None, metavar="HOST:PORT", help="stream records over TCP"
     )
-    p.add_argument(
-        "--no-prefetch", action="store_true", help="decode in the tracking thread"
+    live.add_argument(
+        "--serial", default=None, metavar="PORT[:BAUD]", help="stream over serial"
     )
-    p.add_argument(
-        "--no-scale-check",
-        action="store_true",
-        help="skip the inner/outer check on the ball's assumed radius",
+    live.add_argument(
+        "--print", action="store_true", help="print records to the terminal"
     )
-    p.add_argument(
-        "--no-illumination",
-        action="store_true",
-        help="do not separate the rig's static lighting from the ball's texture",
-    )
-    p.add_argument(
-        "--no-summary",
-        action="store_true",
-        help="do not write the run quality sidecar (<out>-summary.json)",
-    )
-    p.add_argument(
-        "--no-parquet",
-        action="store_true",
-        help="do not write the records as Parquet (<out>.parquet) beside the .dat",
-    )
-    p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_run)
 
 
-def _add_summarize(sub) -> None:
-    p = sub.add_parser("summarize", help="run quality summary of an existing .dat")
-    p.add_argument("dat", help="a FicTrac-format .dat written by spintrack or FicTrac")
-    p.add_argument(
-        "--fps",
-        type=float,
-        default=None,
-        help="frame rate, if the .dat has no timestamps",
+def _add_map(sub, common) -> None:
+    p = sub.add_parser(
+        "map", parents=[common], help="render a saved surface map as an image"
     )
-    p.add_argument(
-        "--json", default=None, metavar="PATH", help="also write the sidecar"
-    )
-    p.set_defaults(func=cmd_summarize)
-
-
-def cmd_summarize(args) -> int:
-    from spintrack.quality import format_summary, summary_from_dat, write_sidecar
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    quality = summary_from_dat(args.dat, args.fps)
-    print(format_summary(quality))
-    if args.json:
-        write_sidecar(args.json, quality, {"dat": str(args.dat)})
-    return 0
-
-
-def _add_map(sub) -> None:
-    p = sub.add_parser("map", help="render a saved surface map as an image")
     p.add_argument("map", help="a spintrack .npz map or a FicTrac sphere-map .png")
     p.add_argument(
-        "--out", default=None, metavar="PATH", help="output image (default: <map>.png)"
+        "--out",
+        default=None,
+        metavar="PATH",
+        help="output image (default: MAP.png for a .npz, MAP-render.png for a .png)",
     )
     p.add_argument(
         "--layout",
         choices=("grid", "cube"),
         default="grid",
-        help="the map's own equal-area rectangle, or an unfolded cube",
+        help="grid: an equal-area rectangle, as FicTrac draws its maps (default); "
+        "cube: the unfolded cube the map is stored on, which keeps the poles square",
     )
     p.add_argument(
         "--w-min",
@@ -172,31 +118,42 @@ def cmd_map(args) -> int:
 
     from spintrack.maps import load_map, render_map
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    log = logging.getLogger("spintrack")
     path = Path(args.map)
-    if path.suffix.lower() == ".npz":
+    npz = path.suffix.lower() == ".npz"
+    if args.out:
+        out = Path(args.out)
+    else:
+        out = (
+            path.with_suffix(".png")
+            if npz
+            else path.with_name(f"{path.stem}-render.png")
+        )
+    if out.resolve() == path.resolve():
+        raise ValueError(f"{out} is the map itself; pass another --out")
+    if npz:
         with np.load(path) as z:
             shape = z["mean"].shape
     else:  # a FicTrac template: convert it on its own grid
-        shape = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).shape
+        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise OSError(f"could not read {path} as an image")
+        shape = image.shape
     mean, weight = load_map(path, shape)
-    out = Path(args.out) if args.out else path.with_suffix(".png")
     cv2.imwrite(str(out), render_map(mean, weight, args.w_min, args.layout))
-    log.info(
-        "%s: %dx%d cells, %.0f%% seen -> %s",
-        path,
-        shape[0],
-        shape[1],
-        100.0 * float(np.mean(weight >= args.w_min)),
-        out,
-    )
+    seen = 100.0 * float(np.mean(weight >= args.w_min))
+    log.info("%s: %.0f%% of the ball seen -> %s", path, seen, out)
     return 0
 
 
-def _add_calibrate(sub) -> None:
-    p = sub.add_parser("calibrate", help="interactive ball / animal-frame calibration")
-    p.add_argument("config", help="config.txt to read and update (needs vfov)")
+def _add_calibrate(sub, common) -> None:
+    p = sub.add_parser(
+        "calibrate",
+        parents=[common],
+        help="interactive ball / animal-frame calibration",
+    )
+    p.add_argument(
+        "config", help="config.txt to update (created when missing, with --src)"
+    )
     p.add_argument(
         "--src", default=None, help="override src_fn: video path or camera index"
     )
@@ -225,7 +182,11 @@ def cmd_calibrate(args) -> int:
     if args.c2a_angles is not None:
         from spintrack.calibrate.headless import write_c2a_angles
 
-        write_c2a_angles(args.config, *args.c2a_angles)
+        try:
+            write_c2a_angles(args.config, *args.c2a_angles, src=args.src)
+        except ValueError as exc:
+            logging.getLogger("spintrack").error("%s", exc)
+            return 2
         if not args.auto:
             return 0
     if args.auto:
@@ -242,225 +203,177 @@ def _host_port(spec: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
-def _c2a_provenance(cfg) -> dict:
-    """Where the camera-to-animal transform came from, for the sidecar."""
-    source = cfg.c2a_source()
-    angles = cfg.extra.get("c2a_angles") if cfg.c2a_src == "sliders" else None
-    return {
-        "source": source,
-        "identity": source == "c2a_r" and not any(cfg.c2a_r),
-        "angles": list(angles) if angles else None,
+def _outputs(args, cfg, src: str) -> dict[str, Path]:
+    """The files this run writes, by kind; refuses to replace any unless --overwrite."""
+    out = Path(args.out) if args.out else None
+    if out is not None and out.suffix.lower() in (".dat", ".parquet"):
+        base = out.with_suffix("")
+    else:
+        name = cfg.output_fn or ("camera" if src.isdigit() else Path(src).stem)
+        base = out / Path(name).name if out else Path(args.config).parent / name
+    paths = {
+        "dat": Path(f"{base}.dat"),
+        "parquet": Path(f"{base}.parquet"),
+        "summary": Path(f"{base}-summary.json"),
     }
+    if args.debug_video or args.debug_axes or cfg.save_debug:
+        paths["debug"] = Path(f"{base}-debug.mp4")
+    if args.save_map:
+        paths["map"] = Path(f"{base}-map.npz")
+    existing = [p.name for p in paths.values() if p.exists()]
+    if existing and not args.overwrite:
+        raise ValueError(
+            f"outputs of an earlier run in {base.parent}: {', '.join(existing)} "
+            f"(--overwrite replaces them)"
+        )
+    return paths
 
 
-def _c2a_line(prov: dict) -> str:
-    if prov["identity"]:
-        return "identity (explicit)"
-    if prov["angles"]:
-        el, az, tw = prov["angles"]
-        return f"from config (sliders: elevation {el:g}, azimuth {az:g}, twist {tw:g})"
-    if prov["source"] == "c2a_r":
-        return "from config"
-    return f"from config ({prov['source']})"
-
-
-def cmd_run(args) -> int:
-    from spintrack.config import Config
-    from spintrack.engine import TrackParams
+def _streams(args, cfg) -> list:
+    """The sockets, serial port and terminal the records are streamed to."""
     from spintrack.io.recorders import (
-        FileRecorder,
         SerialRecorder,
         TcpRecorder,
         TerminalRecorder,
         UdpRecorder,
     )
-    from spintrack.io.sources import open_source
-    from spintrack.pipeline import run
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s"
-    )
-    log = logging.getLogger("spintrack")
-    config_path = Path(args.config)
-    cfg = Config.load(config_path)
-    if args.load_map:
-        cfg.sphere_map_fn = args.load_map
-    if args.frozen_map:
-        cfg.map_frozen = True
-    if args.load_illumination:
-        cfg.illumination_fn = args.load_illumination
-    src_spec = args.src if args.src is not None else cfg.src_fn
-    if not src_spec:
-        log.error("no source: set src_fn in the config or pass --src")
-        return 2
-    if cfg.c2a_source() is None:
-        log.error(
-            "no camera-to-animal transform (c2a_r): the lab-frame and forward/side "
-            "columns would be\ncamera-frame values in disguise. Fix: spintrack "
-            "calibrate CONFIG --c2a-angles ELEV AZIM TWIST\n(a camera directly behind "
-            "the animal, level with the ball, is 0 180 0), or write\n"
-            "`c2a_r : { 0, 0, 0 }` to use the identity explicitly."
-        )
-        return 2
-    if args.two_pass and str(src_spec).isdigit():
-        log.error("--two-pass needs a recording it can read twice, not a live camera")
-        return 2
-    if not str(src_spec).isdigit():
-        src_path = Path(src_spec)
-        if not src_path.is_absolute():
-            src_path = config_path.parent / src_path
-        src_spec = str(src_path)
-    prepared = None
-    if not cfg.has_ball() or cfg.vfov is None:
-        from spintrack.autofit import prepare_config
-        from spintrack.detect import DetectionError
-
-        try:
-            prepared = prepare_config(cfg, src_spec)
-        except (DetectionError, ValueError) as exc:
-            log.error("%s", exc)
-            return 2
-    source = open_source(src_spec)
-
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        base = cfg.output_fn or (
-            Path(src_spec).stem if not str(src_spec).isdigit() else "camera"
-        )
-        out_dir = config_path.parent if not Path(base).is_absolute() else Path()
-        out_path = out_dir / f"{base}-{stamp}.dat"
-    parquet_out = None
-    if not args.no_parquet:
-        parquet_out = out_path.with_suffix(".parquet")
-        if parquet_out == out_path:
-            log.error("--out names the .dat file; its Parquet copy goes beside it")
-            source.close()
-            return 2
-    recorders = [FileRecorder(out_path)]
+    out = []
     if args.udp or (cfg.sock_port > 0 and not args.tcp):
         host, port = (
             _host_port(args.udp) if args.udp else (cfg.sock_host, cfg.sock_port)
         )
-        recorders.append(UdpRecorder(host, port))
+        out.append(UdpRecorder(host, port))
     if args.tcp:
-        recorders.append(TcpRecorder(*_host_port(args.tcp)))
+        out.append(TcpRecorder(*_host_port(args.tcp)))
     if args.serial or cfg.com_port:
         spec = args.serial or f"{cfg.com_port}:{cfg.com_baud}"
         port, _, baud = spec.partition(":")
-        recorders.append(SerialRecorder(port, int(baud) if baud else 115200))
+        out.append(SerialRecorder(port, int(baud) if baud else 115200))
     if args.print:
-        recorders.append(TerminalRecorder())
+        out.append(TerminalRecorder())
+    return out
 
-    if args.no_illumination:
-        cfg.illumination = False
-        if cfg.illumination_fn:
-            log.warning(
-                "--no-illumination: the fields from %s are loaded but not applied",
-                cfg.illumination_fn,
-            )
-    tuned = args.all_pixels or args.no_scale_check or args.map_projection
-    params = TrackParams() if tuned else None
-    if params is not None:
-        params.max_pixels = None if args.all_pixels else params.max_pixels
-        params.scale_check_stride = (
-            0 if args.no_scale_check else params.scale_check_stride
-        )
-        params.map_projection = args.map_projection or params.map_projection
-    debug_video = args.debug_video
-    if debug_video is None and cfg.save_debug:
-        debug_video = "auto"
-    if debug_video == "auto":
-        debug_video = str(out_path.with_name(out_path.stem + "-debug.mp4"))
-    save_map = args.save_map
-    if save_map == "auto":
-        save_map = str(out_path.with_name(out_path.stem + "-map.npz"))
-    refined_out = args.refine_out
-    if args.refine > 0 and refined_out is None:
-        refined_out = str(out_path.with_name(out_path.stem + "-refined.dat"))
-    summary_out = None
-    if not args.no_summary:
-        summary_out = str(out_path.with_name(out_path.stem + "-summary.json"))
+
+def _provenance(args, cfg, src: str, prepared) -> tuple[dict, dict]:
+    """What the sidecar records about the inputs, and the summary lines they add."""
+    c2a = cfg.c2a_source()
+    angles = cfg.extra.get("c2a_angles") if cfg.c2a_src == "sliders" else None
+    identity = c2a == "c2a_r" and not any(cfg.c2a_r)
     provenance = {
-        "config": str(config_path),
-        "source": str(src_spec),
-        "vfov": (
-            prepared.vfov.report()
-            if prepared is not None and prepared.vfov is not None
-            else {"value": cfg.vfov, "source": "config"}
-        ),
-        "ball": (
-            prepared.report()
-            if prepared is not None
-            else {"source": "config", "roi_c": cfg.roi_c, "roi_r": cfg.roi_r}
-        ),
-        "c2a": _c2a_provenance(cfg),
+        "config": str(args.config),
+        "source": src,
+        "vfov": {"value": cfg.vfov, "source": "config"},
+        "ball": {"source": "config", "roi_c": cfg.roi_c, "roi_r": cfg.roi_r},
+        "c2a": {
+            "source": c2a,
+            "identity": identity,
+            "angles": list(angles) if angles else None,
+        },
     }
-    refined_parquet_out = None
-    if parquet_out is not None:
-        from spintrack.io.parquet import ParquetWriter
-
-        recorders.append(ParquetWriter(parquet_out, provenance))
-        if refined_out:
-            refined_parquet_out = str(Path(refined_out).with_suffix(".parquet"))
-    checks = {"c2a_r": _c2a_line(provenance["c2a"])}
+    checks = {"c2a_r": "identity (explicit)"} if identity else {}
     if prepared is not None:
+        provenance["ball"] = prepared.report()
         checks["ball"] = prepared.line()
         if prepared.vfov is not None:
+            provenance["vfov"] = prepared.vfov.report()
             checks["vfov"] = prepared.vfov.line()
-    log.info("spintrack %s: %s -> %s", __version__, src_spec, out_path)
+    return provenance, checks
 
-    def progress(stats):
-        log.info(
-            "%d frames, %d dropped, %.0f fps (%.2f ms/frame tracking)",
-            stats.frames, stats.dropped, stats.fps, stats.tracking_ms_per_frame,
-        )  # fmt: skip
 
+def _clock(seconds: float) -> str:
+    minutes, s = divmod(round(seconds), 60)
+    hours, m = divmod(minutes, 60)
+    return f"{hours}:{m:02d}:{s:02d}" if hours else f"{m}:{s:02d}"
+
+
+def _progress(stats) -> None:
+    done = f"{stats.frames} frames"
+    if stats.total and stats.fps > 0:
+        left = max(stats.total - stats.frames, 0) / stats.fps
+        done = (
+            f"{100 * stats.frames / stats.total:.0f}% ({stats.frames}/{stats.total} "
+            f"frames, {_clock(left)} left)"
+        )
+    log.info("%s, %d dropped, %.0f fps", done, stats.dropped, stats.fps)
+
+
+def cmd_run(args) -> int:
+    import cv2
+
+    from spintrack.io.parquet import ParquetWriter
+    from spintrack.io.recorders import FileRecorder
+    from spintrack.io.sources import open_source
+    from spintrack.pipeline import open_config, run
+    from spintrack.quality import format_summary, write_sidecar
+
+    # OpenCV spreads its remaps and filters over every core by default; two threads
+    # track as fast and leave the rest of the machine to other runs.
+    cv2.setNumThreads(2)
+    cfg, src = open_config(args.config, args.src, args.two_pass)
+    if args.load_map:
+        cfg.sphere_map_fn = args.load_map
+    outputs = _outputs(args, cfg, src)
+    source = open_source(src)
+    recorders = []
     try:
+        prepared = None
+        if not cfg.has_ball():
+            from spintrack.autofit import prepare_config
+
+            prepared = prepare_config(cfg, src)
+        provenance, checks = _provenance(args, cfg, src, prepared)
+        # Streams first: one that cannot connect then fails before any file exists.
+        recorders = _streams(args, cfg)
+        outputs["dat"].parent.mkdir(parents=True, exist_ok=True)
+        recorders += [
+            FileRecorder(outputs["dat"]),
+            ParquetWriter(outputs["parquet"], provenance),
+        ]
+        size = f"{source.width}x{source.height}, {source.fps:g} fps"
+        n = getattr(source, "n_frames", None)
+        log.info(
+            "spintrack %s: %s (%s%s)",
+            __version__, src, size, f", {n} frames" if n else "",
+        )  # fmt: skip
+        t0 = time.perf_counter()
         stats = run(
             cfg,
             source,
             recorders,
-            params=params,
+            two_pass_source=(lambda: open_source(src)) if args.two_pass else None,
             max_frames=args.max_frames,
-            prefetch=not args.no_prefetch,
-            progress=progress,
-            save_map=save_map,
-            debug_video=debug_video,
-            two_pass_source=(lambda: open_source(src_spec)) if args.two_pass else None,
-            refine_sweeps=args.refine,
-            refined_out=refined_out,
-            refined_parquet_out=refined_parquet_out,
-            summary_out=summary_out,
-            provenance=provenance,
-            checks=checks,
+            progress=_progress,
+            debug_video=outputs.get("debug"),
+            debug_axes=args.debug_axes,
+            save_map=outputs.get("map"),
         )
+        elapsed = time.perf_counter() - t0
     finally:
         source.close()
         for rec in recorders:
             rec.close()
     log.info(
-        "done: %d frames, %d tracked, %d dropped, %.1f s "
-        "(%.0f fps, %.2f ms/frame tracking)",
-        stats.frames, stats.tracked, stats.dropped, stats.wall_s, stats.fps,
-        stats.tracking_ms_per_frame,
+        "done: %d frames, %d dropped, %.1f s (%.0f fps)",
+        stats.frames, stats.dropped, elapsed, stats.frames / max(elapsed, 1e-9),
     )  # fmt: skip
-    if parquet_out is not None:
-        log.info("parquet: %s", parquet_out)
-    if stats.refine:
-        log.info("refined: %s -> %s", stats.refine, refined_out)
-    if debug_video:
-        log.info("debug video: %s", debug_video)
-    if save_map:
-        log.info("map: %s", save_map)
-    if stats.quality is not None:
-        from spintrack.quality import format_summary
-
+    log.debug("tracking: %.2f ms/frame", stats.tracking_ms_per_frame)
+    if stats.quality is None:
+        del outputs["summary"]
+    else:
+        stats.quality.checks = {**checks, **stats.quality.checks}
         log.info("%s", format_summary(stats.quality))
-        if summary_out:
-            log.info("summary: %s", summary_out)
+        sidecar = {**provenance, "geometry": stats.geometry}
+        write_sidecar(outputs["summary"], stats.quality, sidecar)
+    written = ", ".join(p.name for p in outputs.values())
+    log.info("wrote %s in %s", written, outputs["dat"].parent)
     return 0
+
+
+def _message(exc: BaseException) -> str:
+    if isinstance(exc, OSError) and exc.filename and exc.strerror:
+        return f"{exc.filename}: {exc.strerror}"
+    return str(exc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -468,16 +381,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--version", action="version", version=f"spintrack {__version__}"
     )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="debug messages, and a traceback on errors",
+    )
     sub = parser.add_subparsers(dest="command")
-    _add_run(sub)
-    _add_map(sub)
-    _add_calibrate(sub)
-    _add_summarize(sub)
+    _add_run(sub, common)
+    _add_map(sub, common)
+    _add_calibrate(sub, common)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0
-    return args.func(args)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log.setLevel(logging.DEBUG if args.verbose else logging.NOTSET)
+    from spintrack.detect import DetectionError
+
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        log.error("interrupted")
+        return 130
+    except (OSError, ValueError, DetectionError) as exc:
+        log.error("error: %s", _message(exc), exc_info=args.verbose)
+        return 2
 
 
 if __name__ == "__main__":

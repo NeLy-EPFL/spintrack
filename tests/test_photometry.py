@@ -1,10 +1,12 @@
-"""Static illumination is separated from the ball's texture instead of entering the map."""
-
-import sys
+"""Static illumination is separated from the ball's texture instead of entering the
+map.
+"""
 
 import numpy as np
 import pytest
 
+from helpers import make_texture
+from spintrack import photometry
 from spintrack.camera import PinholeCamera
 from spintrack.config import Config
 from spintrack.engine import TrackEngine, TrackParams
@@ -13,15 +15,18 @@ from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.sphere import source_mask, window_geometry
 from spintrack.tracker import Tracker
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_engine import make_texture
-
 CAM = PinholeCamera(320, 240, 40.0)
 CENTER = normalize(np.array([0.05, -0.03, 1.0]))
 HALF = 0.25
 SIZE = 60
-# Fast enough to converge inside a test; the shipped defaults are ten times slower.
-FAST = {"illum_warmup": 20, "illum_update_every": 10, "illum_tau": 60.0}
+# Fast enough to converge inside a test; the shipped constants are ten times slower.
+FAST = {"WARMUP": 20, "UPDATE_EVERY": 10, "TAU": 60.0}
+
+
+@pytest.fixture(autouse=True)
+def fast_fields(monkeypatch):
+    for name, value in FAST.items():
+        monkeypatch.setattr(photometry, name, value)
 
 
 def shading(size: int, start: float = 0.68, amp: float = 0.7, glow: float = 0.08):
@@ -62,34 +67,19 @@ def turns(n: int) -> list[np.ndarray]:
     return out
 
 
-def run(params, n=400, seed=0, shaded=True):
+def run(params, n=400, seed=0):
     rng = np.random.default_rng(seed)
     geom = geometry()
     texture = make_texture(np.random.default_rng(7))
-    shade, glow = shading(SIZE) if shaded else (None, None)
+    shade, glow = shading(SIZE)
     engine = TrackEngine(geom, params)
     for R in turns(n):
         engine.step(render(geom, texture, R, rng, shade, glow))
     return engine, geom, texture
 
 
-def map_error(engine, reference) -> float:
-    """RMS difference from a map of the same ball built with the lamps switched off.
-
-    A better yardstick than correlating against the albedo: it is in the map's own units,
-    so it is not blunted by the non-linear, spatially varying way local normalization
-    turns albedo into intensity, and it isolates exactly what the shading did.
-    """
-    mean, weight = engine.export_map()
-    ref_mean, ref_weight = reference
-    both = (weight > 1.0) & (ref_weight > 1.0)
-    return float(np.sqrt(((mean[both] - ref_mean[both]) ** 2).mean()))
-
-
 def test_bias_field_recovers_the_shadow():
-    # `illum_measure` gives the uncorrected run the same accumulators to be judged by.
-    plain, _, _ = run(TrackParams(illum_bias=False, illum_measure=True, **FAST))
-    fixed, geom, _ = run(TrackParams(illum_bias=True, **FAST))
+    fixed, geom, _ = run(TrackParams(illum_bias=True))
 
     # The field lands where the artifact actually is. Deep inside the shadow the local
     # normalization copes, because the whole neighborhood is dark; it is at the *edge*
@@ -102,53 +92,9 @@ def test_bias_field_recovers_the_shadow():
     assert bias[edge].mean() < -0.2, bias[edge].mean()
     assert abs(bias[top].mean()) < 0.1, bias[top].mean()
 
-    # What is left in the camera frame that the ball-fixed map cannot explain.
-    def static_rms(engine):
-        return float(
-            np.sqrt((engine.photometry.residual_field()[geom.mask] ** 2).mean())
-        )
-
-    assert static_rms(fixed) < 0.5 * static_rms(plain), (
-        static_rms(fixed),
-        static_rms(plain),
-    )
-
-
-def test_correction_keeps_the_shadow_out_of_the_map():
-    reference = run(TrackParams(illum_bias=False), shaded=False)[0].export_map()
-    plain, _, _ = run(TrackParams(illum_bias=False))
-    fixed, _, _ = run(TrackParams(illum_bias=True, illum_gain=True, **FAST))
-    assert map_error(fixed, reference) < 0.95 * map_error(plain, reference)
-
-
-def test_measure_only_reports_the_shadow_without_touching_anything():
-    plain, _, _ = run(TrackParams(illum_bias=False))
-    watched, geom, _ = run(TrackParams(illum_bias=False, illum_measure=True, **FAST))
-    assert np.array_equal(plain.export_map()[0], watched.export_map()[0])
-    assert np.array_equal(watched.photometry.bias, np.zeros((SIZE, SIZE)))
-    rows = np.arange(SIZE)[:, None]
-    edge = geom.mask & (rows >= 0.72 * SIZE) & (rows < 0.85 * SIZE)
-    assert watched.photometry.residual_field()[edge].mean() < -0.15
-
-
-def test_unit_fields_are_the_no_field_path():
-    """gain = 1 and weight = 1 must reproduce the solver exactly, not merely closely."""
-    plain, geom, _ = run(TrackParams(illum_bias=False), n=60)
-    unit, _, _ = run(TrackParams(illum_bias=False), n=0)
-    unit.core.set_photometric(
-        np.ones((SIZE, SIZE), np.float32), np.ones((SIZE, SIZE), np.float32)
-    )
-    rng = np.random.default_rng(0)
-    texture = make_texture(np.random.default_rng(7))
-    shade, glow = shading(SIZE)
-    for R in turns(60):
-        unit.step(render(geom, texture, R, rng, shade, glow))
-    assert np.array_equal(plain.export_map()[0], unit.export_map()[0])
-    assert np.array_equal(plain.R, unit.R)
-
 
 def test_window_move_carries_the_field_with_the_window():
-    engine, geom, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
+    engine, geom, _ = run(TrackParams(illum_bias=True), n=200)
     before = engine.photometry.bias.copy()
     rows = np.arange(SIZE)[:, None]
     edge = (rows >= 0.72 * SIZE) & (rows < 0.85 * SIZE)
@@ -171,7 +117,7 @@ def test_a_ball_that_moved_in_its_holder_forgets_the_field():
     fraction of a radius the old field describes a shadow that is no longer there, and
     carrying it is worse than starting again.
     """
-    engine, geom, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
+    engine, geom, _ = run(TrackParams(illum_bias=True), n=200)
     assert np.abs(engine.photometry.bias).max() > 0.1  # there is something to lose
     moved = normalize(CENTER + np.array([0.0, 0.05, 0.0]))  # ~0.05 rad, HALF is 0.25
     new_geom = window_geometry(CAM, moved, HALF, SIZE, source_mask(CAM, moved, HALF))
@@ -180,14 +126,13 @@ def test_a_ball_that_moved_in_its_holder_forgets_the_field():
     assert engine.photometry.acc_n.max() == 0.0
 
 
-def test_map_file_carries_the_illumination_fields(tmp_path):
-    engine, _, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
+def test_map_file_carries_the_illumination_field(tmp_path):
+    engine, _, _ = run(TrackParams(illum_bias=True), n=200)
     mean, weight = engine.export_map()
     state = engine.photometry.state()
     path = save_map(
-        tmp_path / "m.npz", mean, weight, window_size=SIZE,
-        illum_bias=state["bias"], illum_gain=state["gain"], illum_wt=state["wt"],
-    )  # fmt: skip
+        tmp_path / "m.npz", mean, weight, window_size=SIZE, illum_bias=state["bias"]
+    )
     back_mean, back_weight = load_map(path, mean.shape)
     assert np.array_equal(back_mean, mean) and np.array_equal(back_weight, weight)
     fields, _ = load_illumination(path, SIZE)
@@ -197,18 +142,17 @@ def test_map_file_carries_the_illumination_fields(tmp_path):
 
 
 def test_illumination_fn_loads_the_fields_and_leaves_the_map_alone(tmp_path):
-    """The point of `--load-illumination`: the rig's lighting without a previous ball.
+    """The point of `illumination_fn`: the rig's lighting without a previous ball.
 
-    `sphere_map_fn` carries the fields too, but only along with the surface map they were
-    saved beside, and localizing the first frame against it.
+    `sphere_map_fn` carries the fields too, but only along with the surface map they
+    were saved beside, and localizing the first frame against it.
     """
-    engine, _, _ = run(TrackParams(illum_bias=True, **FAST), n=200)
+    engine, _, _ = run(TrackParams(illum_bias=True), n=200)
     state = engine.photometry.state()
     mean, weight = engine.export_map()
     path = save_map(
         tmp_path / "m.npz", mean, weight, window_size=SIZE, center=CENTER,
-        half_angle=HALF, illum_bias=state["bias"], illum_gain=state["gain"],
-        illum_wt=state["wt"],
+        half_angle=HALF, illum_bias=state["bias"],
     )  # fmt: skip
     cfg = Config(vfov=CAM.vfov_deg, q_factor=SIZE // 10, roi_c=list(CENTER), roi_r=HALF)
     cfg.c2a_r = [0.0, 0.0, 0.0]
@@ -225,23 +169,23 @@ def test_a_loaded_field_survives_the_first_refresh():
     """A loaded field goes into the accumulators, not only into `bias`.
 
     Every refresh reads the field off the accumulators, so a field that was merely
-    assigned is replaced by a handful of the new run's own samples `illum_warmup` frames
-    in, and the head start lasts exactly that long. Seeded `illum_tau` frames deep it is
+    assigned is replaced by a handful of the new run's own samples `WARMUP` frames
+    in, and the head start lasts exactly that long. Seeded `TAU` frames deep it is
     a prior instead, which the new frames pull away from over that time constant.
     """
-    donor, geom, texture = run(TrackParams(illum_bias=True, **FAST), n=400)
+    donor, geom, texture = run(TrackParams(illum_bias=True), n=400)
     fields = donor.photometry.state()
     shade, glow = shading(SIZE)
 
     def distance(prior_frames):
-        engine = TrackEngine(geometry(), TrackParams(illum_bias=True, **FAST))
+        engine = TrackEngine(geometry(), TrackParams(illum_bias=True))
         engine.photometry.load(**fields, prior_frames=prior_frames)
         rng = np.random.default_rng(11)
-        for R in turns(FAST["illum_warmup"] + FAST["illum_update_every"] + 5):
+        for R in turns(FAST["WARMUP"] + FAST["UPDATE_EVERY"] + 5):
             engine.step(render(geom, texture, R, rng, shade, glow))
         photo = engine.photometry
         gap = photo.bias - fields["bias"]
         return float(np.sqrt((gap[photo.mask] ** 2).mean()))
 
-    kept, dropped = distance(FAST["illum_tau"]), distance(0.0)
+    kept, dropped = distance(FAST["TAU"]), distance(0.0)
     assert kept < 0.5 * dropped, (kept, dropped)

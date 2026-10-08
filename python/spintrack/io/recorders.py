@@ -92,18 +92,3 @@ class SerialRecorder:
 
     def close(self) -> None:
         self._port.close()
-
-
-class Broadcast:
-    """Fan one record out to several recorders."""
-
-    def __init__(self, recorders: Sequence[Recorder]):
-        self.recorders = list(recorders)
-
-    def write(self, values: Sequence[float]) -> None:
-        for r in self.recorders:
-            r.write(values)
-
-    def close(self) -> None:
-        for r in self.recorders:
-            r.close()

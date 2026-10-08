@@ -105,7 +105,8 @@ class MotionSpec:
             turn[s:e] += sign * peak * prof[: e - s]
         if saccades_only:
             forward = forward * 0.3
-        # Small jitter while standing (tethered flies never hold the ball perfectly still).
+        # Small jitter while standing (tethered flies never hold the ball perfectly
+        # still).
         jitter = rng.normal(0.0, 0.0005, (n, 3)) * (~walking)[:, None]
         # Lab-frame increments: x = -side (right is negative x rotation), y = forward,
         # z = -turn (heading increases for negative z), per spintrack.path conventions.
@@ -121,7 +122,9 @@ def lab_to_camera_increments(w_lab: np.ndarray, cam_to_lab: np.ndarray) -> np.nd
 
 
 def orientations(w_cam: np.ndarray) -> np.ndarray:
-    """Absolute ball orientations `R_t = exp(w_t) R_{t-1}` starting from identity, (n,3,3)."""
+    """Absolute ball orientations `R_t = exp(w_t) R_{t-1}` starting from identity,
+    (n,3,3).
+    """
     out = np.empty((len(w_cam), 3, 3))
     R = np.eye(3)
     for i, w in enumerate(w_cam):

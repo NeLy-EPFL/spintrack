@@ -1,20 +1,21 @@
-"""Run quality summary: episode detection, `.dat` summaries and the JSON sidecar."""
+"""Run quality summary: episode detection, the terminal block and the JSON sidecar."""
 
 import json
 
 import numpy as np
 
-from spintrack.io.dat import N_COLUMNS, DatWriter
 from spintrack.quality import (
     episodes_above_baseline,
     format_summary,
-    summary_from_dat,
+    summarize_run,
     write_sidecar,
 )
 
 
 def make_trace(rng, n=1200, block=(400, 700), spike=(900, 905)):
-    """Lognormal cost noise around 0.06 with one long block and one short spike at 5x."""
+    """Lognormal cost noise around 0.06 with one long block and one short spike at
+    5x.
+    """
     cost = 0.06 * np.exp(rng.normal(0.0, 0.25, n))
     iters = rng.integers(3, 5, n).astype(float)
     for lo, hi in (block, spike):
@@ -55,45 +56,33 @@ def test_dropped_frames_are_an_episode():
     assert episodes_above_baseline(cost, ok, iters) == [(200, 259)]
 
 
-def _write_dat(path, frames, cost, ts):
-    with DatWriter(path) as w:
-        for frame, c, t in zip(frames, cost, ts, strict=True):
-            values = np.zeros(N_COLUMNS)
-            values[0], values[4], values[21] = frame, c, t
-            values[22] = frame
-            w.write(values)
-
-
-def test_summary_from_dat_counts_frame_gaps_as_dropped(tmp_path):
-    frames = [f for f in range(200) if not 50 <= f < 70]
-    cost = np.full(len(frames), 0.05)
-    _write_dat(tmp_path / "a.dat", frames, cost, [10.0 * f for f in frames])
-    q = summary_from_dat(tmp_path / "a.dat")
-    assert (q.n_frames, q.n_tracked, q.n_dropped) == (200, 180, 20)
-    assert q.iters_median is None and q.map_coverage is None
-    # The gap is the only episode, and its timestamps come from column 21.
-    assert [(e.start, e.end) for e in q.episodes] == [(50, 69)]
-    assert np.isclose(q.episodes[0].t0_s, 0.5)
-
-
-def test_summary_from_dat_falls_back_to_fps_without_timestamps(tmp_path):
-    frames = [f for f in range(200) if not 50 <= f < 70]
-    cost = np.full(len(frames), 0.05)
-    _write_dat(tmp_path / "b.dat", frames, cost, [-1.0] * len(frames))
-    assert np.isnan(summary_from_dat(tmp_path / "b.dat").episodes[0].t0_s)
-    q = summary_from_dat(tmp_path / "b.dat", fps=50.0)
-    assert np.isclose(q.episodes[0].t0_s, 1.0)
-    assert "1.0-1.4 s" in format_summary(q)
-
-
-def test_sidecar_round_trip(tmp_path):
-    frames = list(range(100))
-    _write_dat(
-        tmp_path / "c.dat", frames, np.full(100, 0.05), [10.0 * f for f in frames]
+def test_summary_and_sidecar(tmp_path):
+    """Dropped frames are an episode with times; the sidecar keeps what the block
+    skips.
+    """
+    n = 200
+    frames = np.arange(n)
+    ok = np.ones(n, bool)
+    ok[50:70] = False
+    cost = np.full(n, 0.05)
+    q = summarize_run(
+        frames,
+        10.0 * frames,
+        ok,
+        cost,
+        np.full(n, 3.0),
+        ["map"] * n,
+        np.zeros((n, 3)),
+        illumination={"illum_peak": 0.3},
     )
-    q = summary_from_dat(tmp_path / "c.dat")
+    q.checks.update({"radius": "silhouette 100.0 px", "c2a_r": "from config"})
+    assert (q.n_frames, q.n_tracked, q.n_dropped) == (200, 180, 20)
+    assert [(e.start, e.end) for e in q.episodes] == [(50, 69)]
+    block = format_summary(q)
+    assert "frames 50-69, 0.5-0.7 s" in block and "radius: silhouette" in block
+    assert "c2a_r" not in block and len(block.splitlines()) <= 6
     path = write_sidecar(tmp_path / "c-summary.json", q, {"config": "x.txt"})
     loaded = json.loads(path.read_text())
     assert loaded["provenance"]["config"] == "x.txt"
-    assert loaded["quality"]["n_frames"] == 100
-    assert loaded["quality"]["cost_median"] == q.cost_median
+    assert loaded["quality"]["checks"]["c2a_r"] == "from config"
+    assert loaded["quality"]["illumination"] == {"illum_peak": 0.3}

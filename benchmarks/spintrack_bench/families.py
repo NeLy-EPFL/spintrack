@@ -38,7 +38,8 @@ FAMILIES: dict[str, SceneSpec] = {
         name="fast_forward", motion={"kind": "constant", "axis": "y", "rate": 0.12}
     ),
     "random_walk": SceneSpec(
-        name="random_walk", motion={"kind": "random_walk", "sigma": 0.03, "tau_frames": 15}
+        name="random_walk",
+        motion={"kind": "random_walk", "sigma": 0.03, "tau_frames": 15},
     ),
     "saccades": _fly("saccades", motion={"kind": "saccades"}),
     "low_contrast": _fly("low_contrast", texture="low_contrast"),
@@ -47,14 +48,18 @@ FAMILIES: dict[str, SceneSpec] = {
     "occluded": _fly("occluded", occluders={"legs": 6, "body": True, "dust": 3}),
     "lighting": _fly(
         "lighting",
-        lighting={"flicker_amp": 0.15, "flicker_hz": 47.0, "drift_amp": 0.2, "vignette": 0.4,
-                  "specular": 0.35},
+        lighting={"flicker_amp": 0.15, "flicker_hz": 47.0, "drift_amp": 0.2,
+                  "vignette": 0.4, "specular": 0.35},
     ),
     "motion_blur": _fly(
         "motion_blur", sensor={"exposure": 0.8, "exposure_steps": 4, "blur_sigma": 1.5}
     ),
-    "noisy": _fly("noisy", sensor={"read_noise": 8.0, "shot_noise": 14.0, "blur_sigma": 1.0}),
-    "offaxis": _fly("offaxis", ball_azimuth_deg=16.0, ball_elevation_deg=9.0, half_angle_deg=8.0),
+    "noisy": _fly(
+        "noisy", sensor={"read_noise": 8.0, "shot_noise": 14.0, "blur_sigma": 1.0}
+    ),
+    "offaxis": _fly(
+        "offaxis", ball_azimuth_deg=16.0, ball_elevation_deg=9.0, half_angle_deg=8.0
+    ),
     # The ball sinks in its holder and comes back, as in AN07B017_260414_Fly4_004.
     "ball_drop": _fly(
         "ball_drop", occluders={"legs": 6, "body": True},
@@ -90,23 +95,27 @@ FAMILIES: dict[str, SceneSpec] = {
     # JSP-like geometry: small ball in a narrow-FOV frame, HEVC, q_factor 12.
     "lab_small_ball": _fly(
         "lab_small_ball", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
-        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18, q_factor=12,
-        thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18,
+        q_factor=12, thr_ratio=0.7, sensor=_LAB_SENSOR,
+        occluders={"legs": 6, "body": True},
     ),
     # The same rig with the holder shadow: the scene this whole correction is aimed at.
     "holder_shadow_lab": _fly(
         "holder_shadow_lab", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
-        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18, q_factor=12,
-        thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+        ball_azimuth_deg=-0.4, ball_elevation_deg=0.03, codec="hevc", crf=18,
+        q_factor=12, thr_ratio=0.7, sensor=_LAB_SENSOR,
+        occluders={"legs": 6, "body": True},
         lighting=_HOLDER,
     ),
-    # As above but with the ball sitting low enough to be cut by the bottom of the frame,
-    # as it is on the real rig: the shadow then falls right at the edge of the mask, where
-    # the local normalization has no bright pixels left to balance it against.
+    # As above but with the ball sitting low enough to be cut by the bottom of the
+    # frame, as it is on the real rig: the shadow then falls right at the edge of the
+    # mask, where the local normalization has no bright pixels left to balance it
+    # against.
     "holder_shadow_cut": _fly(
         "holder_shadow_cut", width=864, height=512, vfov_deg=2.0, half_angle_deg=0.31,
-        ball_azimuth_deg=-0.4, ball_elevation_deg=-0.86, codec="hevc", crf=18, q_factor=12,
-        thr_ratio=0.7, sensor=_LAB_SENSOR, occluders={"legs": 6, "body": True},
+        ball_azimuth_deg=-0.4, ball_elevation_deg=-0.86, codec="hevc", crf=18,
+        q_factor=12, thr_ratio=0.7, sensor=_LAB_SENSOR,
+        occluders={"legs": 6, "body": True},
         lighting=_HOLDER,
     ),
 }  # fmt: skip

@@ -12,7 +12,8 @@ SAMPLE = textwrap.dedent(
     opt_do_global    : n
     q_factor         : 6
     roi_circ         : { 63, 171, 81, 145, 106, 135, 150, 160 }
-    roi_ignr         : { { 96, 156, 113, 147, 106, 128 }, { 71, 213, 90, 219, 114, 218 } }
+    roi_ignr         : { { 96, 156, 113, 147, 106, 128 }, """
+    """{ 71, 213, 90, 219, 114, 218 } }
     src_fn           : sample.mp4
     thr_ratio        : 1.25
     vfov             : 45
@@ -66,3 +67,35 @@ def test_real_lab_configs_parse(lab_configs):
         cfg = Config.load(path)
         assert cfg.vfov is not None and cfg.has_ball()
         assert Config.from_text(cfg.to_text()).to_mapping() == cfg.to_mapping()
+
+
+def test_saving_edits_only_what_changed_and_keeps_the_layout(tmp_path, caplog):
+    """A calibration that sets two keys must not reorder the file or dump defaults."""
+    path = tmp_path / "config.txt"
+    path.write_text(
+        "## my rig\n"
+        "src_fn   : 003.mp4   # the 3rd trial\n"
+        "output_fn: 003\n"
+        "# vfov from the lens datasheet\n"
+        "vfov     : 2.39\n"
+        "q_factor : 0\n"
+        "my_key   : 7\n"
+    )
+    cfg = Config.load(path)
+    assert cfg.src_fn == "003.mp4" and cfg.output_fn == "003" and cfg.vfov == 2.39
+    assert cfg.q_factor == 6  # FicTrac's fallback for a non-positive value
+    assert "my_key" in caplog.text
+    assert cfg.source() == str(tmp_path / "003.mp4")
+    cfg.vfov = 2.5
+    cfg.c2a_r = [0.0, 0.0, 0.0]
+    cfg.save()
+    lines = path.read_text().splitlines()
+    assert lines[:4] == [
+        "## my rig",
+        "src_fn   : 003.mp4   # the 3rd trial",
+        "output_fn: 003",
+        "# vfov from the lens datasheet",
+    ]
+    assert lines[4].split(":")[1].strip() == "2.500000"
+    assert lines[5].startswith("q_factor") and lines[6].startswith("my_key")
+    assert lines[7].startswith("c2a_r") and len(lines) == 8

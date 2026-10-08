@@ -1,8 +1,8 @@
 """Calibration state independent of any GUI toolkit: points, fits, overlays, config.
 
 The GUI collects clicks; this module turns them into the ball ROI (`roi_c`, `roi_r`,
-`roi_circ`), ignore polygons (`roi_ignr`) and the camera-to-lab transform (`c2a_r`), draws
-the overlay that lets the user verify them, and writes the config.
+`roi_circ`), ignore polygons (`roi_ignr`) and the camera-to-lab transform (`c2a_r`),
+draws the overlay that lets the user verify them, and writes the config.
 """
 
 from __future__ import annotations
@@ -94,7 +94,9 @@ class CalibrationSession:
 
     # ----- readouts -----
     def cursor_angle(self, x: float, y: float) -> float | None:
-        """Angle (deg, counter-clockwise from image +x) of a point about the ball center."""
+        """Angle (deg, counter-clockwise from image +x) of a point about the ball
+        center.
+        """
         if self.center is None:
             return None
         cx, cy, _ = self.camera.project(self.center)
@@ -163,12 +165,15 @@ class CalibrationSession:
             cv2.circle(rgb, (int(pt[0]), int(pt[1])), 3, (255, 160, 60), -1)
         for i, pt in enumerate(self.square_points):
             cv2.circle(rgb, (int(pt[0]), int(pt[1])), 4, (255, 0, 255), -1)
-            cv2.putText(rgb, ["TL", "TR", "BR", "BL"][i], (int(pt[0]) + 5, int(pt[1]) - 5),
+            cv2.putText(rgb, ["TL", "TR", "BR", "BL"][i],
+                        (int(pt[0]) + 5, int(pt[1]) - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)  # fmt: skip
         return rgb
 
     def _draw_axes(self, rgb: np.ndarray) -> None:
-        """Lab axes attached to the ball center: x forward (red), y right (green), z down."""
+        """Lab axes attached to the ball center: x forward (red), y right (green), z
+        down.
+        """
         assert (
             self.center is not None
             and self.half_angle is not None

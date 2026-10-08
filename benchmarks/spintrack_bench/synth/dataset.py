@@ -1,4 +1,6 @@
-"""Scene specifications and dataset generation (video + ground truth + FicTrac config)."""
+"""Scene specifications and dataset generation (video + ground truth + FicTrac
+config).
+"""
 
 from __future__ import annotations
 
@@ -195,7 +197,9 @@ def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> Conf
 
 
 def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
-    """Per-frame ball center direction (n_frames, 3); constant unless `ball_path` is set."""
+    """Per-frame ball center direction (n_frames, 3); constant unless `ball_path` is
+    set.
+    """
     center = spec.ball_center()
     path = np.repeat(center[None, :], spec.n_frames, axis=0)
     if not spec.ball_path:
@@ -235,7 +239,9 @@ def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
 
 
 def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
-    """Render the scene into `out_dir` (video.mp4, truth.npz, config.txt, scene.json)."""
+    """Render the scene into `out_dir` (video.mp4, truth.npz, config.txt,
+    scene.json).
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(spec.seed)

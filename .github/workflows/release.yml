@@ -45,9 +45,30 @@ jobs:
           name: sdist
           path: dist
 
+  smoke:
+    needs: [wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-ubuntu-latest-x86_64
+          path: dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The built wheel, outside the source tree, on the committed example clip.
+      - run: pip install dist/*.whl
+      - run: |
+          cd "$RUNNER_TEMP"
+          spintrack --version
+          spintrack run "$GITHUB_WORKSPACE/examples/sample/config.txt" \
+            --max-frames 20 --out smoke
+          test -s smoke/sample.dat
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, smoke]
     runs-on: ubuntu-latest
     environment: release
     permissions:

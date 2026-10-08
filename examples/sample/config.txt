@@ -1,0 +1,11 @@
+## Hind camera of an octacam recording (ANXXX049_251125_Fly1_003), frames 850-1899
+## at half resolution. vfov from the rig's bundle adjustment; camera behind the
+## animal.
+src_fn         : sample.mp4
+vfov           : 2.3893
+q_factor       : 12
+src_fps        : 100
+opt_do_global  : y
+max_bad_frames : 100
+roi_circ       : { 656.5, 411, 142.5, 411.5, 145, 321, 176, 241, 255, 156, 324.5, 123.5, 478, 123, 545, 155.5, 617, 229.5, 654, 319 }
+c2a_r          : { 1.2092, 1.2092, 1.2092 }

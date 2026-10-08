@@ -32,6 +32,21 @@ pub fn mat_vec(a: &Mat3, v: Vec3) -> Vec3 {
     ]
 }
 
+/// `m` in single precision, for the per-pixel loops.
+pub fn to_f32(m: &Mat3) -> [[f32; 3]; 3] {
+    m.map(|row| row.map(|x| x as f32))
+}
+
+/// `m v` in single precision.
+#[inline]
+pub fn mul3_f32(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
 pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
     [
         a[1] * b[2] - a[2] * b[1],

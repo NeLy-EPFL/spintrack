@@ -1,7 +1,7 @@
 """Accuracy metrics for per-frame rotation estimates against ground truth.
 
-Estimates and truth are (N, 3) rotation vectors of the per-frame ball rotation in the same
-frame; estimates may contain NaN rows for frames the tracker did not report.
+Estimates and truth are (N, 3) rotation vectors of the per-frame ball rotation in the
+same frame; estimates may contain NaN rows for frames the tracker did not report.
 
 The angle metrics (`median_deg` and friends) mix a scale error with random disagreement:
 a tracker reporting every rotation 2% too small scores the same as one that is right on
@@ -52,7 +52,9 @@ def frame_errors_deg(est: np.ndarray, truth: np.ndarray) -> np.ndarray:
 
 
 def accumulated_error_deg(est: np.ndarray, truth: np.ndarray) -> np.ndarray:
-    """Orientation error (deg) after composing all increments; missing frames add nothing."""
+    """Orientation error (deg) after composing all increments; missing frames add
+    nothing.
+    """
     R_est = np.eye(3)
     R_true = np.eye(3)
     out = np.empty(len(truth))

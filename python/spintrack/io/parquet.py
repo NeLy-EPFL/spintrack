@@ -24,23 +24,24 @@ import pyarrow.parquet as pq
 
 from spintrack.io.dat import COLUMNS, INT_COLUMNS, N_COLUMNS
 
-# Columns not listed are rotation vectors, in rad. Positions are in radians of ball
-# rotation (multiply by the ball radius for distance); `err` is a mean squared residual
-# in normalized intensity units.
+# Columns not listed are rotation vectors, in rad. Positions and the integrated
+# forward and side motion are in ball radii, which is radians of ball rotation (multiply
+# by the ball's radius for a distance); `err` is a mean squared residual in normalized
+# intensity units.
 UNITS = {
     "frame": "",
     "err": "",
-    "pos_x": "rad",
-    "pos_y": "rad",
+    "pos_x": "ball radii",
+    "pos_y": "ball radii",
     "heading": "rad",
-    "step_dir": "rad",
-    "step_mag": "rad/frame",
-    "int_x": "rad",
-    "int_y": "rad",
-    "ts": "ms",
+    "direction": "rad",
+    "speed": "rad/frame",
+    "forward_total": "ball radii",
+    "side_total": "ball radii",
+    "timestamp": "ms",
     "seq": "",
     "delta_ts": "ms",
-    "ms": "ms since midnight",
+    "wall_ms": "ms since midnight",
 }
 
 

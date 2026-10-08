@@ -1,20 +1,20 @@
 """Frame sources: anything that yields grayscale frames with timestamps.
 
 A source is any object with `width`, `height`, `fps`, `read()` and `close()`. `read()`
-returns a `Frame` or `None` at the end of the stream. Frames are 2-D uint8 arrays; a
-color input is converted to gray on the way in, so the tracker never sees color.
+returns a `Frame` or `None` at the end of the stream. Frames are 2-D uint8 arrays: video
+files are decoded straight to luma by PyAV, and camera frames converted to gray on the
+way in, so the tracker never sees color.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
-import queue
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import av
 import cv2
 import numpy as np
 
@@ -57,29 +57,39 @@ class FrameSource(Protocol):
 
 
 class VideoSource:
-    """Frames from a video file (or any URL OpenCV can open)."""
+    """Frames from a video file (or any URL FFmpeg can open)."""
 
     def __init__(self, path: str | Path):
-        self._cap = cv2.VideoCapture(str(path))
-        if not self._cap.isOpened():
-            raise OSError(f"could not open video {path!s}")
-        self.width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = float(self._cap.get(cv2.CAP_PROP_FPS)) or -1.0
-        self.n_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        try:
+            self._container = av.open(str(path))
+        except av.error.FFmpegError as exc:
+            raise OSError(f"could not open video {path!s}") from exc
+        stream = self._container.streams.video[0]
+        # Frame-threaded decoding: the decoder, not the tracker, bounds a batch run.
+        stream.thread_type = "AUTO"
+        self.width = stream.codec_context.width
+        self.height = stream.codec_context.height
+        rate = stream.average_rate
+        self.fps = float(rate) if rate else -1.0
+        self.n_frames = stream.frames or None  # from the container; None if it says 0
+        self._start = stream.start_time or 0
+        self._tick = stream.time_base.numerator / stream.time_base.denominator
+        self._frames = self._container.decode(stream)
         self._index = 0
 
     def read(self) -> Frame | None:
-        ok, image = self._cap.read()
-        if not ok or image is None:
+        frame = next(self._frames, None)
+        if frame is None:
             return None
-        ts = float(self._cap.get(cv2.CAP_PROP_POS_MSEC))
-        frame = Frame(to_gray(image), ts, ms_since_midnight(), self._index)
+        # Computed as OpenCV's `CAP_PROP_POS_MSEC` is, to the last bit.
+        ts = -1.0 if frame.pts is None else (frame.pts - self._start) * self._tick * 1e3
+        image = frame.to_ndarray(format="gray")
+        out = Frame(image, ts, ms_since_midnight(), self._index)
         self._index += 1
-        return frame
+        return out
 
     def close(self) -> None:
-        self._cap.release()
+        self._container.close()
 
     def __iter__(self):
         while (frame := self.read()) is not None:
@@ -115,59 +125,6 @@ class CameraSource:
 
     def close(self) -> None:
         self._cap.release()
-
-
-class QueueSource:
-    """Frames pushed from another thread via `put(image, ts_ms)`; `put(None)` ends it."""
-
-    def __init__(self, width: int, height: int, fps: float = -1.0, maxsize: int = 64):
-        self.width, self.height, self.fps = int(width), int(height), float(fps)
-        self._q: queue.Queue = queue.Queue(maxsize=maxsize)
-        self._index = 0
-
-    def put(self, image: np.ndarray | None, ts_ms: float | None = None) -> None:
-        if image is None:
-            self._q.put(None)
-            return
-        ts = time.monotonic() * 1e3 if ts_ms is None else float(ts_ms)
-        self._q.put((image, ts))
-
-    def read(self) -> Frame | None:
-        item = self._q.get()
-        if item is None:
-            return None
-        image, ts = item
-        frame = Frame(to_gray(np.asarray(image)), ts, ms_since_midnight(), self._index)
-        self._index += 1
-        return frame
-
-    def close(self) -> None:
-        pass
-
-
-class CallableSource:
-    """Frames pulled from `grab()`, which returns `(image, ts_ms)` or `None` when done."""
-
-    def __init__(
-        self, grab: Callable[[], tuple | None], width: int, height: int, fps=-1.0
-    ):
-        self._grab = grab
-        self.width, self.height, self.fps = int(width), int(height), float(fps)
-        self._index = 0
-
-    def read(self) -> Frame | None:
-        item = self._grab()
-        if item is None:
-            return None
-        image, ts = item
-        frame = Frame(
-            to_gray(np.asarray(image)), float(ts), ms_since_midnight(), self._index
-        )
-        self._index += 1
-        return frame
-
-    def close(self) -> None:
-        pass
 
 
 def open_source(spec: str | int | Path) -> FrameSource:

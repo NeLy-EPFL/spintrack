@@ -1,20 +1,14 @@
 """Moving the tracking window onto a ball that has moved, without losing the map."""
 
-import sys
-
 import numpy as np
-import pytest
 
+from helpers import make_texture, render
 from spintrack.camera import PinholeCamera
 from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.sphere import pixel_circle
 from spintrack.tracker import Tracker
-
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from test_detect import render
-from test_engine import make_texture
 
 SIZE = (240, 180)
 VFOV = 40.0
@@ -49,23 +43,16 @@ def sequence(n, drift=None, seed=0):
     return out, texture, rng
 
 
-@pytest.mark.parametrize(
-    ("projection", "shape"), [("cube", (312, 52)), ("equal_area", (90, 180))]
-)
-def test_refit_carries_the_map_projection(projection, shape):
-    """A window move rebuilds the Rust core, which has to keep the map's projection.
+def test_refit_carries_the_map():
+    """A window move rebuilds the Rust core, which has to carry the map over intact.
 
-    Getting this wrong reads the map on the wrong grid: it survives the move as an array
-    and becomes noise as a map, and the tracker starts dropping frames a few frames later
-    rather than failing where the mistake was made. Both directions are worth pinning,
-    since a run can be either projection.
+    Getting this wrong survives the move as an array and becomes noise as a map, and the
+    tracker starts dropping frames a few frames later rather than where the mistake was.
     """
-    params = TrackParams(center_watch=False, map_projection=projection)
-    tracker = Tracker(config(), *SIZE, params)
+    tracker = Tracker(config(), *SIZE, TrackParams(center_watch=False))
     images, texture, rng = sequence(20)
     for image, _ in images:
         tracker.process_frame(image)
-    assert tracker.engine.map_shape == shape, tracker.engine.map_shape
     tracker.refit_center(shifted(5.0))
     # The same ball, moved 5 px and followed, keeps turning at the same rate.
     R = images[-1][1]
@@ -78,14 +65,15 @@ def test_refit_carries_the_map_projection(projection, shape):
 
 
 def test_refit_is_a_change_of_coordinates():
-    """The map and the ball's orientation in the camera survive a window move exactly."""
+    """The map and the ball's orientation in the camera survive a window move
+    exactly.
+    """
     tracker = Tracker(config(), *SIZE, TrackParams(center_watch=False))
     images, texture, rng = sequence(20)
-    for image, _ in images:
-        tracker.process_frame(image)
+    costs = [tracker.process_frame(image).step.cost for image, _ in images]
     orientation = tracker.R_wc @ tracker.engine.R  # body -> camera, the physical state
     mean, weight = (a.copy() for a in tracker.engine.export_map())
-    cost_before = float(np.median(tracker.engine._costs))
+    cost_before = float(np.nanmedian(costs))
 
     tracker.refit_center(shifted(5.0))
     after_mean, after_weight = tracker.engine.export_map()
@@ -103,7 +91,9 @@ def test_refit_is_a_change_of_coordinates():
 
 
 def test_watch_follows_a_moving_ball():
-    """With the watch off the ball's movement becomes rotation; with it on, it does not."""
+    """With the watch off the ball's movement becomes rotation; with it on, it does
+    not.
+    """
     move, start, over = 25.0, 220, 150
 
     def drift(i):
@@ -124,8 +114,8 @@ def test_watch_follows_a_moving_ball():
         during = np.array(wrong[start + 70 : start + over])
         errors[watch] = float(np.nanmedian(during))
         if watch:
-            assert tracker.refits, "the watch should have noticed a 25 px move"
-            assert tracker.refits[-1].max_shift_px > 10.0
+            assert tracker.watch.episodes, "the watch should have noticed the move"
+            assert tracker.watch.episodes[-1][2] > 10.0
     assert errors[True] < 0.5 * errors[False], errors
 
 
@@ -187,12 +177,9 @@ def test_watch_finds_a_resting_ball_that_jumped_out_of_reach():
     assert max(error[-20:]) < 3.0, np.round(error[start + 20 :], 1)
 
 
-def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
-    """The frame whose window moved is still an observation, in the frame it was tracked in.
-
-    Dropping it cost the offline refinement 562 of trial 004's 3013 rows and left the
-    debug video's window panel blank over the whole episode.
-    """
+def test_a_re_fitted_frame_keeps_its_observation():
+    """The frame whose window moved is still an observation; dropping it left the debug
+    video's window panel blank over the whole episode."""
     move, start, over = 25.0, 220, 150
 
     def drift(i):
@@ -200,23 +187,12 @@ def test_a_re_fitted_frame_keeps_its_observation_and_its_window_frame():
 
     images, _, _ = sequence(start + over + 20, drift=drift)
     tracker = Tracker(config(), *SIZE, TrackParams(center_watch=True))
-    kept = []  # (R_win, the version it was tracked in, the camera-frame orientation)
     moved_frames = 0
     for image, _ in images:
         before = tracker.geometry_version
-        result = tracker.process_frame(image)
+        tracker.process_frame(image)
         assert tracker.engine.last_obs is not None, "every tracked frame has a window"
         moved_frames += tracker.geometry_version > before
-        # The window moves onto the ball before the frame is tracked, not after.
-        assert tracker.tracked_version == tracker.geometry_version
-        if result is not None:
-            kept.append((result.step.R_win, tracker.tracked_version, result.R_cam))
-    assert tracker.refits and moved_frames > 1, (
+    assert tracker.watch.episodes and moved_frames > 1, (
         "the watch should have followed the ball"
     )
-
-    # Every kept orientation, brought into the final window frame, must still describe
-    # the camera-frame orientation that was reported at the time.
-    brought = tracker.orientations_in_current_window([(r, v) for r, v, _ in kept])
-    for R_now, (_, _, R_cam) in zip(brought, kept, strict=True):
-        assert np.allclose(tracker.R_wc @ R_now @ tracker.R_wc0.T, R_cam, atol=1e-9)

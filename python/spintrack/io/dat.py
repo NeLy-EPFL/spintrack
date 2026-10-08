@@ -2,11 +2,12 @@
 
 Columns (0-based index in parentheses): frame (0); delta rotation vector in camera
 coordinates (1-3); error score (4); delta rotation vector in lab coordinates (5-7);
-absolute rotation vector, camera (8-10) and lab (11-13); integrated position x, y (14-15);
-heading (16); movement direction (17); movement speed (18); integrated forward and side
-motion (19-20); timestamp in ms (21); sequence counter (22); delta timestamp (23);
-milliseconds since midnight (24). Fields are separated by `", "`; floats use 14
-significant digits; `frame` and `seq` are integers.
+absolute rotation vector, camera (8-10) and lab (11-13); integrated position x, y
+(14-15); heading (16); movement direction (17); movement speed (18); integrated forward
+and side motion (19-20); timestamp in ms (21); sequence counter (22); delta timestamp
+(23); milliseconds since midnight (24). `COLUMNS` names them for Python and Parquet; the
+file itself has no header. Fields are separated by `", "`; floats use 14 significant
+digits; `frame` and `seq` are integers.
 """
 
 from __future__ import annotations
@@ -35,14 +36,14 @@ COLUMNS = (
     "pos_x",
     "pos_y",
     "heading",
-    "step_dir",
-    "step_mag",
-    "int_x",
-    "int_y",
-    "ts",
+    "direction",
+    "speed",
+    "forward_total",
+    "side_total",
+    "timestamp",
     "seq",
     "delta_ts",
-    "ms",
+    "wall_ms",
 )
 N_COLUMNS = len(COLUMNS)
 INT_COLUMNS = frozenset({0, 22})

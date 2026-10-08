@@ -10,7 +10,6 @@ import threading
 import time
 
 import numpy as np
-import pytest
 
 from spintrack.config import Config
 from spintrack.io.sources import Frame
@@ -52,12 +51,11 @@ class SlowSource:
         self.closed = True
 
 
-@pytest.mark.parametrize("prefetch", [True, False])
-def test_max_frames_returns_and_leaves_no_thread_in_the_source(prefetch):
+def test_max_frames_returns_and_leaves_no_thread_in_the_source():
     source = SlowSource()
     before = threading.active_count()
 
-    stats = run(CONFIG, source, max_frames=25, prefetch=prefetch)
+    stats = run(CONFIG, source, max_frames=25)
 
     assert stats.frames == 25
     # run() must have joined the reader, so closing the source now is safe

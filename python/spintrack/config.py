@@ -1,14 +1,18 @@
 """Tracking configuration: FicTrac-compatible `config.txt`, YAML and TOML.
 
 The FicTrac text format is `key : value` per line. Vectors are written `{ a, b, c }`,
-nested vectors `{ { a, b }, { c, d } }`, booleans `y`/`n`. Lines starting with `##` are
-headers and dropped; other lines starting with `#` or `%` are comments and preserved.
-Unknown keys are kept in `Config.extra` and written back unchanged.
+nested vectors `{ { a, b }, { c, d } }`, booleans `y`/`n`. Lines starting with `#` or
+`%` are comments; a `#` after whitespace starts an inline comment. Unknown keys are kept
+in `Config.extra`. Saving a config that was loaded from text rewrites only the lines of
+the keys that changed and appends new ones, so the user's layout and comments survive.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import logging
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,16 +20,22 @@ from typing import Any
 
 import yaml
 
+log = logging.getLogger("spintrack")
+
 _TRUE = {"y", "yes", "true", "1"}
 _FALSE = {"n", "no", "false", "0"}
 _AUTO = {"auto", "none", ""}
+# Keys FicTrac reads that spintrack has no use for, and keys spintrack writes itself.
+_OTHER_KNOWN_KEYS = {"enh_cfg_disp", "reconfig", "thr_rgb_tfrm", "c2a_angles"}
+_INTERNAL = ("extra", "comments", "path", "_source")
 
 
 @dataclass
 class Config:
-    """FicTrac's documented parameters plus the lab fork's `accumulate_map`.
+    """FicTrac's documented parameters plus spintrack's own.
 
-    Defaults follow FicTrac's documentation. `vfov` has no default: it must be set.
+    Defaults follow FicTrac. `vfov` has no default: it must be set, or `auto` for
+    `spintrack calibrate --auto` to fit it.
     """
 
     src_fn: str = ""
@@ -60,19 +70,20 @@ class Config:
     sock_port: int = -1
     com_port: str = ""
     com_baud: int = 115200
-    accumulate_map: bool = True
+    accumulate_map: bool = True  # the lab fork's key
     output_fn: str = ""  # output base name; FicTrac defaults to the video name
     map_frozen: bool = False  # spintrack: never update a loaded map (sphere_map_fn)
-    # spintrack: separate the rig's static illumination from the ball's texture
-    # instead of letting it accumulate in the surface map (see `photometry.py`).
+    # spintrack: separate the rig's static illumination from the ball's texture.
     illumination: bool = True
-    # spintrack: start from illumination fields measured on this rig before, read out of
-    # a map `.npz` (`--save-map` writes them beside the map). Only the fields are taken,
-    # so the rig's lighting can be carried to a new ball without a previous ball's
-    # surface map - which `sphere_map_fn` would load along with them.
+    # spintrack: start from the illumination fields of a map `.npz` saved on this rig,
+    # without that map's ball surface.
     illumination_fn: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
     comments: list[str] = field(default_factory=list)
+    # The file this config was loaded from; relative paths in it resolve against it.
+    path: Path | None = field(default=None, repr=False, compare=False)
+    # The text it was parsed from and the values it held, for an in-place save.
+    _source: tuple | None = field(default=None, repr=False, compare=False)
 
     # ----- loading -----
     @classmethod
@@ -81,29 +92,37 @@ class Config:
         path = Path(path)
         suffix = path.suffix.lower()
         if suffix in (".yaml", ".yml"):
-            return cls.from_mapping(yaml.safe_load(path.read_text()) or {})
-        if suffix == ".toml":
-            return cls.from_mapping(tomllib.loads(path.read_text()))
-        return cls.from_text(path.read_text())
+            cfg = cls.from_mapping(yaml.safe_load(path.read_text()) or {})
+        elif suffix == ".toml":
+            cfg = cls.from_mapping(tomllib.loads(path.read_text()))
+        else:
+            cfg = cls.from_text(path.read_text())
+        cfg.path = path
+        return cfg
 
     @classmethod
     def from_text(cls, text: str) -> Config:
         """Parse the FicTrac text format."""
         values: dict[str, Any] = {}
         comments: list[str] = []
-        for raw in text.splitlines():
+        lines = text.splitlines()
+        for raw in lines:
             line = raw.strip()
-            if not line or line.startswith("##"):
-                continue
-            if line[0] in "#%":
+            if line[:1] in ("#", "%") and not line.startswith("##"):
                 comments.append(line)
                 continue
-            if ":" not in line:
+            parsed = _key_value(line)
+            if parsed is None:
                 continue
-            key, _, value = line.partition(":")
-            values[key.strip()] = _parse_text_value(value.strip())
+            key, value = parsed
+            # String keys keep their text: `output_fn : 003` is not the number 3.
+            if _FIELD_TYPES.get(key) == "str":
+                values[key] = value
+            else:
+                values[key] = _parse_text_value(value)
         cfg = cls.from_mapping(values)
         cfg.comments = comments
+        cfg._source = (lines, copy.deepcopy(cfg._keyed()))
         return cfg
 
     @classmethod
@@ -115,32 +134,78 @@ class Config:
                 setattr(cfg, key, _coerce(key, value))
             else:
                 cfg.extra[key] = value
+        unknown = sorted(set(cfg.extra) - _OTHER_KNOWN_KEYS)
+        if unknown:
+            log.warning(
+                "unknown config keys, kept but not used: %s", ", ".join(unknown)
+            )
+        if cfg.q_factor <= 0:
+            log.warning(
+                "q_factor %d is not positive; using 6, as FicTrac does", cfg.q_factor
+            )
+            cfg.q_factor = 6
+        if cfg.opt_max_err >= 0:
+            log.warning(
+                "opt_max_err is ignored: spintrack does not drop frames on the "
+                "matching error (see the run summary's hard-tracking episodes)"
+            )
         return cfg
 
     # ----- saving -----
     def to_text(
         self, header: str = "## spintrack config file (FicTrac compatible)"
     ) -> str:
-        """Serialize in the FicTrac text format; keys are sorted, defaults included."""
-        rows: dict[str, str] = {}
-        for f in dataclasses.fields(self):
-            if f.name in ("extra", "comments"):
-                continue
-            value = getattr(self, f.name)
-            if value is None or value == "" or value == []:
-                continue
-            rows[f.name] = _format_text_value(value)
-        for key, value in self.extra.items():
-            rows[key] = _format_text_value(value)
-        lines = [header] + [f"{key:<16} : {rows[key]}" for key in sorted(rows)]
-        lines.extend(self.comments)
-        return "\n".join(lines) + "\n"
+        """Serialize in the FicTrac text format.
 
-    def to_mapping(self) -> dict[str, Any]:
-        """Plain dict of set values (for YAML/TOML output or inspection)."""
+        A config parsed from text keeps its lines: only the keys whose values changed
+        are rewritten, keys no longer set are dropped, and new keys and comments are
+        appended. Any other config is written as the keys that differ from the defaults.
+        """
+        current = self._keyed()
+        if self._source is None:
+            defaults = Config()._keyed()
+            rows = {k: v for k, v in current.items() if defaults.get(k) != v}
+            lines = [header] + [_format_line(k, rows[k]) for k in sorted(rows)]
+            return "\n".join(lines + self.comments) + "\n"
+        lines, loaded = self._source
+        out: list[str] = []
+        written: set[str] = set()
+        old_comments: set[str] = set()
+        for raw in lines:
+            line = raw.strip()
+            if line[:1] in ("#", "%") and not line.startswith("##"):
+                old_comments.add(line)
+                if line in self.comments:
+                    out.append(raw)
+                continue
+            parsed = _key_value(line)
+            if parsed is None:
+                out.append(raw)
+                continue
+            key = parsed[0]
+            if key in written:
+                continue
+            written.add(key)
+            if key not in current:
+                if key not in loaded:
+                    out.append(raw)  # empty then, empty now
+                continue
+            if loaded.get(key) == current[key]:
+                out.append(raw)
+            else:
+                out.append(_format_line(key, current[key]))
+        defaults = Config()._keyed()
+        for key, value in current.items():
+            if key not in written and defaults.get(key) != value:
+                out.append(_format_line(key, value))
+        out.extend(c for c in self.comments if c not in old_comments)
+        return "\n".join(out) + "\n"
+
+    def _keyed(self) -> dict[str, Any]:
+        """Every key that holds a value, spintrack's and the extra ones alike."""
         out: dict[str, Any] = {}
         for f in dataclasses.fields(self):
-            if f.name in ("extra", "comments"):
+            if f.name in _INTERNAL:
                 continue
             value = getattr(self, f.name)
             if value is None or value == "" or value == []:
@@ -149,14 +214,39 @@ class Config:
         out.update(self.extra)
         return out
 
-    def save(self, path: str | Path) -> None:
-        path = Path(path)
-        if path.suffix.lower() in (".yaml", ".yml"):
+    def to_mapping(self) -> dict[str, Any]:
+        """Plain dict of set values (for YAML output or inspection)."""
+        return dict(self._keyed())
+
+    def save(self, path: str | Path | None = None) -> Path:
+        """Write the config (to where it was loaded from by default)."""
+        path = Path(path) if path is not None else self.path
+        if path is None:
+            raise ValueError("no path to save the config to")
+        suffix = path.suffix.lower()
+        if suffix in (".yaml", ".yml"):
             path.write_text(yaml.safe_dump(self.to_mapping(), sort_keys=True))
+        elif suffix == ".toml":
+            raise ValueError(
+                f"{path}: TOML configs are read-only; save as .txt or .yaml"
+            )
         else:
             path.write_text(self.to_text())
+        return path
 
     # ----- derived -----
+    def source(self, override=None) -> str:
+        """The source: a camera index, or a path, relative ones to the config file's."""
+        spec = override if override is not None else self.src_fn
+        if not spec:
+            raise ValueError("no source: set src_fn in the config or pass --src")
+        if str(spec).isdigit():
+            return str(spec)
+        spec = Path(spec)
+        if not spec.is_absolute() and self.path is not None:
+            spec = self.path.parent / spec
+        return str(spec)
+
     def c2a_source(self) -> str | None:
         """Which key defines the camera-to-animal transform, or None if none does."""
         if self.c2a_r is not None and len(self.c2a_r) == 3:
@@ -219,6 +309,20 @@ _FIELD_TYPES: dict[str, str] = {
 }
 
 
+def _key_value(line: str) -> tuple[str, str] | None:
+    """`(key, value text)` of a `key : value` line, or None for any other line."""
+    line = line.strip()
+    if not line or line[0] in "#%" or ":" not in line:
+        return None
+    key, _, value = line.partition(":")
+    value = re.split(r"\s#", value, maxsplit=1)[0]
+    return key.strip(), value.strip()
+
+
+def _format_line(key: str, value: Any) -> str:
+    return f"{key:<16} : {_format_text_value(value)}"
+
+
 def _to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -254,8 +358,7 @@ def _coerce(key: str, value: Any) -> Any:
     if kind == "float":
         return float(value)
     if kind == "auto_float":
-        # `auto` (or a missing key) means "measure it from the recording"; see
-        # `spintrack.autofit.fit_vfov`.
+        # `auto` (or a missing key) means "measure it from the recording".
         if value is None or (isinstance(value, str) and value.strip().lower() in _AUTO):
             return None
         return float(value)

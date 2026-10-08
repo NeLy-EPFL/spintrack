@@ -1,15 +1,14 @@
-"""Annotated debug video: source frame with the ball, its axes and the animal's trail
-over it, plus the tracking window, map and fictive path.
+"""Annotated debug video.
 
-The main panel is the source frame with the ball's outline, its orientation axes and the
-trail the animal has walked over the surface. The side panels are the tracking window and
-the fictive path, then the map and the static illumination field. The map is drawn as an
-unfolded dice centered on the face the camera looks at and oriented like the image, with
-the ball's top and bottom above and below it (`maps.NET_LABELS`), so at `R = I` its
-middle tile is the window.
+The left panel is the source frame with the ball's outline and the trail the animal has
+walked over its surface (and, on request, the ball's orientation axes). On the right are
+the normalized tracking window and the fictive path, and below them the surface map as
+an unfolded dice centered on the face the camera looks at and oriented like the image
+(`maps.NET_LABELS`), so at `R = I` its middle tile is the window. Two of the net's empty
+tiles hold the static lighting field and the frame's numbers.
 
-Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. Rendering
-costs a few milliseconds per frame, so it is off by default.
+Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. The
+config's `roi_ignr` regions are outlined in red.
 """
 
 from __future__ import annotations
@@ -28,31 +27,30 @@ from spintrack.tracker import FrameResult, Tracker
 
 log = logging.getLogger(__name__)
 
-AXIS_BGR = (
-    (80, 80, 255),
-    (80, 220, 80),
-    (255, 140, 80),
-)  # x red, y green, z blue (BGR)
-LABEL_BGR = (255, 255, 0)  # panel titles and face names
+AXIS_BGR = ((80, 80, 255), (80, 220, 80), (255, 140, 80))  # x red, y green, z blue
+LABEL_BGR = (255, 255, 0)
+TEXT_BGR = (230, 230, 230)
+OUTLINE_BGR = (0, 200, 0)
+IGNORE_BGR = (60, 60, 200)
+PATH_BGR = (0, 255, 255)
+HEAD_BGR = (0, 0, 255)
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 # The animal's trail over the ball: how many frames of it to keep, as FicTrac's
 # DRAW_SPHERE_HIST_LENGTH.
 TRAIL_FRAMES = 1024
-# How much of the ball to draw it on: the cosine of the grazing angle a surface point
-# must beat. Within a few degrees of the limb the surface is so foreshortened that any
-# point of it lands on the outline, so a trail there hugs the outline and says nothing
-# about where the animal walked. The cut costs the outermost percent of the disk.
+# Draw the trail only where the surface faces the camera by more than this cosine: near
+# the limb it is so foreshortened that any trail there hugs the outline.
 TRAIL_LIMB_COS = 0.1
-# Trail color by age, oldest first. FicTrac blends each segment into the image under it;
-# a ramp from dark blue to cyan is the same idea without reading the pixels back.
+# Trail color by age, oldest first: dark blue to cyan.
 TRAIL_BGR = [
     tuple(bgr)
-    for bgr in np.linspace((90, 40, 0), (255, 255, 0), 6).round().astype(int).tolist()
+    for bgr in np.linspace((160, 60, 0), (255, 255, 0), 6).round().astype(int).tolist()
 ]
 
 
-def _label(panel: np.ndarray, text: str, x: int, y: int) -> None:
-    cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, LABEL_BGR, 1)
+def _label(panel: np.ndarray, text: str, x: int = 6, y: int = 16) -> None:
+    cv2.putText(panel, text, (x, y), FONT, 0.45, LABEL_BGR, 1, cv2.LINE_AA)
 
 
 FOURCC = {
@@ -65,8 +63,6 @@ FOURCC = {
 }
 
 # `vid_codec` -> (PyAV encoder, encoder options) for the codecs OpenCV cannot write.
-# H.264 defaults to the `veryfast` preset: measured on a 1280x504 canvas it runs at
-# ~1300 fps, faster than OpenCV's MPEG-4 and a quarter of the size.
 AV_CODEC = {
     "h264": ("libx264", {"preset": "veryfast", "crf": "20"}),
     "avc1": ("libx264", {"preset": "veryfast", "crf": "20"}),
@@ -77,35 +73,41 @@ AV_CODEC = {
 
 
 def _import_av():
-    """Import PyAV, lazily: it costs ~50 ms and only the debug video needs it."""
+    """Import PyAV lazily: it costs ~50 ms and only the debug video needs it."""
     import av
 
     return av
 
 
 class DebugCanvas:
-    """Compose one debug frame from the tracker state."""
+    """Compose one debug frame from the tracker state.
 
-    def __init__(self, tracker: Tracker, height: int = 480, panel: int = 240):
+    The right-hand column is five tiles tall and four wide: the window and the path take
+    two by two each, the map net the 3x4 below them.
+    """
+
+    def __init__(self, tracker: Tracker, height: int = 480, axes: bool = False):
         self.tracker = tracker
-        # `height` is a hint. OpenCV's INTER_AREA has a fast path for exact integer
-        # decimation and a general resampler otherwise, and the two differ by ~50x on a
-        # frame this size, so snap to an exact factor when one is within reach.
+        self.axes = axes
+        # `height` is a hint: snap it to an exact integer decimation of the source when
+        # one is within reach, because INTER_AREA is ~50x faster there.
         k = max(1, round(tracker.height / height))
-        if k > 1 and tracker.height % k == 0 and tracker.width % k == 0:
+        if tracker.height % k == 0 and tracker.width % k == 0:
             height = tracker.height // k
         self.height = height
-        self.panel = panel
-        scale = height / tracker.height
-        self.scale = scale
-        self.main_w = round(tracker.width * scale)
-        self.width = self.main_w + panel * 2
+        self.scale = height / tracker.height
+        self.main_w = round(tracker.width * self.scale)
+        self.tile = height // 5
+        self.width = self.main_w + 4 * self.tile
         self.sin_half = np.sin(tracker.half_angle)
-        self.axis_len = 0.8 * self.sin_half
         # The animal rides on top of the ball, so the surface point it touches is the
-        # lab frame's up in camera coordinates. Without a `c2a_r` in the config this is
-        # the identity's up, which points at the camera rather than at the animal.
+        # lab frame's up in camera coordinates.
         self.up_cam = -tracker.cam_to_lab[2]
+        self.ignore = [
+            np.round(np.reshape(poly, (-1, 2)) * self.scale).astype(np.int32)
+            for poly in tracker.cfg.roi_ignr
+            if len(poly) >= 6
+        ]
         self._geometry_version = -1
         self._update_outline()
         self._path = np.empty((1024, 2), np.float64)  # grown by doubling
@@ -117,6 +119,10 @@ class DebugCanvas:
         self._R_cam = None  # last tracked orientation, so a dropped frame still draws
 
     @property
+    def size(self) -> tuple[int, int]:
+        return self.width, self.height
+
+    @property
     def path_pts(self) -> np.ndarray:
         """The integrated path so far, as an (n, 2) array of (x, y)."""
         return self._path[: self._n_path]
@@ -126,6 +132,8 @@ class DebugCanvas:
             self._path = np.resize(self._path, (2 * len(self._path), 2))
         self._path[self._n_path] = (x, y)
         self._n_path += 1
+        b = self.path_bbox
+        b[:] = min(b[0], x), max(b[1], x), min(b[2], y), max(b[3], y)
 
     def _append_trail(self, contact_body: np.ndarray) -> None:
         """Keep the last `TRAIL_FRAMES` contact points, oldest first."""
@@ -135,139 +143,82 @@ class DebugCanvas:
         self._trail[self._n_trail] = contact_body
         self._n_trail += 1
 
-    @property
-    def size(self) -> tuple[int, int]:
-        return self.width, self.height
-
-    def _project_axis(self, axis_cam: np.ndarray) -> tuple[int, int]:
-        tip = normalize(self.tracker.center + self.axis_len * axis_cam)
-        x, y, _ = self.tracker.camera.project(tip)
-        return int(x * self.scale), int(y * self.scale)
-
     def _update_outline(self) -> None:
         """Re-project the ball outline; the window may have moved onto a moved ball."""
-        tracker, scale = self.tracker, self.scale
-        self._geometry_version = tracker.geometry_version
-        self.outline = np.round(
-            ball_outline(tracker.camera, tracker.center, tracker.half_angle, 90) * scale
-        )
-        cx, cy, _ = tracker.camera.project(tracker.center)
-        self.center_px = (float(cx) * scale, float(cy) * scale)
+        tr, scale = self.tracker, self.scale
+        self._geometry_version = tr.geometry_version
+        outline = ball_outline(tr.camera, tr.center, tr.half_angle, 90) * scale
+        self.outline = np.round(outline).astype(np.int32)
+        cx, cy, _ = tr.camera.project(tr.center)
+        self.center_px = (int(cx * scale), int(cy * scale))
 
     def render(
         self, gray: np.ndarray, result: FrameResult | None, fps: float | None = None
-    ):
-        tr = self.tracker
+    ) -> np.ndarray:
+        tr, t = self.tracker, self.tile
         if tr.geometry_version != self._geometry_version:
             self._update_outline()
+        if result is not None:
+            self._R_cam = result.R_cam
+            self._append_trail(result.R_cam.T @ self.up_cam)
+            self._append_path(float(result.values[14]), float(result.values[15]))
         main = cv2.resize(
             gray, (self.main_w, self.height), interpolation=cv2.INTER_AREA
         )
         main = cv2.cvtColor(main, cv2.COLOR_GRAY2BGR)
-        cv2.polylines(
-            main, [self.outline.astype(np.int32)], True, (0, 200, 0), 1, cv2.LINE_AA
-        )
-        self._draw_trail(main, result)
-        c = (int(self.center_px[0]), int(self.center_px[1]))
-        if result is not None:
-            # Ball orientation: a gnomon that rotates with the ball (camera frame).
-            for i, color in enumerate(AXIS_BGR):
-                tip = self._project_axis(result.R_cam[:, i])
-                cv2.arrowedLine(main, c, tip, color, 2, cv2.LINE_AA, tipLength=0.2)
-        # Lab axes at the ball center (fixed): thin lines with labels.
-        for i, color in enumerate(AXIS_BGR):
-            tip = self._project_axis(tr.cam_to_lab.T[:, i])
-            cv2.line(main, c, tip, color, 1, cv2.LINE_AA)
-            cv2.putText(
-                main,
-                "xyz"[i],
-                (tip[0] + 3, tip[1] + 3),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color,
-                1,
-            )
-        text = f"frame {tr.frame - 1}"
-        if result is not None:
-            st = result.step
-            text += (
-                f"  {st.source}  cost {st.cost:.3f}  iters {st.iters}"
-                f"  heading {np.degrees(result.heading):.1f} deg"
-            )
-        else:
-            text += "  DROPPED"
-        if fps:
-            text += f"  {fps:.0f} fps"
-        cv2.putText(
-            main,
-            text,
-            (8, self.height - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 255),
-            1,
-        )
-
-        # Side panels, two rows: the tracking window (normalized) and the fictive path
-        # on top, the map as an unfolded dice and the static illumination field below.
-        panel = self.panel
-        side = np.zeros((self.height, 2 * panel, 3), np.uint8)
-        obs = tr.engine.last_obs
-        win = (
-            np.clip(128 + 40 * obs, 0, 255).astype(np.uint8)
-            if obs is not None
-            else np.zeros((8, 8), np.uint8)
-        )
-        box = min(panel, self.height)
-        win = cv2.resize(win, (box, box), interpolation=cv2.INTER_NEAREST)
-        side[:box, :box] = cv2.cvtColor(win, cv2.COLOR_GRAY2BGR)
-        _label(side, "window", 6, 16)
-        self._draw_path(side, panel, 0, box, result)
-        # The net takes what height is left, up to what leaves the illumination field
-        # half a panel of width.
-        top = box
-        tile = min((self.height - top) // 3, (2 * panel - panel // 2) // 4)
-        if tile >= 16:
-            self._draw_net(side, top, tile)
-            illum = tr.engine.illumination_image()
-            if illum is not None:
-                x0 = 4 * tile
-                s = min(2 * panel - x0, self.height - top)
-                illum = cv2.resize(illum, (s, s), interpolation=cv2.INTER_NEAREST)
-                side[top : top + s, x0 : x0 + s] = cv2.cvtColor(
-                    illum, cv2.COLOR_GRAY2BGR
-                )
-                _label(side, "illumination", x0 + 6, top + 16)
+        cv2.polylines(main, [self.outline], True, OUTLINE_BGR, 1, cv2.LINE_AA)
+        cv2.polylines(main, self.ignore, True, IGNORE_BGR, 1, cv2.LINE_AA)
+        self._draw_trail(main)
+        if self.axes:
+            self._draw_axes(main, result)
+        side = np.zeros((self.height, 4 * t, 3), np.uint8)
+        self._draw_window(side[: 2 * t, : 2 * t])
+        self._draw_path(side[: 2 * t, 2 * t :], result)
+        net = side[2 * t : 5 * t]
+        self._draw_net(net)
+        self._draw_lighting(net[:t, 3 * t :])
+        self._draw_status(net[2 * t :, 2 * t :], result, fps)
         return np.hstack([main, side])
 
+    def _draw_axes(self, main: np.ndarray, result: FrameResult | None) -> None:
+        """The ball's axes (arrows, turning with it) and the lab axes (thin, fixed)."""
+        tr, c = self.tracker, self.center_px
+
+        def tip(axis_cam):
+            p = normalize(tr.center + 0.8 * self.sin_half * axis_cam)
+            x, y, _ = tr.camera.project(p)
+            return int(x * self.scale), int(y * self.scale)
+
+        if result is not None:
+            for i, color in enumerate(AXIS_BGR):
+                end = tip(result.R_cam[:, i])
+                cv2.arrowedLine(main, c, end, color, 2, cv2.LINE_AA, tipLength=0.2)
+        for i, color in enumerate(AXIS_BGR):
+            end = tip(tr.cam_to_lab[i])
+            cv2.line(main, c, end, color, 1, cv2.LINE_AA)
+            cv2.putText(main, "xyz"[i], (end[0] + 3, end[1] + 3), FONT, 0.45, color, 1)
+
     def trail_points(self) -> tuple[np.ndarray, np.ndarray]:
-        """Where the animal's past contact points sit now: panel coordinates (n, 2),
-        oldest first, and which of them the camera can see."""
+        """Where the animal's past contact points sit now: main-panel coordinates
+        (n, 2), oldest first, and which of them the camera can see."""
         tr = self.tracker
         # Each stored point is body-fixed, so the ball's current orientation says where
-        # the surface carried it, and the ball's radius puts it back on the surface.
+        # the surface carried it.
         contact = self._trail[: self._n_trail] @ self._R_cam.T
-        # A surface point faces the camera when `-(c . u)` beats the ball's radius over
-        # its distance, which is a little short of a hemisphere; `TRAIL_LIMB_COS` more
-        # asks it to face the camera squarely enough to be drawn where it really is.
         seen = contact @ tr.center < -self.sin_half - TRAIL_LIMB_COS
         x, y, inside = tr.camera.project(tr.center + self.sin_half * contact)
         seen &= inside
         pts = np.stack([np.where(seen, x, 0.0), np.where(seen, y, 0.0)], axis=1)
         return pts * self.scale, seen
 
-    def _draw_trail(self, main: np.ndarray, result: FrameResult | None) -> None:
+    def _draw_trail(self, main: np.ndarray) -> None:
         """Draw the trail the animal has walked over the ball, as FicTrac does.
 
         The animal stays put while the ball turns under it, so the surface point it
-        touched at frame `i` is now `R_cam @ R_cam(i).T @ up`, and the trail is that
-        point for every frame still in the history - the animal's path, inverted,
-        painted on the ball it walked. Only the near side of the ball is drawn, and the
-        trail brightens with recency.
+        touched at frame `i` is now `R_cam @ R_cam(i).T @ up`: the animal's path,
+        inverted, painted on the ball. Only the near side is drawn, brighter with
+        recency.
         """
-        if result is not None:
-            self._R_cam = result.R_cam
-            self._append_trail(result.R_cam.T @ self.up_cam)
         if self._R_cam is None or self._n_trail < 2:
             return
         pts, seen = self.trail_points()
@@ -285,80 +236,89 @@ class DebugCanvas:
             cv2.polylines(main, runs, False, TRAIL_BGR[band], 1, cv2.LINE_AA)
         if seen[-1]:
             cv2.circle(main, tuple(pts[-1]), 3, TRAIL_BGR[-1], -1, cv2.LINE_AA)
-        _label(main, "path on ball", 8, 16)
 
-    def _draw_net(self, side: np.ndarray, top: int, tile: int) -> None:
-        """Draw the map as an unfolded dice of `tile`-pixel faces at the left of `side`,
-        from row `top` down.
-
-        The net is centered on the face the camera looks at and oriented like the image
-        (see `maps.NET_LABELS`), so at `R = I` its middle tile is the tracking window.
-        The six unused tiles of the 4x3 net stay black.
-        """
-        rows, cols = NET_SHAPE
-        w, h = cols * tile, rows * tile
-        net = self.tracker.engine.map_image("cube")
-        interp = cv2.INTER_AREA if net.shape[1] > w else cv2.INTER_LINEAR
-        net = cv2.resize(net, (w, h), interpolation=interp)
-        net = cv2.cvtColor(net, cv2.COLOR_GRAY2BGR)
-        for r in range(rows):
-            for c in range(cols):
-                if (r, c) not in NET_LABELS:
-                    net[r * tile : (r + 1) * tile, c * tile : (c + 1) * tile] = 0
-        for (r, c), name in NET_LABELS.items():
-            x0, y0 = c * tile, r * tile
-            cv2.rectangle(
-                net, (x0, y0), (x0 + tile - 1, y0 + tile - 1), (70, 70, 70), 1
-            )
-            cv2.putText(
-                net,
-                name,
-                (x0 + 3, y0 + 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                LABEL_BGR,
-                1,
-            )
-        side[top : top + h, :w] = net
-        _label(side, "map", 6, top + 16)
+    def _draw_window(self, panel: np.ndarray) -> None:
+        obs = self.tracker.engine.last_obs
+        if obs is not None:
+            win = np.clip(128 + 40 * obs, 0, 255).astype(np.uint8)
+            win = cv2.resize(win, panel.shape[1::-1], interpolation=cv2.INTER_NEAREST)
+            panel[:] = win[..., None]
+        _label(panel, "window")
 
     def _draw_path(
-        self, side: np.ndarray, x0: int, y0: int, box: int, result: FrameResult | None
+        self, panel: np.ndarray, result: FrameResult | None, margin: int = 12
     ) -> None:
-        """Draw the fictive path (world frame: x north/up, y east/right) in the `box`
-        pixel square at `(x0, y0)` of `side`."""
-        if result is not None:
-            x, y = float(result.values[14]), float(result.values[15])
-            self._append_path(x, y)
+        """The fictive path (x north/up, y east/right), scaled to fit the panel."""
+        h, w = panel.shape[:2]
+        if self._n_path >= 2 and min(h, w) >= 60:
             b = self.path_bbox
-            b[0], b[1], b[2], b[3] = (
-                min(b[0], x),
-                max(b[1], x),
-                min(b[2], y),
-                max(b[3], y),
-            )
-        if self._n_path < 2 or box < 60:
+            span = max(b[1] - b[0], b[3] - b[2], 1e-6)
+            size = min(h, w) - 2 * margin
+            path = self._path[max(0, self._n_path - 20000) : self._n_path]
+            pts = np.empty((len(path), 2), np.int32)
+            # Centered: the bounding box's shorter side gets the slack.
+            x0 = (w - (b[3] - b[2]) / span * size) / 2
+            y0 = (h + (b[1] - b[0]) / span * size) / 2
+            pts[:, 0] = x0 + (path[:, 1] - b[2]) / span * size
+            pts[:, 1] = y0 - (path[:, 0] - b[0]) / span * size
+            cv2.polylines(panel, [pts], False, PATH_BGR, 1, cv2.LINE_AA)
+            head = tuple(int(v) for v in pts[-1])
+            cv2.circle(panel, head, 3, HEAD_BGR, -1, cv2.LINE_AA)
+            if result is not None:
+                hd = result.heading
+                tip = (int(head[0] + 14 * np.sin(hd)), int(head[1] - 14 * np.cos(hd)))
+                cv2.arrowedLine(panel, head, tip, HEAD_BGR, 1, cv2.LINE_AA, 0, 0.4)
+            text = f"{span:.2g} r"
+            (tw, _), _ = cv2.getTextSize(text, FONT, 0.4, 1)
+            cv2.putText(panel, text, (w - tw - 6, h - 6), FONT, 0.4, TEXT_BGR, 1)
+        _label(panel, "path")
+
+    def _draw_net(self, panel: np.ndarray) -> None:
+        """The map as an unfolded dice filling `panel` (3 x 4 tiles); the six unused
+        tiles stay black."""
+        rows, cols = NET_SHAPE
+        t = panel.shape[0] // rows
+        net = self.tracker.engine.map_image("cube")
+        size = (cols * t, rows * t)
+        interp = cv2.INTER_AREA if net.shape[1] > size[0] else cv2.INTER_LINEAR
+        net = cv2.resize(net, size, interpolation=interp)
+        for (r, c), name in NET_LABELS.items():
+            tile = panel[r * t : (r + 1) * t, c * t : (c + 1) * t]
+            tile[:] = net[r * t : (r + 1) * t, c * t : (c + 1) * t, None]
+            cv2.rectangle(tile, (0, 0), (t - 1, t - 1), (70, 70, 70), 1)
+            cv2.putText(tile, name, (4, 12), FONT, 0.35, LABEL_BGR, 1, cv2.LINE_AA)
+        _label(panel[:t, :t], "map")
+
+    def _draw_lighting(self, panel: np.ndarray) -> None:
+        """The lighting gain the tracker divides out of the window (dark: shadow)."""
+        illum = self.tracker.engine.illumination_image()
+        if illum is None:
             return
-        b = self.path_bbox
-        span = max(b[1] - b[0], b[3] - b[2], 1e-6)
-        margin = 12
-        size = box - 2 * margin
-        path = self._path[max(0, self._n_path - 20000) : self._n_path]
-        pts = np.empty((len(path), 2), np.int32)
-        pts[:, 0] = x0 + margin + (path[:, 1] - b[2]) / span * size
-        pts[:, 1] = y0 + box - margin - (path[:, 0] - b[0]) / span * size
-        cv2.polylines(side, [pts], False, (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.circle(side, tuple(pts[-1]), 3, (0, 0, 255), -1)
-        if result is not None:
-            h = result.heading
-            tip = (
-                int(pts[-1][0] + 14 * np.sin(h)),
-                int(pts[-1][1] - 14 * np.cos(h)),
-            )
-            cv2.arrowedLine(
-                side, tuple(pts[-1]), tip, (0, 0, 255), 1, cv2.LINE_AA, tipLength=0.4
-            )
-        _label(side, f"path {span:.1f} rad span", x0 + 6, y0 + 16)
+        s = min(panel.shape[:2])
+        panel[:s, :s] = cv2.resize(illum, (s, s), interpolation=cv2.INTER_AREA)[
+            ..., None
+        ]
+        _label(panel, "lighting")
+
+    def _draw_status(
+        self, panel: np.ndarray, result: FrameResult | None, fps: float | None
+    ) -> None:
+        lines = [f"frame {self.tracker.frame - 1}"]
+        if result is None:
+            lines.append("dropped")
+        else:
+            st = result.step
+            lines += [
+                f"{st.source}  cost {st.cost:.3f}",
+                f"{st.iters} iterations",
+                f"heading {np.degrees(result.heading):.0f} deg",
+            ]
+        if fps:
+            lines.append(f"{fps:.0f} fps")
+        step = max(12, min(18, panel.shape[0] // (len(lines) + 1)))
+        for i, line in enumerate(lines):
+            y = 6 + step * (i + 1)
+            cv2.putText(panel, line, (8, y), FONT, 0.42, TEXT_BGR, 1, cv2.LINE_AA)
 
 
 class DebugVideoWriter:

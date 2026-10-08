@@ -8,26 +8,20 @@ ball rotates these vectors, which is what the solver estimates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 from spintrack.camera import Camera, EquidistantCamera, pixel_centers
-from spintrack.geometry import normalize, rotation_between, rotvec_to_matrix
+from spintrack.geometry import normalize, rotation_between
 
 # Anti-aliasing of the window remap, as the standard deviation of a Gaussian in units of
-# the decimation (source pixels per window pixel: 5.8 on the synthetic scenes, 8.6 on
-# the lab recordings). Bilinear interpolation at that decimation samples one source
-# pixel in thirty and aliases the surface texture. Pre-filtering the source halves the
-# per-frame error on the synthetic scenes (clean_fly 0.036 -> 0.019 deg, sparse 0.061 ->
-# 0.026) and cuts trial 003's disagreement with an optical-flow cross-check by 13-31%;
-# 0.35 and 0.7 both measure worse. Below `PREFILTER_MIN_DECIMATION` there is nothing to
-# alias, and the blur costs 1-4% on the lab-like scenes, so the filter is skipped. It is
-# one `cv2.pyrDown` (a binomial blur of variance one in source pixels, then a halving)
-# followed by a Gaussian on the half-size image: as accurate as the Gaussian on the full
-# frame and a quarter of its cost. A second halving is not - it loses 5-15% of the gain.
+# the decimation (source pixels per window pixel): bilinear sampling at a decimation of
+# several pixels aliases the surface texture. It is applied as one `cv2.pyrDown` and a
+# Gaussian on the half-size image, a quarter of the cost of the full-size Gaussian.
 PREFILTER_SIGMA = 0.5
+# Below this decimation there is nothing to alias, so the filter is skipped.
 PREFILTER_MIN_DECIMATION = 2.0
 
 
@@ -114,28 +108,31 @@ def pixel_circle(
 
 
 def center_from_pixel_circle(
-    camera: Camera, target_px, half_angle: float, seed, iterations: int = 3
-) -> np.ndarray:
-    """The ball direction whose `pixel_circle` sits at `target_px`; inverts that.
+    camera: Camera, target_px, half_angle: float, seed, seed_px=None, tol: float = 0.05
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """The ball direction whose `pixel_circle` sits at `target_px`, and that circle.
 
-    The center of the silhouette is not the projection of the ball's center. It sits
-    farther from the principal point, and by more the farther off axis the ball is, so
-    reading a fitted circle's center as a direction under-reports how far a ball has
-    moved: on `ball_drop` (11 degree ball, 71 px of movement) by 5% of the movement, and
-    on the real trials (1.2 degree ball) by 0.2 px over 284 px, which is nothing.
-
-    Two or three fixed-point steps are exact to well under a pixel, because the
-    correction moves with the projected direction almost one for one.
+    The center of the silhouette is not the projection of the ball's center: it sits
+    farther from the principal point, by more the farther off axis the ball is (5% of a
+    71 px move on `ball_drop`'s 11 degree ball, nothing on the lab's 1.2 degree one).
+    That offset changes slowly with the direction, so carrying the seed's over to the
+    target is nearly exact, and the same step repeats until the circle is within `tol`
+    px. `seed_px` is the seed's own circle center, when already known.
     """
     target = np.asarray(target_px, dtype=np.float64)
     center = normalize(np.asarray(seed, dtype=np.float64))
-    for _ in range(iterations):
-        cx, cy, _ = pixel_circle(camera, center, half_angle)
+    if seed_px is None:
+        seed_px = pixel_circle(camera, center, half_angle)[:2]
+    cx, cy = seed_px
+    for _ in range(3):
         px, py, _ = camera.project(center)
         center = normalize(
             camera.rays(float(px) + target[0] - cx, float(py) + target[1] - cy)
         )
-    return center
+        cx, cy, _ = pixel_circle(camera, center, half_angle)
+        if np.hypot(cx - target[0], cy - target[1]) < tol:
+            break
+    return center, (cx, cy)
 
 
 def source_mask(
@@ -148,6 +145,8 @@ def source_mask(
     """
     mask = np.zeros((camera.height, camera.width), np.uint8)
     outline = ball_outline(camera, center, half_angle, shrink=shrink)
+    if not np.isfinite(outline).all():
+        raise ValueError("the ball's outline does not project into the image")
     cv2.fillPoly(mask, [np.round(outline).astype(np.int32)], 255)
     for poly in ignore_polygons:
         pts = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
@@ -178,6 +177,13 @@ class WindowGeometry:
     top_up_sigma: float = 0.0
     map_x_small: np.ndarray | None = None
     map_y_small: np.ndarray | None = None
+    # Source rows and columns the pre-filter reads, `(y0, y1, x0, x1)`: the ball's
+    # bounding box plus the filter's reach, with an even origin so `pyrDown` keeps
+    # phase.
+    crop: tuple[int, int, int, int] | None = None
+    # (N,) float32 cosine between each masked pixel's surface normal and its line of
+    # sight: 1 where the camera sees the surface head-on, 0 at the limb.
+    facing: np.ndarray | None = None
 
     @property
     def n_valid(self) -> int:
@@ -194,6 +200,9 @@ class WindowGeometry:
                 borderMode=cv2.BORDER_CONSTANT,
             )
         small = image
+        if self.crop is not None:
+            y0, y1, x0, x1 = self.crop
+            small = image[y0:y1, x0:x1]
         for _ in range(self.levels):
             small = cv2.pyrDown(small)
         if self.top_up_sigma > 0.0:
@@ -205,42 +214,6 @@ class WindowGeometry:
             cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
         )
-
-
-def rotated_window(
-    geometry: WindowGeometry, camera: Camera, half_angle: float, increment
-) -> WindowGeometry:
-    """A copy of `geometry` whose remap reads the ball's surface turned by `increment`.
-
-    Remapping one source frame through both gives a pair of windows that differ by
-    exactly the rotation `increment` *as the assumed geometry describes it*, with the
-    same decimation, aliasing and pre-filter as any real pair. `autofit.ScaleCheck`
-    solves that pair to measure what it reads when the radius is right by construction.
-
-    The texture at window-frame surface direction `v` turns to `dR v`, so the window
-    that shows the turned ball samples the source where the surface is `dR^T v`; the
-    sliver of surface that turns out of view is left out of the mask.
-    """
-    size = geometry.size
-    radius = np.sin(half_angle)
-    surface = geometry.surface.astype(np.float64)
-    turned = surface @ rotvec_to_matrix(np.asarray(increment, dtype=np.float64))
-    point = radius * turned + np.array([0.0, 0.0, 1.0])
-    x, y, valid = camera.project(point @ geometry.to_camera.T)
-    seen = valid & ((turned * point).sum(axis=1) < 0.0)
-    map_x = np.full(size * size, -1.0, dtype=np.float32)
-    map_y = np.full(size * size, -1.0, dtype=np.float32)
-    map_x[geometry.index[seen]] = (x[seen] - 0.5).astype(np.float32)
-    map_y[geometry.index[seen]] = (y[seen] - 0.5).astype(np.float32)
-    map_x, map_y = map_x.reshape(size, size), map_y.reshape(size, size)
-    scale = np.float32(2.0**geometry.levels)
-    return replace(
-        geometry,
-        map_x=map_x,
-        map_y=map_y,
-        map_x_small=map_x / scale,
-        map_y_small=map_y / scale,
-    )
 
 
 def prefilter_plan(decimation: float, sigma: float) -> tuple[int, float]:
@@ -300,6 +273,16 @@ def window_geometry(
     decimation = float(np.median(step[window_mask])) if window_mask.any() else 1.0
     levels, top_up = prefilter_plan(decimation, prefilter)
     scale = np.float32(2.0**levels)
+    crop = None
+    x0 = y0 = 0
+    if levels or top_up:
+        inside = np.isfinite(map_x) & np.isfinite(map_y)
+        reach = int(np.ceil(4.0 * prefilter * decimation)) + 4
+        x0 = max(int(np.floor(map_x[inside].min())) - reach, 0) & ~1
+        y0 = max(int(np.floor(map_y[inside].min())) - reach, 0) & ~1
+        x1 = min(int(np.ceil(map_x[inside].max())) + reach, camera.width)
+        y1 = min(int(np.ceil(map_y[inside].max())) + reach, camera.height)
+        crop = (y0, y1, x0, x1)
     return WindowGeometry(
         size=size,
         rad_per_pixel=window_cam.rad_per_pixel,
@@ -309,9 +292,13 @@ def window_geometry(
         mask=window_mask,
         surface=np.ascontiguousarray(surface.reshape(-1, 3)[index], dtype=np.float32),
         index=index,
+        facing=np.ascontiguousarray(
+            -np.sum(surface * dirs_w, axis=-1).reshape(-1)[index], dtype=np.float32
+        ),
         decimation=decimation,
         levels=levels,
         top_up_sigma=top_up,
-        map_x_small=map_x / scale,
-        map_y_small=map_y / scale,
+        map_x_small=(map_x - x0) / scale,
+        map_y_small=(map_y - y0) / scale,
+        crop=crop,
     )

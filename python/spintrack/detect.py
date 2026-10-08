@@ -1,24 +1,15 @@
-"""Find the ball in the recording, so the user does not have to click its rim.
+"""Find the ball's silhouette: from scratch, and from a nearby seed on every frame.
 
-The silhouette is the only circle in the image with background outside it at every
-angle, but a brightness threshold does not find it: the ball is shaded towards the rim
-and dark surface blobs touching the rim bite into any thresholded outline, which is why
-the baselines in `notes/baseline_detectors.py` come out 18-28% small. Three things fix
-that:
+`detect_ball` needs no prior. A high per-pixel quantile over many frames erases the
+rotating surface texture, the convex hull of the foreground removes what bites into the
+disc, RANSAC removes what sticks out (the animal, the holder), and the rim is fitted
+sub-pixel along 360 rays, taking the outermost strong edge of each, since interior blob
+edges are strong too. `RimLook` re-measures a ball of known radius in one frame from a
+seed a few pixels off; `spintrack.refit` follows the ball with it.
 
-1. the surface texture rotates while the silhouette does not, so a high per-pixel
-   quantile over a hundred frames erases the blobs and leaves the shading envelope;
-2. the convex hull of the foreground removes what still bites in, and RANSAC removes
-   what sticks out (the animal, the holder);
-3. the rim is then fitted sub-pixel by taking, along each of 360 rays, the *outermost*
-   strong radial edge - interior blob edges are strong too, and that is where
-   `radial_gradient` went wrong.
-
-A detection that does not meet `min_rim_fraction` and `min_confidence` raises rather
-than returning a poor circle: a relative error in the ball's pixel radius costs about
-twice as much of the reported rotation about any axis in the image plane (measured in
-`tests/test_scale.py`), so a silently wrong radius rescales the speeds the tool reports
-by more than itself.
+A detection that is not trustworthy raises `DetectionError` rather than returning a poor
+circle: a relative error in the radius costs about twice as much of every rotation
+reported about an axis in the image plane.
 """
 
 from __future__ import annotations
@@ -33,37 +24,27 @@ log = logging.getLogger("spintrack")
 
 N_RAYS = 360
 MIN_RIM_RAYS = 8  # fewer rays than a circle fit needs
-# Per-pixel temporal quantile the silhouette is measured on; see `temporal_stats`.
+RADIAL_STEP = 0.25  # px between samples along a ray
+# Per-pixel temporal quantile the silhouette is measured on: high enough to erase the
+# texture, below the maximum, which keeps every bright transient (legs, glints).
 QUANTILE = 0.9
 BORDER_FRACTION = 0.05  # width of the background band, as a fraction of the image
 MASK_K_BACKGROUND = 5.0  # deviations from the background level for the foreground mask
 MASK_K_MOTION = 5.0  # multiples of the temporal noise level, same purpose
-# Tukey constants of the robust rim fit, in units of the residual scale: standard
-# outside the fitted circle, tight inside it. Contamination here is one-sided, because
-# taking the outermost strong edge of a ray whose rim is hidden reads too small and
-# never too large. Measured over the 17 scenes and the three real trials: 1.0 inside
-# takes `static` from 0.88% to 0.57% and its confidence from 0.50 to 0.76, and tightens
-# the agreement between the three trials of one rig from 0.28% to 0.20%.
+# Tukey constants of the free rim fit, in units of the residual scale. Contamination is
+# one-sided: a ray whose rim is hidden reads too small, never too large.
 TUKEY_OUTSIDE = 4.685
 TUKEY_INSIDE = 1.0
-# How far from the fitted circle a ray may land and still count as rim, as a fraction of
-# the radius or as a multiple of the fit's own residual, whichever is larger. The
-# residual term is what keeps a small ball, where 1% of the radius is a fraction of a
-# pixel, from cutting mere noise.
+# How far from the fitted circle a ray may land and still count as rim: a fraction of
+# the radius or a multiple of the fit's residual, so a small ball keeps its noisy rays.
 RIM_TOL = 0.01
 RIM_TOL_RESIDUALS = 3.0
-# Inlier band of the coarse hull RANSAC, as a fraction of the candidate circle's radius
-# and as an absolute floor. A fixed two pixels is far too tight for a big ball: the hull
-# comes from a morphologically closed mask, so it stands a little off the rim, and on
-# the real trials' 518 px ball that left RANSAC agreeing with only a third of the
-# outline and refusing about half of all detections.
+# Inlier band of the hull RANSAC, relative with an absolute floor: the hull comes from a
+# closed mask and stands a little off the rim, more so on a big ball.
 HULL_TOL = 0.015
 HULL_TOL_PX = 2.0
 MIN_AREA_FRACTION = 0.002
 MAX_AREA_FRACTION = 0.85
-# Half-width of `relocate_ball`'s rim search, as a fraction of the known radius. It is
-# the capture range of the cheap look: the rim has to fall inside it.
-RELOCATE_BAND = 0.05
 
 
 def _theta_coverage(theta, bins: int = 72) -> float:
@@ -77,6 +58,13 @@ def _theta_coverage(theta, bins: int = 72) -> float:
     return float(hit.mean())
 
 
+def circle_points(cx: float, cy: float, r: float, n: int = 16) -> list[int]:
+    """`n` points of a circle as a FicTrac `roi_circ` flat list."""
+    a = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    xy = np.stack([cx + r * np.cos(a), cy + r * np.sin(a)], 1)
+    return [round(float(v)) for v in xy.ravel()]
+
+
 class DetectionError(RuntimeError):
     """Raised when no ball could be found with enough confidence to be used."""
 
@@ -85,10 +73,9 @@ class DetectionError(RuntimeError):
 class BallDetection:
     """The ball's image circle, in the continuous pixel coordinates `camera.rays` takes.
 
-    Pixel `(i, j)` of the array has its center at `(x, y) = (j + 0.5, i + 0.5)`, and the
-    principal point sits at `(width / 2, height / 2)`. This is the convention of
-    `spintrack.camera` and of FicTrac's `roi_circ`, and it differs by half a pixel from
-    raw numpy indices: mixing the two biases `fit_ball`.
+    Pixel `(i, j)` of the array has its center at `(x, y) = (j + 0.5, i + 0.5)`, as in
+    `spintrack.camera` and FicTrac's `roi_circ`; raw numpy indices would bias
+    `fit_ball` by half a pixel.
     """
 
     cx: float
@@ -98,7 +85,6 @@ class BallDetection:
     rim_fraction: float  # accepted rays, over the rays that stay inside the image
     residual_px: float  # robust RMS radial residual of the accepted edge points
     n_frames: int
-    method: str
     ok: bool
     # The measured rim in polar form about `(cx, cy)`, one entry per accepted ray.
     rim_theta: np.ndarray = None
@@ -106,29 +92,18 @@ class BallDetection:
 
     @property
     def arc_fraction(self) -> float:
-        """Fraction of the directions around the center that carry a rim point.
-
-        Support spread all the way around conditions the fit; support on one short arc
-        does not, whether the rest of the rim is out of frame or merely hidden.
-        """
+        """Fraction of the directions around the center that carry a rim point."""
         return _theta_coverage(self.rim_theta) if self.rim_theta is not None else 0.0
 
     def rim_points(self, n: int = 16) -> list[int]:
         """Up to `n` measured rim points as a FicTrac `roi_circ` flat list.
 
-        The points come from the measured rim, not from the fitted circle: under a
-        pinhole camera the silhouette of a sphere is an ellipse, and off-axis that
-        matters. On `offaxis` (8 deg half-angle, 16 deg off the axis, less than half the
-        rim in frame) resampling the fitted circle costs 3.7% of radius and 0.46 deg of
-        center, while the measured rim is exact. Each point is the median of the
-        accepted rays in its angular bin, so it is also quieter than any single ray.
+        The points come from the measured rim, not from the fitted circle: off the
+        optical axis a pinhole camera images a sphere as an ellipse, which the circle
+        misses. Each point is the median of the accepted rays in its angular bin.
         """
         if self.rim_theta is None or len(self.rim_theta) < 3:
-            a = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
-            xy = np.stack(
-                [self.cx + self.r * np.cos(a), self.cy + self.r * np.sin(a)], 1
-            )
-            return [round(float(v)) for v in xy.ravel()]
+            return circle_points(self.cx, self.cy, self.r, n)
         edges = np.linspace(0.0, 2.0 * np.pi, n + 1)
         which = np.clip(np.digitize(self.rim_theta % (2 * np.pi), edges) - 1, 0, n - 1)
         out: list[int] = []
@@ -150,17 +125,8 @@ def temporal_stats(
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Per-pixel high quantile and standard deviation over the frames.
 
-    The quantile is what erases the rotating surface texture: over a hundred frames
-    every point of the ball is bright in most of them, so a high quantile is the shading
-    envelope with the dark blobs gone. It is deliberately not the maximum, which also
-    keeps every bright transient - on the real trials the fly's legs and the glint at
-    the rim inflate the maximum's radius by 1.4% and make the three trials of one rig
-    disagree by 0.9%, against 0.2% at the 90th percentile.
-
-    Frames are held as uint8, so the cost is `max_frames` times the frame size (160 MB
-    for 100 frames of 1600x1008, doubled while the quantile is taken). The deviation is
-    accumulated with Welford, and a single frame gives that frame and zeros, which the
-    rest of the module allows for.
+    Frames are held as uint8, so the cost is `max_frames` times the frame size, doubled
+    while the quantile is taken. A single frame gives that frame and zero deviation.
     """
     kept: list[np.ndarray] = []
     mean = m2 = None
@@ -209,10 +175,9 @@ def _background_level(image: np.ndarray) -> tuple[float, float]:
 def foreground_mask(hi: np.ndarray, sd: np.ndarray) -> tuple[np.ndarray, float]:
     """Largest foreground component of the temporal statistics, and its spread.
 
-    Foreground is anything far from the background level in `mx` or moving in `sd`; the
-    second term is what finds a ball whose brightness matches the background. The
-    returned spread is the per-pixel deviation of the background band of `hi`, which is
-    what the rim's edge strength is judged against.
+    Foreground is anything far from the background level in `hi` or moving in `sd`; the
+    second term finds a ball whose brightness matches the background. The spread is the
+    pixel deviation of `hi`'s background band, which edge strength is judged against.
     """
     h, w = hi.shape
     level, spread = _background_level(hi)
@@ -238,8 +203,9 @@ def foreground_mask(hi: np.ndarray, sd: np.ndarray) -> tuple[np.ndarray, float]:
     return (labels == best).astype(np.uint8), max(spread, 1.0)
 
 
-def _fit_circle(points: np.ndarray, weights: np.ndarray | None = None):
+def fit_circle(points: np.ndarray, weights: np.ndarray | None = None):
     """Algebraic (Kasa) circle fit; returns `(cx, cy, r)`."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     x, y = points[:, 0], points[:, 1]
     a = np.stack([2.0 * x, 2.0 * y, np.ones(len(x))], 1)
     b = x * x + y * y
@@ -253,23 +219,16 @@ def _fit_circle(points: np.ndarray, weights: np.ndarray | None = None):
     return float(sol[0]), float(sol[1]), float(np.sqrt(r2))
 
 
-def _angular_coverage(
-    points: np.ndarray, cx: float, cy: float, bins: int = 72
-) -> float:
-    """Fraction of directions about `(cx, cy)` that hold at least one point."""
-    ang = np.arctan2(points[:, 1] - cy, points[:, 0] - cx)
-    hit = np.zeros(bins, bool)
-    hit[((ang + np.pi) / (2 * np.pi) * bins).astype(int) % bins] = True
-    return float(hit.mean())
+def _coverage_about(points: np.ndarray, cx: float, cy: float) -> float:
+    return _theta_coverage(np.arctan2(points[:, 1] - cy, points[:, 0] - cx))
 
 
 def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     """Coarse circle through the convex hull of the foreground, by RANSAC.
 
-    Dark blobs, legs and the body bite *into* the disc, and the hull removes those
-    bites; the animal and the holder stick *out*, and RANSAC treats them as outliers.
-    Hull points on the image border are dropped, since a ball cut off by the frame has
-    no rim there.
+    The hull removes what bites into the disc (dark blobs, legs, the body) and RANSAC
+    what sticks out (the animal, the holder). Hull points on the image border are
+    dropped, since a ball cut off by the frame has no rim there.
     """
     h, w = mask.shape
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -289,7 +248,7 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     for _ in range(200):
         try:
             sample = pts[rng.choice(len(pts), 3, replace=False)]
-            cx, cy, r = _fit_circle(sample)
+            cx, cy, r = fit_circle(sample)
         except (DetectionError, np.linalg.LinAlgError):
             continue
         d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
@@ -298,11 +257,11 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
             best_inliers = inliers
     if best_inliers is None or best_inliers.sum() < 3:
         raise DetectionError("no circle fits the foreground outline")
-    cx, cy, r = _fit_circle(pts[best_inliers])
-    # Measured against the directions the outline actually occupies, so a ball half out
-    # of frame is judged on the part of its rim that is in frame (`offaxis` shows 46%).
-    available = _angular_coverage(pts, cx, cy)
-    coverage = _angular_coverage(pts[best_inliers], cx, cy) / max(available, 1e-6)
+    cx, cy, r = fit_circle(pts[best_inliers])
+    # Judged against the directions the outline occupies, so a ball half out of frame
+    # is judged on the part of its rim that is in frame.
+    available = _coverage_about(pts, cx, cy)
+    coverage = _coverage_about(pts[best_inliers], cx, cy) / max(available, 1e-6)
     if coverage < 0.5:
         raise DetectionError(
             f"only {100 * coverage:.0f}% of the outline agrees with a circle"
@@ -310,70 +269,50 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
     return cx, cy, r, coverage
 
 
-def _polar_grid(cx, cy, r, band, step=0.25, shape=None):
-    """The sampling grid of the rim search: radii, ray angles and their pixel positions.
+def _polar_offsets(r: float, band: float, n_rays: int = N_RAYS):
+    """Sample radii of the rim search, and the rays' unit vectors and sample offsets."""
+    radii = np.arange(r - band, r + band + RADIAL_STEP, RADIAL_STEP)
+    angles = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
+    cos, sin = np.cos(angles), np.sin(angles)
+    dx = np.outer(cos, radii).astype(np.float32)
+    return radii, cos, sin, dx, np.outer(sin, radii).astype(np.float32)
 
-    Given the image `shape`, rays that would leave it are left out instead of being
-    sampled and rejected afterwards. That changes no answer - such rays are already
-    excluded from the edge search, from the polarity and from `rim_fraction`'s
-    denominator - and on the lab trials, where the ball is cut off top and bottom, a
-    third of the rays never counted.
+
+def _rays_inside(cx, cy, radii, cos, sin, shape) -> np.ndarray:
+    """Rays whose samples all stay in the image (a segment's two ends decide)."""
+    h, w = shape
+    ends = radii[[0, -1]]
+    ex = cx + np.outer(cos, ends)
+    ey = cy + np.outer(sin, ends)
+    return ((ex >= 0) & (ex <= w) & (ey >= 0) & (ey <= h)).all(axis=1)
+
+
+def _sample(image, cx, cy, dx, dy) -> np.ndarray:
+    """The image resampled onto a polar grid (rays x radii), as float32.
+
+    `dx`, `dy` are the samples' float32 offsets from the center; pixel centers sit at
+    half-integers, which `cv2.remap` does not know about.
     """
-    radii = np.arange(r - band, r + band + step, step)
-    angles = np.linspace(0.0, 2.0 * np.pi, N_RAYS, endpoint=False)
-    if shape is not None:
-        h, w = shape
-        # A ray's samples lie on a segment, so its two ends decide the whole ray.
-        ends = radii[[0, -1]]
-        ex = cx + np.outer(np.cos(angles), ends)
-        ey = cy + np.outer(np.sin(angles), ends)
-        angles = angles[((ex >= 0) & (ex <= w) & (ey >= 0) & (ey <= h)).all(axis=1)]
-    xs = cx + np.outer(np.cos(angles), radii)
-    ys = cy + np.outer(np.sin(angles), radii)
-    return radii, angles, xs, ys
-
-
-def _polar_sample(image, xs, ys) -> np.ndarray:
-    """The image resampled onto a polar grid (rays x radii)."""
     return cv2.remap(
         image,
-        (xs - 0.5).astype(np.float32),
-        (ys - 0.5).astype(np.float32),
+        dx + np.float32(cx - 0.5),
+        dy + np.float32(cy - 0.5),
         cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REPLICATE,
-    )
+    ).astype(np.float32)
 
 
-def _radial_edges(image, cx, cy, r, polarity, step=0.25, band=None):
-    """Sub-pixel rim radius per ray of `_polar_grid`, plus each ray's edge strength.
+def _edges(profile, radii, polarity):
+    """Sub-pixel rim radius of each ray of a polar profile, its strength, and validity.
 
-    Along every ray the *outermost* radius whose radial gradient reaches half that ray's
-    maximum is taken, so a strong interior blob edge cannot win. Rays whose edge lands
-    on a search bound, or whose samples leave the image, are rejected.
+    The rim is the outermost local maximum of the radial gradient worth half the ray's
+    best edge, so an interior blob edge cannot win, and taking a maximum rather than a
+    half-maximum crossing does not put every rim point outside the edge.
     """
-    band = max(8.0, 0.05 * r) if band is None else band
-    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, step, shape=image.shape)
-    profile = _polar_sample(image, xs, ys)
-    return _edges_from_profile(
-        profile, radii, angles, xs, ys, polarity, image.shape, step
-    )
-
-
-def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.25):
-    """The rim edge of each ray of an already-sampled polar profile."""
-    h, w = shape
-    # Differentiate with a derivative-of-Gaussian one pixel wide rather than between
-    # neighboring samples: the profile is bilinearly interpolated every 0.25 px, so
-    # consecutive samples share pixels and a plain difference divides noise by 0.25.
-    t = np.arange(-3.0, 3.0 + step, step)
+    # A derivative of Gaussian one pixel wide: neighboring samples share pixels.
+    t = np.arange(-3.0, 3.0 + RADIAL_STEP, RADIAL_STEP)
     kernel = (-t * np.exp(-0.5 * t * t)).astype(np.float32)
     grad = polarity * cv2.filter2D(profile, -1, kernel.reshape(1, -1))
-    inside = (xs >= 0) & (xs <= w) & (ys >= 0) & (ys <= h)
-    usable = inside.all(axis=1)
-
-    # The outermost *local maximum* worth half the ray's best edge. Taking the outermost
-    # half-maximum crossing instead puts every rim point outside the edge by
-    # construction, which showed up as a systematic +1% radius on all 17 scenes.
     peak = grad.max(axis=1)
     strong = np.zeros(grad.shape, bool)
     inner = grad[:, 1:-1]
@@ -381,15 +320,23 @@ def _edges_from_profile(profile, radii, angles, xs, ys, polarity, shape, step=0.
         (inner >= grad[:, :-2]) & (inner > grad[:, 2:]) & (inner > 0.5 * peak[:, None])
     )
     last = grad.shape[1] - 1 - np.argmax(strong[:, ::-1], axis=1)
-    ok = usable & strong.any(axis=1) & (peak > 0)
-    rows = np.arange(len(angles))
+    ok = strong.any(axis=1) & (peak > 0)
+    rows = np.arange(len(grad))
     k = np.clip(last, 1, grad.shape[1] - 2)
     left, mid, right = grad[rows, k - 1], grad[rows, k], grad[rows, k + 1]
     denom = left - 2.0 * mid + right
-    offset = np.zeros(len(angles))
+    offset = np.zeros(len(grad))
     np.divide(0.5 * (left - right), denom, out=offset, where=np.abs(denom) > 1e-12)
     offset = np.clip(offset, -1.0, 1.0)
-    return radii[k] + offset * step, grad[rows, k], ok, usable, angles
+    return radii[k] + offset * RADIAL_STEP, grad[rows, k], ok
+
+
+def _profile_polarity(profile) -> float:
+    """+1 when the ball (the band's inner quarter) is brighter than its surround."""
+    quarter = max(1, profile.shape[1] // 4)
+    core = float(np.median(profile[:, :quarter]))
+    around = float(np.median(profile[:, -quarter:]))
+    return 1.0 if core >= around else -1.0
 
 
 @dataclass
@@ -404,58 +351,54 @@ class RimFit:
     radius: np.ndarray  # measured rim radius along each of those rays
 
 
-def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit:
-    """Alternate sub-pixel rim sampling and a robust circle fit around the current."""
-    for _ in range(rounds):
-        edge_r, strength, ok, usable, angles = _radial_edges(image, cx, cy, r, polarity)
-        if ok.any():
-            ok &= strength > min_strength * np.median(strength[ok])
-        if ok.sum() < 8:
-            raise DetectionError("too few rim points survived the edge search")
-        keep_r, keep_a = edge_r[ok], angles[ok]
-        pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
-        # IRLS with Tukey weights on the radial residual, started from the RANSAC center
-        # and the median measured radius rather than from an unweighted fit: something
-        # bright lying across one sector of the rim (a holder, a leg) pulls an
-        # unweighted fit far enough that the offending rays stop looking like outliers,
-        # and the iteration then keeps them. Both seeds tolerate half the points being
-        # wrong; the RANSAC radius on its own does not, being a mask outline and so
-        # slightly large.
-        r = float(np.median(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)))
-        for _ in range(6):
-            d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
-            # The scale comes from the outer side, which hidden rim cannot reach.
-            outer = np.abs(d[d >= 0.0])
-            scale = max(
-                1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
-                1.4826 * float(np.median(np.abs(d - np.median(d)))),
-                1e-3,
-            )
-            cut = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
-            weights = (1.0 - np.clip(d / cut, -1.0, 1.0) ** 2) ** 2
-            cx, cy, r = _fit_circle(pts, weights)
+def refine_rim(image, cx, cy, r, polarity, min_strength=0.3) -> RimFit:
+    """Sub-pixel rim around a coarse circle and a robust free circle fit through it."""
+    image = np.asarray(image, dtype=np.float32)
+    radii, cos, sin, dx, dy = _polar_offsets(r, max(8.0, 0.05 * r))
+    keep = _rays_inside(cx, cy, radii, cos, sin, image.shape)
+    profile = _sample(image, cx, cy, dx[keep], dy[keep])
+    edge_r, strength, ok = _edges(profile, radii, polarity)
+    cos, sin = cos[keep], sin[keep]
+    if ok.any():
+        ok &= strength > min_strength * np.median(strength[ok])
+    if ok.sum() < MIN_RIM_RAYS:
+        raise DetectionError("too few rim points survived the edge search")
+    pts = np.stack([cx + edge_r[ok] * cos[ok], cy + edge_r[ok] * sin[ok]], 1)
+    # IRLS with Tukey weights on the radial residual, started from the RANSAC center
+    # and the median measured radius: something bright across one sector of the rim
+    # pulls an unweighted start far enough that its rays stop looking like outliers.
+    r = float(np.median(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)))
+    for _ in range(6):
         d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
-    # Rays that land far from the fitted circle are not rim: too far inside, the rim is
-    # hidden behind something dark; too far outside, something bright sits in front of
-    # it. Both are dropped and the circle refitted, so the outline handed to `fit_ball`
-    # and the circle itself rest on the same points.
+        # The scale comes from the outer side, which hidden rim cannot reach.
+        outer = np.abs(d[d >= 0.0])
+        scale = max(
+            1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
+            1.4826 * float(np.median(np.abs(d - np.median(d)))),
+            1e-3,
+        )
+        cut = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
+        weights = (1.0 - np.clip(d / cut, -1.0, 1.0) ** 2) ** 2
+        cx, cy, r = fit_circle(pts, weights)
+    d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
+    # Rays far from the circle are not rim (hidden behind something dark, or covered by
+    # something bright); drop them and refit, so the outline and the circle agree.
     residual = float(np.sqrt(np.average(d**2, weights=weights)))
-    keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
-    if keep.sum() < 8:
+    sel = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
+    if sel.sum() < MIN_RIM_RAYS:
         raise DetectionError("too few rim points survived the robust fit")
-    pts, weights = pts[keep], weights[keep]
-    cx, cy, r = _fit_circle(pts, weights)
+    pts, weights = pts[sel], weights[sel]
+    cx, cy, r = fit_circle(pts, weights)
     d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r
     residual = float(np.sqrt(np.average(d**2, weights=weights)))
-    # Re-express the kept rim about the final center, which the polar grid was not on.
     dx, dy = pts[:, 0] - cx, pts[:, 1] - cy
     return RimFit(
         cx=cx,
         cy=cy,
         r=r,
-        rim_fraction=ok.sum() / max(usable.sum(), 1),
+        rim_fraction=ok.sum() / max(len(cos), 1),
         residual_px=residual,
-        strength=float(np.median(strength[ok][keep])),
+        strength=float(np.median(strength[ok][sel])),
         theta=np.arctan2(dy, dx),
         radius=np.hypot(dx, dy),
     )
@@ -463,121 +406,16 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, rounds=1) -> RimFit
 
 @dataclass
 class BallRelocation:
-    """Where a ball of *known* radius sits now, measured from a short run of frames."""
+    """Where the ball sits in one frame, as `RimLook` measures it."""
 
     cx: float
     cy: float
+    r: float  # the look's radius, or the fitted one with `free_radius`
     rim_fraction: float  # accepted rays, over the rays that stay inside the image
     arc_fraction: float  # directions about the center that carry an accepted ray
     residual_px: float
-    n_frames: int
     polarity: float  # +1 when the ball is brighter than what surrounds it
     ok: bool
-
-
-def relocate_ball(
-    frames,
-    cx: float,
-    cy: float,
-    r: float,
-    polarity: float | None = None,
-    *,
-    quantile: float = QUANTILE,
-    band: float | None = None,
-    cut: float | None = None,
-    min_rim_fraction: float = 0.4,
-    min_arc_fraction: float = 0.25,
-) -> BallRelocation:
-    """Re-measure the center of a ball whose radius is already known.
-
-    This is `detect_ball`'s job stripped to what following a moving ball needs, and it
-    is two orders of magnitude cheaper: the temporal quantile is taken on the polar rim
-    band alone (360 rays x a few hundred samples) instead of over whole frames, and the
-    foreground mask and hull RANSAC are skipped, since `(cx, cy)` is already within a
-    few pixels and `r` is known. The trade is capture range: the rim has to fall inside
-    `band`, so a ball that has jumped needs `detect_ball`.
-
-    Holding the radius fixed is not only cheaper but better conditioned. On the real
-    trials the ball is cut off at the top and bottom of the frame, so the rim is two
-    side arcs; those pin a free circle's center badly in y (4.3 px of scatter) and a
-    known-radius circle's well (1.4-2.5 px).
-
-    `polarity` may be left out, in which case it is read off the profile: the rim band
-    is centerd on the silhouette, so its inner quarter is ball and its outer quarter is
-    whatever surrounds it. `cut` fixes the fit's outlier cut in pixels (see
-    `_fit_center`).
-
-    Rays through the config's `roi_ignr` are deliberately *not* left out. With the
-    animal at the top of the ball that removes the rim's upper arc, and a circle of
-    fixed radius held only by its two sides and its bottom is free to climb: on the
-    synthetic `lab_small_ball` a look seeded on its own previous answer then walked 80
-    px off the ball. The occluder's pull (3-8 px toward the body) is the lesser evil,
-    and `spintrack.refit` is what has to live with it.
-    """
-    band = max(8.0, RELOCATE_BAND * r) if band is None else band
-    images = [np.asarray(frame) for frame in frames]
-    if not images:
-        raise DetectionError("no frames to relocate the ball in")
-    for image in images:
-        if image.ndim != 2:
-            raise DetectionError(
-                f"frames must be 2-D grayscale, got shape {image.shape}"
-            )
-    shape = images[0].shape
-    radii, angles, xs, ys = _polar_grid(cx, cy, r, band, shape=shape)
-    if len(angles) < MIN_RIM_RAYS:
-        raise DetectionError("the ball's rim band lies outside the image")
-    stack = [_polar_sample(image, xs, ys) for image in images]
-    k = round(quantile * (len(stack) - 1))
-    profile = np.partition(np.stack(stack), k, axis=0)[k].astype(np.float32)
-    if polarity is None:
-        polarity = _profile_polarity(profile, xs, ys, shape)
-    edge_r, strength, ok, usable, angles = _edges_from_profile(
-        profile, radii, angles, xs, ys, polarity, shape
-    )
-    if ok.any():
-        ok &= strength > 0.3 * np.median(strength[ok])
-    if ok.sum() < 8:
-        raise DetectionError("too few rim points survived the edge search")
-    keep_r, keep_a = edge_r[ok], angles[ok]
-    pts = np.stack([cx + keep_r * np.cos(keep_a), cy + keep_r * np.sin(keep_a)], 1)
-    center, weights, d = _fit_center(pts, np.array([cx, cy]), r, cut=cut, band=band)
-    residual = _weighted_rms(d, weights)
-    keep = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
-    if keep.sum() >= 8:
-        center, weights, d = _fit_center(pts[keep], center, r, cut=cut)
-        pts = pts[keep]
-        residual = _weighted_rms(d, weights)
-    theta = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
-    rim_fraction = len(pts) / max(usable.sum(), 1)
-    arc_fraction = _theta_coverage(theta)
-    return BallRelocation(
-        cx=float(center[0]),
-        cy=float(center[1]),
-        rim_fraction=float(rim_fraction),
-        arc_fraction=arc_fraction,
-        residual_px=residual,
-        n_frames=len(stack),
-        polarity=float(polarity),
-        ok=rim_fraction >= min_rim_fraction and arc_fraction >= min_arc_fraction,
-    )
-
-
-def _profile_polarity(profile, xs, ys, shape) -> float:
-    """Whether the ball is brighter (+1) or darker (-1) than what surrounds it.
-
-    Only rays that stay inside the image are asked: the rest are extended by border
-    replication, which says nothing about the background.
-    """
-    h, w = shape
-    inside = (xs >= 0) & (xs <= w) & (ys >= 0) & (ys <= h)
-    rays = inside.all(axis=1)
-    if not rays.any():
-        rays = np.ones(len(profile), bool)
-    quarter = max(1, profile.shape[1] // 4)
-    core = float(np.median(profile[rays, :quarter]))
-    around = float(np.median(profile[rays, -quarter:]))
-    return 1.0 if core >= around else -1.0
 
 
 def _weighted_rms(d, weights) -> float:
@@ -588,19 +426,13 @@ def _weighted_rms(d, weights) -> float:
     return float(np.sqrt(float(np.sum(weights * d * d)) / total))
 
 
-def _fit_center(pts, center, r, rounds: int = 8, cut=None, band=None):
-    """Robust least-squares center of a circle of known radius `r` through `pts`.
+def _fit_fixed_cut(pts, center, r, cut, band=None, free_radius=False, rounds=8):
+    """Tukey-weighted circle fit with a fixed cut, the radius held unless `free_radius`.
 
-    Minimizing `sum w_i (|p_i - c| - r)^2` over `c` alone has the fixed point
-    `c = mean_w(p_i - r u_i)` with `u_i` the unit vector from `c` to `p_i`, which is
-    what this iterates, re-weighting Tukey-style on the radial residual exactly as
-    `refine_rim` does.
-
-    With `cut` (px) the Tukey cut is that fixed value on both sides, reached by halving
-    from twice `band` so that a seed well off the center still converges (a seed `band`
-    off puts genuine rim points `band` from the circle); without it the scale is
-    estimated from the residuals, which something bright standing past the rim (the
-    animal) inflates. See `spintrack.refit`.
+    With the radius held, `sum w_i (|p_i - c| - r)^2` has the fixed point
+    `c = mean_w(p_i - r u_i)`, `u_i` the unit vector from `c` to `p_i`. Given `band`,
+    the cut anneals from twice the band down to `cut`, so a seed up to a band off still
+    converges. Returns `(center, r, weights, residuals)`.
     """
     weights = np.ones(len(pts))
     d = np.zeros(len(pts))
@@ -608,23 +440,101 @@ def _fit_center(pts, center, r, rounds: int = 8, cut=None, band=None):
         delta = pts - center
         dist = np.hypot(delta[:, 0], delta[:, 1])
         d = dist - r
-        if cut is not None:
-            cuts = max(float(cut), 2.0 * float(band) / 2**k if band else 0.0)
-        else:
-            outer = np.abs(d[d >= 0.0])
-            scale = max(
-                1.4826 * float(np.median(outer)) if outer.size > 5 else 0.0,
-                1.4826 * float(np.median(np.abs(d - np.median(d)))),
-                1e-3,
-            )
-            cuts = np.where(d < 0.0, TUKEY_INSIDE, TUKEY_OUTSIDE) * scale
+        cut = float(cut)
+        cuts = max(cut, 2.0 * float(band) / 2**k if band else 0.0)
         weights = (1.0 - np.clip(d / cuts, -1.0, 1.0) ** 2) ** 2
         unit = delta / np.maximum(dist, 1e-9)[:, None]
         total = float(weights.sum())
         if total <= 0:
             break
-        center = (weights[:, None] * (pts - r * unit)).sum(0) / total
-    return center, weights, d
+        before = center
+        if free_radius:
+            cx, cy, r = fit_circle(pts, weights)
+            center = np.array([cx, cy])
+        else:
+            center = (weights[:, None] * (pts - r * unit)).sum(0) / total
+        if cuts == cut and np.hypot(*(center - before)) < 1e-6:
+            break
+    return center, r, weights, d
+
+
+class RimLook:
+    """The rim of a ball of known radius, measured in one frame about a nearby seed.
+
+    The radius is held fixed: with only the sides of the rim in view (the lab rig cuts
+    the ball off top and bottom) that pins the center far better than a free circle.
+    The outlier cut is fixed too, because something bright past the rim (the animal)
+    inflates a scale estimated from the residuals, and a look seeded on its own answer
+    then climbs it. The rim has to fall inside `band` of the seed's circle.
+
+    Rays through `roi_ignr` are deliberately kept: without the rim's upper arc, a
+    circle held by its sides and bottom is free to climb.
+    """
+
+    def __init__(self, radius: float, band: float, cut: float):
+        self.radius, self.band, self.cut = float(radius), float(band), float(cut)
+        self.radii, self.cos, self.sin, self.dx, self.dy = _polar_offsets(radius, band)
+        self._rays = None  # the last image-bound subset of rays and their offsets
+
+    def __call__(
+        self,
+        image,
+        cx: float,
+        cy: float,
+        polarity: float | None = None,
+        *,
+        free_radius: bool = False,
+        min_rim_fraction: float = 0.3,
+        min_arc_fraction: float = 0.25,
+    ) -> BallRelocation:
+        """Measure the rim in `image` (2-D) about the seed `(cx, cy)`.
+
+        `polarity` is read off the profile when not given. `free_radius` fits the
+        radius as well, seeded on the look's own.
+        """
+        image = np.asarray(image)
+        if image.ndim != 2:
+            raise DetectionError(f"frames must be 2-D grayscale, got {image.shape}")
+        keep = _rays_inside(cx, cy, self.radii, self.cos, self.sin, image.shape)
+        n_rays = int(keep.sum())
+        if n_rays < MIN_RIM_RAYS:
+            raise DetectionError("the ball's rim band lies outside the image")
+        if self._rays is None or not np.array_equal(keep, self._rays[0]):
+            self._rays = (keep, self.dx[keep], self.dy[keep])
+        profile = _sample(image, cx, cy, *self._rays[1:])
+        if polarity is None:
+            polarity = _profile_polarity(profile)
+        edge_r, strength, ok = _edges(profile, self.radii, polarity)
+        if ok.any():
+            ok &= strength > 0.3 * np.median(strength[ok])
+        if ok.sum() < MIN_RIM_RAYS:
+            raise DetectionError("too few rim points survived the edge search")
+        cos, sin = self.cos[keep][ok], self.sin[keep][ok]
+        pts = np.stack([cx + edge_r[ok] * cos, cy + edge_r[ok] * sin], 1)
+        center, r, weights, d = _fit_fixed_cut(
+            pts, np.array([cx, cy]), self.radius, self.cut, self.band, free_radius
+        )
+        residual = _weighted_rms(d, weights)
+        sel = np.abs(d) < max(RIM_TOL * r, RIM_TOL_RESIDUALS * residual)
+        if sel.sum() >= MIN_RIM_RAYS:
+            pts = pts[sel]
+            center, r, weights, d = _fit_fixed_cut(
+                pts, center, r, self.cut, free_radius=free_radius
+            )
+            residual = _weighted_rms(d, weights)
+        theta = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+        rim_fraction = len(pts) / n_rays
+        arc_fraction = _theta_coverage(theta)
+        return BallRelocation(
+            cx=float(center[0]),
+            cy=float(center[1]),
+            r=float(r),
+            rim_fraction=float(rim_fraction),
+            arc_fraction=arc_fraction,
+            residual_px=residual,
+            polarity=float(polarity),
+            ok=rim_fraction >= min_rim_fraction and arc_fraction >= min_arc_fraction,
+        )
 
 
 def _confidence(
@@ -632,13 +542,10 @@ def _confidence(
 ) -> float:
     """Product of clipped linear terms, each 0 at unusable and 1 at clearly good.
 
-    The residual is judged relative to the radius (0.5 px is tight on a 500 px ball and
-    hopeless on a 20 px one) and the edge strength against the background pixel spread
-    of the same image, not against the temporal noise: on `lighting` the illumination
-    itself varies, and a temporal denominator would reject a perfectly good rim. The
-    agreement with the coarse hull circle is only a sanity bound, not a quality measure:
-    the hull comes from a morphologically closed mask and runs a few percent large, more
-    on a compressed video, so it is asked only not to disagree wildly.
+    The residual is judged relative to the radius and the edge strength against the
+    background's pixel spread (a temporal one would reject a rig whose lighting
+    varies). The hull circle runs a few percent large, so agreement with it is only a
+    sanity bound.
     """
 
     def term(value, bad, good):
@@ -663,7 +570,7 @@ def detect_ball(
 ) -> BallDetection:
     """Find the ball in a run of grayscale frames; raises `DetectionError` if unsure.
 
-    A single frame works too, losing the blob-erasing benefit of the temporal maximum.
+    A single frame works too, without the texture-erasing benefit of the quantile.
     """
     hi, sd, n = temporal_stats(frames, max_frames)
     mask, spread = foreground_mask(hi, sd)
@@ -674,19 +581,6 @@ def detect_ball(
     arc_fraction = _theta_coverage(fit.theta)
     confidence = _confidence(fit, arc_fraction, r0, spread)
     ok = fit.rim_fraction >= min_rim_fraction and confidence >= min_confidence
-    detection = BallDetection(
-        cx=fit.cx,
-        cy=fit.cy,
-        r=fit.r,
-        confidence=confidence,
-        rim_fraction=fit.rim_fraction,
-        residual_px=fit.residual_px,
-        n_frames=n,
-        method="temporal quantile, hull RANSAC, radial edge",
-        ok=ok,
-        rim_theta=fit.theta,
-        rim_radius=fit.radius,
-    )
     if not ok:
         raise DetectionError(
             f"ball detection not trustworthy: confidence {confidence:.2f}, rim "
@@ -695,14 +589,24 @@ def detect_ball(
             f"{100 * abs(fit.r / r0 - 1):.1f}% (circle would be {fit.cx:.1f}, "
             f"{fit.cy:.1f}, r {fit.r:.1f})"
         )
-    # Debug, not info: `autofit.Prepared.line` reports this to the user once, while the
-    # moved-ball watch calls this every few tens of frames while it is following.
+    # Debug, not info: the moved-ball watch calls this while it recovers a lost ball.
     log.debug(
         "ball detected at (%.1f, %.1f) r %.1f px from %d frames "
         "(confidence %.2f, rim %.0f%%, residual %.2f px)",
         fit.cx, fit.cy, fit.r, n, confidence, 100 * fit.rim_fraction, fit.residual_px,
     )  # fmt: skip
-    return detection
+    return BallDetection(
+        cx=fit.cx,
+        cy=fit.cy,
+        r=fit.r,
+        confidence=confidence,
+        rim_fraction=fit.rim_fraction,
+        residual_px=fit.residual_px,
+        n_frames=n,
+        ok=ok,
+        rim_theta=fit.theta,
+        rim_radius=fit.radius,
+    )
 
 
 def sample_frames(source_spec, n: int = 100, span: int = 300) -> list[np.ndarray]:

@@ -1,444 +1,73 @@
-# How spintrack tracks the ball
+# How spintrack works
 
-spintrack estimates the 3D rotation of a patterned sphere from a single fixed camera. It
-shares FicTrac's problem statement and interfaces, but not its estimator: instead of
-matching a thresholded window against a binary map with a derivative-free search, it aligns a
-photometrically normalized window against a floating-point surface map with Gauss-Newton
-iterations and analytic derivatives.
+For maintainers: the tracker as it stands, why each piece is the way it is, and what pins it.
 
-## Geometry (once per configuration)
+## Pipeline
 
-- **Camera.** Pinhole from the vertical field of view (`vfov`, degrees), or an equidistant
-  fisheye (`fisheye: y`). Camera axes: x right, y down, z forward.
-- **Ball.** A unit direction to the ball center and its angular radius (`roi_c`, `roi_r`), or a
-  least-squares cone fit through the rim points (`roi_circ`). Pixels inside `roi_ignr`
-  polygons are ignored.
-- **Tracking window.** A virtual fisheye camera aimed at the ball center samples the source
-  image into an `n x n` window (`n = 10 * q_factor`) with `cv2.remap`. A window pixel covers
-  6-9 source pixels on these rigs, and bilinear sampling at that decimation aliases the
-  texture, so the source is pre-filtered first: one `pyrDown` and a Gaussian on the half-size
-  frame, a total blur of half the decimation (`sphere.PREFILTER_SIGMA`), which halves the
-  per-frame error on the synthetic scenes. Each window pixel that sees the ball gets a unit
-  vector `v_k` from the ball center to the surface point it observes (window frame: z toward
-  the ball). These vectors are fixed; rotating the ball rotates them.
-- **Surface map.** A float32 grid over the ball surface storing a running weighted mean of
-  normalized intensity plus a weight per cell (0 = never seen). Two tessellations, both
-  addressed by a continuous `(u, v)` into one `(h, w)` array. `cube` (the default) is an
-  equi-angular cubemap, six square faces stacked into `(6 face, face)`. `equal_area` is
-  FicTrac's Lambert cylindrical grid: `u` from the longitude about the window y axis, `v`
-  from `sin(latitude)`. See "The shape of the map's cells" below.
+`spintrack run` (`cli.py`) loads the config, detects the ball if the config has none (`autofit.prepare_config`), and hands a frame source to `pipeline.run`, which decodes in a background thread while the main thread tracks. For each frame, `Tracker.process_frame` (`tracker.py`):
 
-## Per frame
+1. lets the ball follower move the tracking window if the ball has moved in its holder (`refit.py`);
+2. remaps the source frame into the window (`sphere.py`);
+3. runs one engine step (`engine.py`): normalize, correct for the illumination fields, solve for the rotation against the surface map, update the map and the field;
+4. converts the increment to camera and lab coordinates, integrates the path (`path.py`) and returns the 25 columns.
 
-1. **Normalize.** Local zero-mean, unit-variance normalization of the window over the valid
-   pixels (box window of `thr_win_pc * n` pixels), then subtraction of the static
-   illumination field (below). The first removes smooth illumination gradients and flicker
-   and makes residuals comparable across balls; the second removes what it cannot.
-2. **Predict.** Start from the constant-velocity prediction `exp(w0) R_prev`, where `w0` is the
-   low-passed previous increment.
-3. **Align.** Iteratively reweighted Gauss-Newton on the residuals
-   `r_k = I_k - M(project(R^T v_k))` with a left-multiplicative update `R <- exp([d]x) R`.
-   The Jacobian of each residual is `-((R g_k) x v_k)` with `g_k` the map gradient pulled
-   back through the projection. Robust weights (Huber, then Tukey) times the map confidence
-   drop occluders and unseen cells. The full-resolution solve runs first; if it does not
-   converge or fails the quality gates, a three-level pyramid (blurred map and window,
-   strided pixels) widens the basin to cover saccades of up to ~0.35 rad/frame.
-4. **Gate.** Overlap with seen cells, inlier fraction and step size decide whether the
-   frame is accepted. On failure the window is aligned against the previous frame's map
-   (drift-prone but robust to occlusion bursts); if that fails too the frame is dropped, and
-   after `max_bad_frames` failures tracking resets. A gate on the residual cost exists
-   (`cost_gate`) but is off by default: with the pre-filtered window a walking animal's
-   cost is ten times a standing one's, and every cost level it was tried against rejected
-   the frames where the animal starts to walk.
-5. **Update.** The corrected window is splatted into the map (bilinear footprint, running
-   mean with optional forgetting). `accumulate_map: n` keeps only a one-cell dilation of the
-   current view, reproducing the lab fork's behavior.
-6. **Output.** The increment is expressed in camera coordinates (`R_wc w`), then lab
-   coordinates (`c2a_r`), and integrated into the fictive path with FicTrac's column
-   semantics. Unlike FicTrac, the camera-frame columns are in true camera coordinates rather
-   than the window frame; the two coincide for a ball near the image center.
+Recorders in `io/` write files and streams; `quality.py` summarizes the run. The Rust core (`rust/src/`) holds what touches every pixel: the solver, the map and the global search.
 
-## Static illumination
+## Window geometry
 
-The lamps and the ball holder do not rotate with the ball, so whatever they do to a window
-pixel is fixed in the camera frame while the texture it falls on turns past it. Anything
-camera-fixed left in the observation is therefore not texture, and splatting it into the
-ball-fixed map smears it over the surface. On the lab recordings the band just above the
-holder sits about 0.9 low in normalized-intensity units, where map values span roughly
-+/-3, and keeps a third of the texture contrast of the rest of the ball.
+The camera is a pinhole defined by `vfov`, or an equidistant fisheye. The ball is a unit direction to its center plus an angular radius, from `roi_c`/`roi_r` or a cone fitted through the `roi_circ` rim points; angles rather than pixels keep the geometry exact for an off-axis ball, whose silhouette is an ellipse.
 
-The local normalization in step 1 handles a *smooth* gradient by construction: a shading
-field that varies slowly compared with its box cancels out of both the local mean and the
-local standard deviation. A holder shadow is not smooth. Its edge is sharp compared with
-the box, which straddles bright and dark and so reads high just above the shadow and low
-inside it, and it divides by a standard deviation the same edge has inflated. That is what
-produces the `+0.3, +0.2, -0.9` signature the three example recordings all show.
+The tracking window is the image of a virtual fisheye camera aimed at the ball's center, `n = 10 * q_factor` pixels square, sampled with `cv2.remap`. Each window pixel that sees the ball gets a fixed unit vector `v_k` from the ball's center to the surface point it observes, so the rotation is the only unknown. `roi_ignr` pixels are masked out.
 
-So spintrack estimates a per-window-pixel field `bias` and subtracts it before the solve
-and before the splat, leaving both sides consistent:
+A window pixel spans several source pixels, and bilinear sampling at that decimation aliases the texture, so the source is pre-filtered: one `cv2.pyrDown` and a Gaussian on the half-size frame, a total blur of half the decimation (`sphere.PREFILTER_SIGMA`). Filtering at half size costs a quarter of a full-size Gaussian; below a decimation of 2 the filter is skipped.
 
-    residual = (obs - bias) - gain * M(project(R^T v_k))   weighted by rho * map_conf * wt
+## Per-frame solve
 
-`bias` is an exponential mean of `obs - M(project(R^T v_k))` per window pixel with time
-constant `illum_tau`, read off every `illum_update_every` frames and projected to zero mean
-because the field and the map are separable only up to one additive constant. (An earlier
-version stepped the field toward that mean instead, which made a damped oscillator of it:
-16% overshoot and 450 frames to reach two thirds of the way.) It has to go through the map: averaging the *frames* would work only if the ball
-turned enough for the texture to average away, and on these recordings a window pixel sees
-about three effectively independent patches of surface in two thousand frames, so a plain
-temporal mean is mostly texture and subtracting it would take real signal out of the map.
-Against the map the texture is subtracted explicitly, and no spatial smoothing is needed.
+**Normalize.** The window is normalized to zero mean and unit variance in a local box of `thr_win_pc * n` pixels, and corrected by the illumination fields. This removes smooth gradients and flicker and makes residuals comparable between rigs.
 
-The update is self-limiting rather than self-reinforcing: when the ball is still, the map
-absorbs the whole observation, the residual goes to zero, and the field stops moving.
+**Predict.** The solve starts from `exp([w0]x) R_prev`, with `w0` the low-passed previous increment, because a walking animal's rotation changes little between frames.
 
-The field belongs to a ball in a given place. A window re-fit that only nudges the window
-resamples it by direction, since it is the camera frame it is fixed in; but a ball that has
-actually moved in its holder is lit differently, shading being a function of the surface
-normal, so past `illum_reset_move` of a radius the field is discarded and re-learned. On
-the trial where the ball sinks 242 px and comes back, carrying the old field instead costs
-more than the correction saves over that stretch.
+**Align.** Iteratively reweighted Gauss-Newton minimizes `r_k = I_k - M(project(R^T v_k))` between the window `I` and the map `M`, with the update `R <- exp([d]x) R` and the analytic Jacobian `-((R g_k) x v_k)`, `g_k` being the map gradient pulled back through the projection (`rust/src/solve.rs`). Analytic derivatives and bilinear sampling resolve a fraction of a window pixel in a few iterations, where FicTrac's binary tile search resolves about one pixel. Each residual is weighted by a Huber weight, a Tukey biweight and the map cell's confidence, so occluders and unseen cells drop out without a hard mask. The solve runs on a subsample of about 4000 window pixels (`TrackParams.max_pixels`) to bound the time per frame; the map is updated from every pixel.
 
-The field describes the rig, so a recording too short to measure one can borrow it:
-`--load-illumination` (`illumination_fn`) reads the fields out of a map `.npz` and
-resamples them into this run's window, without the map they were saved beside. It is
-loaded `illum_tau` frames deep into the accumulator rather than merely assigned, because
-every refresh reads the field off that accumulator - a field only assigned is replaced by
-a handful of the new run's own samples `illum_warmup` frames in, and the head start lasts
-exactly that long. As a prior it decays out over `illum_tau` as the run's own frames
-outweigh it. (The field `--two-pass` hands over is installed without that weight: the
-second pass sees the same lighting as the first and re-measures it anyway, and weighting
-the hand-over measured as nothing either way, on exact truth and on the lab recordings
-alike.) Trial 003's field loaded into trial 005 - 1015 frames,
-the same rig and the same ball - halves what still does not rotate in the bottom of 005's
-window over its first 600 frames, -0.20 against -0.11 in normalized-intensity units, and
-lowers the median photometric cost by 6%. On six seeds of `holder_shadow_lab` it puts the
-field within 0.016 of the donor's at frame 100 where a fresh run is 0.115 away, and leaves
-the per-frame error unchanged, the synthetic shadow being a third of the real one.
+**Fall back.** If the full-resolution solve does not settle or is rejected, a three-level pyramid widens the basin for saccades. If that fails, the window is aligned against the previous frame's map, which drifts but survives a burst of occlusion. Then, with `opt_do_global`, the global search relocalizes; otherwise the frame is dropped, and after `max_bad_frames` drops in a row tracking restarts from a fresh map.
 
-`gain` and `wt` are the multiplicative and weighting counterparts, both off by default;
-`spintrack.photometry` records what measuring them showed. `illumination: n`, or
-`--no-illumination`, restores the plain behavior.
+**Accept.** A solve is accepted when the increment is within `opt_bound`, at least a quarter of the window falls on seen map cells, and at least half of those are inliers. There is no gate on the cost, because a walking animal's cost is much higher than a standing one's and a cost gate rejects the frames where it starts to walk.
 
-## Geometry from the data
+**Relocalize.** The global search scores quasi-uniform orientations over SO(3) at the coarsest level, refines the best few through the pyramid, and keeps the cheapest that overlaps enough. The frame reports zero motion, as in FicTrac, since the jump corrects the estimate rather than measuring the ball. A map loaded with `--load-map` or `sphere_map_fn` is localized this way on the first frame.
 
-Three of the numbers the solver needs are measured from the recording rather than asked for.
+**Report.** The increment goes to camera coordinates through the window's orientation, to lab coordinates through `c2a_r`, and into the path through a port of FicTrac's `Trackball::updatePath`. The absolute orientation stays referred to the first window, so a window move does not make it step.
 
-**The ball's image circle** (`spintrack.detect`). A high per-pixel quantile over ~100 frames
-erases the rotating surface texture and leaves the shading envelope; the convex hull of the
-foreground removes what bites into the disc and RANSAC removes what sticks out of it; then
-along each of 360 rays the outermost local maximum of the radial gradient is taken sub-pixel,
-which is what keeps interior blob edges from winning. The measured rim, not a circle
-resampled from the fit, is what goes into `roi_circ`: a sphere's silhouette under a pinhole
-camera is an ellipse, and off-axis that is worth several percent of radius. The detection
-carries a confidence and refuses rather than returning a poor circle.
+## The map
 
-**The field of view** (`autofit.fit_vfov`). The pixel circle and `vfov` together fix the
-ball's angular radius, so only `vfov` is searched, with the circle held fixed. Nine log-spaced
-candidates over 1-120 degrees, each tracked for 1000 frames, and the median cost taken; the
-value is believed only when the curve has a minimum inside the grid, deeper than its own
-wobble. The 1000 frames matter: over 300 the run is self-consistent at any assumed geometry
-and the curve is flat.
+The map is an equi-angular cubemap (`rust/src/map.rs`): six square faces in one array, with face coordinates `s' = tan(pi s / 4)` so that cells stay near-square, at FicTrac's density of `2 (1.5 n)^2` cells. FicTrac's equal-area grid has sliver cells near its poles, where the projection Jacobian grows as `1 / cos^2(lat)`; the cube's is bounded. A bilinear tap that runs off a face re-projects the direction of the cell it asked for.
 
-**The radius, checked against itself** (`autofit.ScaleCheck`). This is the one geometric
-input the cost cannot find for itself, and it is worth more than it looks: a relative error
-`eps` in the assumed radius mis-scales the reported rotation about any axis *in the image
-plane* by about `1.9 eps` and the rotation about the optical axis not at all, measured over
-half-angles from 2 to 25 degrees in `tests/test_scale.py`. So a camera behind the animal, for
-which forward walking is a purely in-plane rotation, reports forward speed with about twice
-the radius error - and because the two directions respond differently, the error does not
-cancel as a common factor between one reported component and another.
+Each cell holds a running weighted mean of normalized intensity and a weight. A cell counts as seen above `W_MIN`, is fully trusted at `W_SAT`, and is capped at `W_MAX` so that the map keeps adapting. Accepted windows are splatted in with a bilinear footprint, each pixel weighted by the lighting gain squared (next section) and by the squared cosine of its viewing angle (`WindowGeometry.facing`). Because the cap makes each cell follow its most recent views, unweighted dim and foreshortened views would otherwise wash out the texture a patch showed when first seen head-on and well lit. `accumulate_map : n` keeps only the current view plus a one-cell margin, as the lab's FicTrac fork does.
 
-That split is also what makes the check possible. The same frame-to-frame increment is solved
-again on an inner disc and an outer annulus of the tracking window. The two regions see the
-surface at different depths, and the depth is exactly what the assumed radius sets, so their
-ratio is fixed when the radius is right and moves monotonically when it is not -
-independently of the cost, which cannot tell an over-large ball from an under-large one.
+The map lives in the ball's body frame (the window frame at `R = I`), so a window move is a change of coordinates, not a rebuild. A loaded map is a prior: its weights are capped at `MAP_PRIOR_W_MAX`, just above `W_MIN`, so that the first fresh observation of a cell replaces it, because a map from another time differs in lighting and carries that run's drift. `map_frozen` keeps a loaded map fixed.
 
-Fixed for a perfect solver, that is. What each region actually recovers of a given motion
-also depends on the recording, and over the benchmark scenes that alone moves the raw ratio
-from 0.96 to 1.06 at a *correct* radius, which is six percentage points of radius - more
-than the errors worth reporting. So each check also solves a control pair: one source frame
-remapped twice, once as it is and once through `sphere.rotated_window`, which turns the ball
-by the increment that frame just measured. The pair differs by exactly the rotation the
-assumed geometry describes, so what the two regions disagree about on it is the solver and
-the recording rather than the radius, and the reading is divided by it. What is left is a
-response to the radius error that the scenes agree on to about a percent (`RATIO_RESPONSE`)
-and a zero point that depends on the ball's angular size (`RATIO_ZERO`: 0.967 at a 0.31
-degree half-angle, 1.003 at 11 degrees, because the outer annulus of a near-orthographic
-ball sits where the surface is most foreshortened). Together they read a planted radius
-error to 0.6 percentage points rms over 18 scenes and 7 errors each, and within half a point
-at a correct radius; the three real trials of one rig, whose radii the detector puts within
-0.2% of each other, read -0.8%, +0.3% and -0.8% (they read -1.1%, +2.4% and +1.1% before the
-control pair). Anything image-fixed in the outer annulus is what remains: it holds that region
-back, and a control pair built from one frame cannot see it. `occluded`, whose `roi_ignr`
-covers the animal's body but not its six legs, reads 1.1-2.9% too large; scaling that
-polygon by 2.5 about its own center - 22% of the window's pixels - leaves 0.6-0.8. So the
-mask wants to cover the legs, not just the body. The holder shadow does the same thing more
-gently: `lab_big_shadow` and `lab_big_ball` differ in nothing else, and their corrected
-ratios differ by 1%, which is half a percentage point of radius.
+## Static illumination field
 
-## Following a ball that moves
+The lamps and the holder do not turn with the ball, so their shading is fixed in the camera frame while the texture turns past it; left in, it would smear over the map. Local normalization removes smooth shading but not the sharp edge of a holder's shadow, nor the loss of texture contrast inside the shadow. `photometry.Photometry` therefore estimates two fields per window pixel. The bias is the exponential mean of `obs - gain * M(project(R^T v_k))` over 500 frames and is subtracted. The gain is how much texture contrast the pixel delivers: the RMS of the bias-corrected observation, smoothed over 6 pixels and divided by its 90th percentile over the window, which needs no map because the ball's texture averages out as it turns. The observation is divided by the gain before both the solve and the splat, and the splat weights each pixel by the gain squared, since the division amplifies a dim pixel's noise. It samples every fourth accepted frame and refreshes every 25 frames after a 100-frame warm-up, and is kept at zero mean because field and map are separable only up to a constant.
 
-A ball that sinks in its holder leaves the window looking at the wrong part of the image, and
-the solver quietly absorbs the translation into the rotation: a window left `d` pixels behind
-the ball reads the ball's own movement as a rotation of about `d / r` radians. The cost cannot
-say where the ball is - by the time it has risen the map has been built through the displaced
-window and the two agree with each other, and on the lab ball it is flat over +-6 px of window
-shift anyway - so `spintrack.refit` measures the ball's silhouette on every frame and moves
-the window when the silhouette has moved.
+Measuring against the map removes the texture explicitly, which a temporal mean of the frames would not, since a pixel sees few independent patches of surface in a recording. On a still ball the map absorbs the observation and the field stops moving, so the estimate cannot run away. A window move resamples the field; a move beyond 5% of the radius discards it, because a moved ball is lit differently. `illumination_fn` loads a field saved on the same rig as a prior worth one time constant.
 
-The map is not rebuilt. It is stored in the window frame at `R = I`, which is the ball's body
-frame, so a new window is only a change of coordinates: with `Q = R_wc_new^T R_wc_old`, the
-orientation and velocity become `Q R` and `Q v`, the residual model `I_k - M(R^T v_k)` is
-unchanged, and the ball's rotation relative to the camera is exactly preserved. The reported
-absolute orientation stays referred to the first window frame so that the columns do not step.
+## Ball follower
 
-The measurement is `relocate_ball`: the rim of a circle of the known radius, fitted from the
-current frame alone in a band about where the ball is predicted to be (0.7 ms on a 1600 x
-1008 frame with a 518 px ball; the rays whose samples would leave the image are not sampled
-at all, which is a third of them there). Two details make it usable on every frame. The
-fit's outlier cut is fixed at 1% of the radius rather than estimated from the residuals,
-because the animal's body stands past the rim and a residual-based scale grows to
-accommodate it: seeded on its own previous answer, that fit climbs the animal's back and
-walks off the ball. And the look is seeded on the last accepted look carried by a velocity,
-never on the smoothed position, whose lag on a fast drop puts the seed outside the look's
-capture range (about half the band). A look that fails is tried again from where the last
-look left the ball, in case it has just stopped, and, while the ball rests, from where its
-last few looks were heading, in case it has just started to fall; without the second, a
-76 px ball (a 4 px band) was lost at the onset of a fall of 3-4 px a frame and never found
-again.
+A window left `d` pixels behind the ball reads the ball's movement as a rotation of about `d / r`, and the cost cannot tell, so `refit.CenterWatch` looks at the silhouette on every frame. The rim look (`detect.RimLook`) fits a circle of known radius in a band around the predicted position. Its outlier cut is fixed at 1% of the radius, because a cut scaled from the residuals grows to take in the animal past the rim and lets the fit climb onto it. The radius is measured from the first 30 frames, so a config radius a few percent off does not bias the look.
 
-While the ball rests, its looks feed a slow alpha-beta filter and the window does not move,
-so a still ball's window never moves. The filter is slow so that the animal cannot drag it:
-it pulls the look 3-8 px toward its body for up to 80 frames at a time. A move is followed
-once three looks in a row lie beyond 10 px (or 2% of the radius) of the window, counting
-looks the filter's gate or the residual gate refused. Testing the filter instead, as an
-earlier version did, let 004's ball fall 45 px before the window moved. A slow creep, the
-filtered position beyond a few pixels for 100 frames, only nudges the window 30% of the way
-towards it: on some recordings the looks wander with a 3 px standard deviation at rest, and
-following a creep, or moving all the way at once, put steps of up to 8 px - most of a
-degree of rotation each - into trials the earlier follower had left alone. A ball that has dropped can also
-show less of its rim (the frame's edge, the legs), which raised its residual 20-50% over
-the resting level on the synthetic drops, so the residual gate is learned again once a
-follow starts.
+While the ball rests, the window stays put, because the animal at the rim pulls the look by a few pixels for tens of frames. A move is followed once three looks in a row lie beyond 10 px or 2% of the radius. The window then sits on the longest of a set of line fits over the last 2 to 64 looks that agrees with every shorter one (Lepski's rule), which averages steady motion and shrinks to the last few looks through a jerk. Following ends after 60 still frames. Positions are displacements from a reference taken over the first looks, so a fixed offset between the look and the config's circle never moves the window. Failed looks fall back to a seed-free detection. A window that would move more than one radius means the look has run away, so the follower stops and puts it back.
 
-While following, the window sits on a causal estimate of the looks rather than on a filter.
-A set of straight-line fits over the last 2 to 64 frames of looks is compared with each
-other and with the latest look (Lepski's rule), and the estimate leans on the longest fit
-whose value now stays within 1.25 times the move bound (5-6 px) of every shorter one's.
-Where the ball moves steadily, the long fits average the looks' jitter away; through a jerk
-they fall behind and the span shrinks to the last few looks. The alpha-beta filter with
-scheduled gains that this replaces lagged the jerk and then overshot it by 10 px. Three
-details decide how well it works:
+A window move is a change of coordinates `Q` between window frames: the orientation becomes `Q R`, the velocity `Q v`, and the map is kept. The window is moved before the frame it was placed for is tracked.
 
-- The cut is soft: each fit fades out over the last fifth of the bound rather than being
-  dropped at it. With a hard cut the window jumped by up to the bound whenever a fit near it
-  flipped in or out, which right after a jerk happened from one frame to the next; the soft
-  cut took the p95 rotation error over the moves of the three jerky synthetic scenes from
-  0.70, 1.01 and 0.32 deg to 0.36, 0.42 and 0.20. A tighter bound is not the answer: the
-  looks step by 2-3 px when a leg crosses the rim, and at half the move bound the window
-  followed those steps (p95 0.44 deg against 0.15 on `ball_drop`'s slow excursion).
-- The fits only use looks from after the move began. A line through the resting ball's
-  looks and the moving one's describes neither, and after a jump it ran several pixels past
-  a ball that had stopped.
-- `detect_ball`, the look that needs no seed, recovers a rim look that has failed for
-  several frames in a row, and its buffer of downscaled frames is kept while a resting
-  ball's look is failing as well as while following. Kept only while following, as it was,
-  a resting ball that jumped farther in one frame than any seed reaches was lost for the
-  rest of the recording.
+## Two passes
 
-Following ends once the window has stayed within half the bound for 60 frames, and the
-window is left at the median of those frames rather than on the last of them, which is as
-far off as the looks wander; at 30 frames,
-`ball_drop` was let go at the top of its excursion, where it moves half a pixel in 30 frames,
-and then trailed it by 10 px. The window is moved before the frame it was placed for is
-tracked, not after, which had left every frame tracked in the window placed from the
-previous frame's look.
+`--two-pass` tracks the recording once to map it and again to report it, the second tracker starting from the first one's map and illumination field (`Tracker.prime_from`). Both share the ball's body frame, so the second pass starts at `R = I` without a global search. Its map is capped like any loaded map, since it carries the first pass's drift; the first frame gets five times the usual iterations and reports zero motion, since snapping onto that map is not a rotation of the ball.
 
-Measured on trial 004, whose ball falls 205 px in three jerks of 50-65 px, each over about
-ten frames (up to 12 px a frame), against a lag-free reference (each frame's rim look
-iterated to convergence): over the jerks the window each frame is tracked in is 5.2 px from
-the ball at p95 and 18 at worst (the frames before the move is confirmed), against 42 and 49
-for the filter-driven follower, which trailed the ball by eight frames. With exact truth, on
-`lab_jerky_drop`, a synthetic drop of the same shape at the rig's scale (1600 x 1008, a
-506 px ball), the rotation error over the jerks goes from 0.53 to 0.12 deg (median) and
-from 1.46 to 0.67 (p95). The optical-flow cross-check (`examples/crosscheck_optical_flow.py`)
-has to be run on a patch carried with the ball for this: a patch fixed in the image reads
-the fall itself, which a window that lags the ball also reads as rotation, so on a falling
-ball that version rewards lag. Carried with the ball, its residual along the fall over the
-jerks goes from 5.6 to 3.1 px rms.
+The second pass replays a window trajectory planned from all of the first pass's looks (`refit.plan_window_trajectory`): gaps interpolated, a five-frame median, a zero-phase Gaussian whose width (up to 12 frames) shrinks through jerks by the same Lepski rule, held while the ball rests, and each move traced back to where it began. This removes the online confirmation delay, and the second pass, which measures nothing, runs faster than the first.
 
-Everything is measured as a displacement from a reference taken over the first looks, never
-as an absolute position, so a systematic difference between the look and whatever fitted the
-config's circle (3.5 px on 004) does not move a still ball's window.
+## What is verified, and how
 
-Against exact truth (`lab_small_ball`, `ball_drop`) a look seeded on the true center errs
-0.4-0.6 px in the median and under 3 px at worst, so the look itself is not biased toward the
-animal. What the confirmation guards against is what a look seeded on its own previous answer
-does: iterated that way on `lab_small_ball` it leaves the ball on a quarter of the frames, by
-up to 65 px, climbing the animal, and dropping the rays through the animal makes it worse,
-because a circle of fixed radius held only by its sides and bottom is free to climb. A
-per-ray weight learned from each ray's agreement over the last twenty looks cut the raw
-runaway to 4% of frames, but the follower's gates already contain it (a still ball's window
-never moved either way) and it measured neutral to slightly worse on the benchmarks, so it
-was not kept.
-
-What remains of the delay online is structural - the confirmation that keeps a still ball's
-window still - and `--two-pass` removes it, see below.
-
-## Two passes over the recording
-
-`--two-pass` tracks the recording twice: a throwaway first pass to map the ball, then the
-real run starting from that map and from the illumination fields the first pass converged
-on. The hand-over is in memory. It needs no correction, because the map lives in the window
-frame at `R = I` and a mid-run window re-fit carries it unchanged, so both passes share a
-body frame and the second one starts at `R = I` like any other run rather than searching
-SO(3) the way a map loaded with `--load-map` has to.
-
-What it buys is the cold start: a map complete from frame 0 instead of the single cap that
-happens to be visible, so a ball that turns far in its first frames still has something to
-match against, and the static illumination field from frame 0 instead of after its
-hundred-frame warm-up. A live camera cannot be read twice, so the flag is refused rather
-than ignored.
-
-The handed-over map is a prior, not the truth, and the second pass treats it as one: its
-weights are capped at `map_prior_w_max`, just above `w_min`, so that its cells count as seen
-and can be matched where nothing fresher exists, while the first frame that sees a cell
-replaces its content almost entirely. The map is stale in two ways. Lighting, shading and
-the animal's shadow change over a recording, which is why the offline refinement below
-matches against a temporally local map; and the first pass's drift has displaced each region
-of the map by however far the first pass had drifted when it last saw it, about a degree on
-trial 003 (a block cross-correlation of the map the first pass handed over against the map
-the second pass left behind finds the same texture shifted by 0.75 degrees in the median,
-1.1 at the 90th percentile). With its weights kept, the second pass on 003 opened at a cost
-100 times the one-pass run's, spent 150 frames overwriting the visible region before the
-cost came down, and over its first 300 frames matched the optical-flow cross-check 47% worse
-than one pass in y; a *frozen* copy of the same map lost the ball within 100 frames. Any cap
-that lets stale and fresh content mix for a few frames makes the estimate wander while the
-mixture changes: 1.8 degrees of wobble over the first ten frames' increments at a cap of 3,
-1.3 at 1, 0.5 at 0.5. At 0.15 the second pass's opening increments are the one-pass run's
-frame for frame, the rest of the run is unchanged, and the ball_drop episode error with exact
-truth is unchanged to the third decimal; on the synthetic scenes this gives up the 10-20%
-the stale map used to buy over the opening frames, which on a recording it never bought. The
-first frame against a handed-over or loaded map fixes where the ball is: it gets five times
-the usual iteration budget and is reported with a zero increment, because the rotation the
-second pass snaps through onto the stale map (1.9 degrees on 003) is not a rotation of the
-ball.
-
-Drift, measured by loop closure on trial 003 (frame j aligned directly against frame i
-alone, starting from the run's own relative rotation; the residual is the drift between
-them): 0.06 degrees for frames a few apart, which is the noise floor of one alignment, then
-0.10, 0.15 and 0.18 degrees (median) for gaps of 8-50, 50-200 and 200-600 frames in the
-one-pass run, with a systematic component about the window's x axis, the axis a walking
-animal turns the ball about. The second pass closes the same loops at 0.10, 0.12 and 0.13
-degrees, so it inherits a little less than the first pass's drift rather than more, but the
-random walk over a whole recording is still there and the refinement below does not remove
-it either; that would take loop-closure constraints between distant frames, which these
-measurements show to be available.
-
-The second pass also knows where the ball went. The follower above measures the ball's
-silhouette on every frame of the first pass, and the second pass places its window on a
-trajectory planned from all of those looks at once (`refit.plan_window_trajectory`):
-interpolated over the frames without a look, cleaned with a five-frame median, smoothed,
-held at the ball's resting level by the same rule that keeps a still ball's window still
-online, and following each move from the frame the ball leaves that level rather than from
-the frame an online confirmation ends. The second pass measures nothing, which is also why
-it tracks faster than the first.
-
-The smoothing is zero-phase and adapts its width to the motion. Each frame gets the widest
-of a set of Gaussians, up to 12 frames, whose estimate lies within half the move bound of
-every narrower one's (Lepski's rule again), and the chosen width is eased over a few frames
-so that the window does not step between estimates. Where the ball rests or drifts, the
-widest one wins: a window offset that stays constant costs no rotation, only its change
-does, so smoothing bias matters less there than the look's jitter. Through a jerk the wide
-ones are pulled off by the curvature and the width shrinks. The bound is in pixels rather
-than in units of the looks' noise because the noise is not what tells a jerk apart: the
-looks wander slowly and step by a few pixels as legs cross the rim, and a rule scaled to
-their frame-to-frame jitter took every such step for a jerk. The fixed six-frame Gaussian
-this replaces put the window up to 24 px behind 004's ball mid-jerk and started it moving
-before the ball did. Now, over the jerks, the planned window is 2.7 px from the ball at p95
-and 5.3 at worst, against 15 and 24, and the cross-check carried with the ball goes from
-3.7 to 2.0 px rms along the fall. With exact truth on `lab_jerky_drop`, the rotation error
-over the jerks goes from 0.34 to 0.068 deg (median) and from 0.98 to 0.14 (p95). On
-`ball_drop`, a slow 0.4-radius excursion, the episode's error is 0.041 deg (median) and 0.12
-(p95), against 0.044 and 0.11 with the fixed Gaussian. That p95 is the one number that went
-the wrong way, and both ways found of bringing it back - a nine-frame median before the
-smoothing, which removes most of the 2-3 px steps the legs put into the looks, or a looser
-bound that ignores them - made 004's own cross-check 6-11% worse.
-
-## Offline refinement
-
-Online tracking builds the map incrementally, so the first frames' errors are baked into
-it, and the frame-to-frame mode (`accumulate_map: n`) integrates a random walk. With
-`--refine N`, spintrack keeps every normalized window, and after the run re-aligns every
-frame against a map rebuilt from the other frames at their estimated orientations; each
-sweep repeats both steps. Frames that were dropped online are seeded from their neighbors
-and solved too. The refined orientations are integrated into a second `.dat` file
-(`<out>-refined.dat`). Memory: about `2 * n^2` bytes per frame (`n` the window size), i.e.
-~170 MB per minute at 100 fps and `q_factor 12`.
-
-Three details decide whether the refined output is better than the online one, and all
-three were measured on the lab trials with the optical-flow cross-check rather than by
-agreement with the online run:
-
-- The map is temporally local, an exponential window of 50 frames either side of the frame
-  being solved. Against a map of the whole recording the per-frame increments on trial 003
-  came out *worse* than online (0.59 px rms against 0.43): lighting, shading and the
-  animal's shadow change over a recording, and a mean over all of it blurs the texture any
-  one frame sees. The local map beats online (0.41 px) and, with exact truth on `ball_drop`,
-  takes the episode error from 0.053 to 0.049 deg.
-- Each window stays paired with the orientation in the window frame it was tracked in. A
-  window's pixels map to the same surface directions wherever the window sits, so bringing
-  the orientations into the final frame first splats every pre-move frame rotated by the
-  move; on `ball_drop` that cost 0.088 deg per frame against 0.070.
-- A frame whose re-solved orientation jumps away from both neighbors while the neighbors
-  agree with each other keeps its previous orientation. Without that, wrong minima that fit
-  well enough put out-and-back spikes of 9-12 deg into the refined 003 that the online run
-  never had, and its cross-check correlation fell from 0.998 to 0.59.
-
-## The shape of the map's cells
-
-An equal-area grid gives every cell the same solid angle but not the same shape. Cell
-extents are `(2 pi / W) cos(lat)` east-west and `(2 / H) / cos(lat)` north-south, so at the
-lab default of 180x360 an equatorial cell is 0.64 x 1.0 degrees and the polar row is
-8.6 x 0.1 - a sliver, in a region the camera resolves to about a degree. The projection
-Jacobian carries the same asymmetry: `du/dp` grows as `1 / cos^2(lat)`, so map noise near a
-pole is amplified on its way into the normal equations.
-
-`benchmarks/spintrack_bench/map_grid_sweep.py` measures what that costs, and the answer is
-that it costs something. Accuracy improves monotonically with cell count until cells outrun
-window pixels, so the grid is the binding constraint; and moving the poles over the ball,
-which changes nothing else, moves the median per-frame error by 6-19%, with the default
-placement at the worst end of that range. The poles sit at the window's +/-y axis, and the
-pitch rotation of a walking fly carries that material point through the near point of the
-ball, where the camera resolves best and the map resolves worst.
-
-The cubemap replaces the grid with six equi-angular faces, each with `s' = tan(pi s / 4)`
-so the cells are near-uniform rather than gnomonic. At the same cell
-count it gives up a little resolution at the equator (0.87 degrees square everywhere,
-against 0.64 x 1.0) to remove the 8.6-degree cells at the poles, and its Jacobian is bounded
-because a direction always lies on the face it is closest to. Faces meet at seams instead of
-wrapping; a bilinear tap that runs off a face is resolved by re-projecting the direction of
-the cell it asked for, which cannot disagree with the forward projection and costs a `tan`
-and an `atan2` on the few per cent of taps near a seam. Maps convert between the two grids
-on load, so a map saved on one is usable on the other, as is a FicTrac template.
-
-Over the 21 synthetic scenes at the same cell count it lowers the median per-frame error on
-18 of them, by 7% in the median and up to 24%, and drops no frames anywhere. On the lab
-recordings, where there is no ground truth, neither projection loses a frame and the two
-agree to a median 0.014-0.030 degrees per frame - except on one trial, which diverges by 20
-degrees of heading over 3000 frames. There the cubemap is the better run by every signal
-available: lower median cost (0.058 against 0.066), half the p99 cost, and online estimates
-twice as close to their own offline refinement (median 0.028 against 0.058 degrees). It is
-the default on that evidence. It costs a quarter to a third more tracking time, and
-`--map-projection equal_area` goes back to FicTrac's grid, which is what a comparison
-against FicTrac wants.
-
-## Why it is more precise
-
-With `q_factor 12` one window pixel spans about one degree of ball rotation and a walking fly
-turns the ball about one pixel per frame. FicTrac's nearest-tile binary matching resolves
-motion at roughly that scale; sub-pixel photometric alignment with bilinear sampling resolves
-it an order of magnitude finer, and analytic derivatives reach the optimum in a few
-iterations instead of tens of cost evaluations. See `docs/benchmark.md` for measurements.
+- **Scale and geometry**, `tests/test_scale.py`: a ball rendered with none of spintrack's camera, sphere or rotation code comes back at scale 1.0000 within 0.05%; a relative radius error `eps` scales the in-plane rotation by about `1 - 1.9 eps` and leaves the rotation about the optical axis unchanged; a hand-worked quarter turn pins the direction in which `c2a_r` is applied.
+- **Path integration**, `tests/test_path.py`: on 200 rows FicTrac wrote for a lab trial (`tests/data/fictrac-003-head.dat`), FicTrac's columns 6-8 reproduce its columns 15-21 to 1e-12, and `FrameResult.forward`, `side` and `turn` sum to its columns 17, 20 and 21.
+- **Camera position**, `tests/test_calibrate.py`: `--c2a-angles` gives the expected frame at three camera poses, and the calibration square recovers a synthetic pose.
+- **Precision**, the [benchmark](benchmark.md): per-frame error, drift and scale against exact synthetic truth. Its scenes share spintrack's camera code, which is why the scale test exists.

@@ -10,13 +10,21 @@ mod geom;
 mod map;
 mod solve;
 
-use geom::Mat3;
-use map::{Map, Projection, Touched, box_blur};
+use geom::{Mat3, mul3_f32, to_f32, transpose};
+use map::{Map, Touched, W_MAX, W_MIN, W_SAT, box_blur};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use solve::{Level, SolveParams};
+use solve::{Level, MAX_ITER, SolveOutput};
+
+/// Pyramid depth: the finest level plus the coarse ones the fallback solve and the global
+/// search start from.
+const LEVELS: usize = 3;
+/// Orientations the global search scores at the coarsest level, and how many of the best
+/// it refines.
+const GLOBAL_CANDIDATES: usize = 2000;
+const GLOBAL_TOP_K: usize = 5;
 
 /// Version of the compiled core, taken from `Cargo.toml`.
 #[pyfunction]
@@ -34,8 +42,6 @@ pub struct SolveResult {
     pub r: [[f64; 3]; 3],
     /// Weighted mean squared residual (normalized-intensity units).
     pub cost: f64,
-    /// RMS residual over inliers.
-    pub rms: f64,
     /// Fraction of overlapping pixels that are inliers.
     pub inlier_frac: f64,
     /// Fraction of window pixels landing on seen map cells.
@@ -43,10 +49,23 @@ pub struct SolveResult {
     /// Gauss-Newton iterations spent (all levels).
     pub iters: u32,
     pub converged: bool,
-    /// Weighted normal matrix at the solution (for covariance estimates).
-    pub hessian: [[f64; 3]; 3],
-    /// Norm (rad) of each Gauss-Newton step, in order.
-    pub steps: Vec<f64>,
+    /// Norm (rad) of the last Gauss-Newton step, NaN if none was taken.
+    pub last_step: f64,
+}
+
+impl From<SolveOutput> for SolveResult {
+    fn from(out: SolveOutput) -> Self {
+        SolveResult {
+            w: out.w,
+            r: out.r,
+            cost: out.stats.cost,
+            inlier_frac: out.stats.inlier_frac,
+            overlap: out.stats.overlap,
+            iters: out.iters,
+            converged: out.converged,
+            last_step: out.last_step,
+        }
+    }
 }
 
 fn read_mat3(arr: &PyReadonlyArray2<f64>) -> PyResult<Mat3> {
@@ -61,6 +80,16 @@ fn read_mat3(arr: &PyReadonlyArray2<f64>) -> PyResult<Mat3> {
         }
     }
     Ok(m)
+}
+
+fn to_pyarray<'py>(
+    py: Python<'py>,
+    shape: (usize, usize),
+    v: Vec<f32>,
+) -> Bound<'py, PyArray2<f32>> {
+    Array2::from_shape_vec(shape, v)
+        .expect("shape")
+        .into_pyarray(py)
 }
 
 /// Per-configuration tracking engine: window geometry plus the surface maps.
@@ -78,14 +107,6 @@ pub struct Engine {
     prev_r: Option<Mat3>,
     prev_map_valid: bool,
     touched: Touched,
-    /// Static camera-frame photometric fields, pyramided like the observation.
-    photo: Option<Photometric>,
-}
-
-/// Per-window-pixel gain and observation weight, one vector per pyramid level.
-struct Photometric {
-    gain: Vec<Vec<f32>>,
-    wt: Vec<Vec<f32>>,
 }
 
 impl Engine {
@@ -116,8 +137,8 @@ impl Engine {
         let mut out = vec![level0];
         for level in 1..n_levels {
             let radius = (1usize << level) - 1;
-            let num = box_blur(&masked, n, n, radius, false);
-            let den = box_blur(valid, n, n, radius, false);
+            let num = box_blur(&masked, n, n, radius);
+            let den = box_blur(valid, n, n, radius);
             let img: Vec<f32> = num
                 .iter()
                 .zip(&den)
@@ -128,31 +149,19 @@ impl Engine {
         out
     }
 
-    fn gain_level(&self, level: usize) -> Option<&[f32]> {
-        self.photo.as_ref().map(|p| p.gain[level].as_slice())
-    }
-
-    fn wt_level(&self, level: usize) -> Option<&[f32]> {
-        self.photo.as_ref().map(|p| p.wt[level].as_slice())
-    }
-
-    /// Coarse copies of the map for levels 1.. (level 0 is the map itself).
-    fn coarse_maps(map: &Map, n_levels: usize) -> Vec<Map> {
-        (1..n_levels).map(|l| map.coarse(l)).collect()
-    }
-
     fn run_solve(
         &self,
         obs: &[f32],
         r_prev: &Mat3,
         w0: [f64; 3],
         use_prev: bool,
-        params: &SolveParams,
         n_levels: usize,
-    ) -> solve::SolveOutput {
+        max_iter: u32,
+    ) -> SolveOutput {
         let base = if use_prev { &self.prev_map } else { &self.map };
-        let n_levels = n_levels.clamp(1, self.subsets.len());
-        let coarse = Self::coarse_maps(base, n_levels);
+        let n_levels = n_levels.clamp(1, LEVELS);
+        // Coarse copies of the map for levels 1.. (level 0 is the map itself).
+        let coarse: Vec<Map> = (1..n_levels).map(|l| base.coarse(l)).collect();
         let obs_levels = self.observation_levels(obs, n_levels);
         // Coarse to fine: highest level index first.
         let levels: Vec<Level> = (0..n_levels)
@@ -160,48 +169,44 @@ impl Engine {
             .map(|l| Level {
                 map: if l == 0 { base } else { &coarse[l - 1] },
                 obs: &obs_levels[l],
-                gain: self.gain_level(l),
-                wt: self.wt_level(l),
                 subset: &self.subsets[l],
             })
             .collect();
-        solve::solve(&self.surface, &levels, r_prev, w0, params)
+        solve::solve(&self.surface, &levels, r_prev, w0, max_iter)
+    }
+
+    /// Splat the remembered last frame into `prev_map` if it is stale.
+    fn ensure_prev_map(&mut self) {
+        if self.prev_map_valid {
+            return;
+        }
+        self.prev_map.clear();
+        if let Some(r) = self.prev_r {
+            let rt = to_f32(&transpose(&r));
+            for (k, &value) in self.prev_obs.iter().enumerate() {
+                let (u, v) = self.prev_map.project(mul3_f32(&rt, self.surface[k]));
+                self.prev_map.splat(u, v, value, 1.0, W_SAT, None);
+            }
+        }
+        self.prev_map_valid = true;
     }
 }
 
 #[pymethods]
 impl Engine {
     /// `surface`: (N, 3) unit vectors; `index`: (N,) flat row-major pixel indices in the
-    /// `window_size` x `window_size` window; `levels`: pyramid depth (1 = no pyramid);
+    /// `window_size` x `window_size` window; `face`: map cells along a cube face side;
     /// `max_pixels`: if set, the finest level uses a spatial stride so that at most about
     /// this many pixels enter the solve (all pixels still update the map).
     #[new]
-    #[pyo3(signature = (surface, index, window_size, map_w, map_h, levels=3,
-                        max_pixels=None, projection="equal_area"))]
-    // A PyO3 constructor mirrors the Python signature, so its arity is the API's.
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (surface, index, window_size, face, max_pixels=None))]
     fn new(
         surface: PyReadonlyArray2<f32>,
         index: PyReadonlyArray1<i64>,
         window_size: usize,
-        map_w: usize,
-        map_h: usize,
-        levels: usize,
+        face: usize,
         max_pixels: Option<usize>,
-        projection: &str,
     ) -> PyResult<Self> {
-        let projection = match projection {
-            "equal_area" => Projection::EqualArea,
-            "cube" => Projection::Cube,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown map projection {other:?}"
-                )));
-            }
-        };
-        if projection == Projection::Cube && map_h != 6 * map_w {
-            return Err(PyValueError::new_err("a cube map must be (6 * face, face)"));
-        }
         let s = surface.as_array();
         let idx = index.as_array();
         if s.shape()[1] != 3 || s.shape()[0] != idx.len() {
@@ -222,14 +227,13 @@ impl Engine {
         let surface_v: Vec<[f32; 3]> = (0..s.shape()[0])
             .map(|k| [s[[k, 0]], s[[k, 1]], s[[k, 2]]])
             .collect();
-        let levels = levels.max(1);
         let base_stride = match max_pixels {
             Some(m) if m > 0 && index_v.len() > m => {
                 ((index_v.len() as f64 / m as f64).sqrt().ceil() as usize).max(1)
             }
             _ => 1,
         };
-        let subsets = (0..levels)
+        let subsets = (0..LEVELS)
             .map(|l| {
                 let stride = (1usize << l).max(base_stride);
                 index_v
@@ -250,31 +254,20 @@ impl Engine {
             index: index_v,
             valid_f32,
             subsets,
-            map: Map::new_with(projection, map_w, map_h),
-            prev_map: Map::new_with(projection, map_w, map_h),
+            map: Map::new(face),
+            prev_map: Map::new(face),
             prev_obs: Vec::new(),
             prev_r: None,
             prev_map_valid: false,
-            touched: Touched::new(map_w * map_h),
-            photo: None,
+            touched: Touched::new(6 * face * face),
         })
     }
 
-    #[getter]
-    fn n_valid(&self) -> usize {
-        self.index.len()
-    }
-
-    #[getter]
-    fn levels(&self) -> usize {
-        self.subsets.len()
-    }
-
     /// Align `obs` (window_size x window_size float32, normalized) starting from
-    /// `exp(w0) r_prev`, against the accumulated map or the previous-frame map.
-    #[pyo3(signature = (obs, r_prev, w0, use_prev=false, levels=None, max_iter=10, tol=3e-4,
-                        huber=1.345, tukey=4.685, w_min=0.1, w_sat=3.0, damping=1e-6,
-                        level_tol_factor=4.0, coarse_max_iter=3, reweight_iters=1000))]
+    /// `exp(w0) r_prev`, against the accumulated map or the previous-frame map, on the
+    /// finest `levels` pyramid levels (all by default).
+    #[pyo3(signature = (obs, r_prev, w0, use_prev=false, levels=None, max_iter=MAX_ITER))]
+    // A PyO3 method's arity is its Python signature's.
     #[allow(clippy::too_many_arguments)]
     fn solve(
         &mut self,
@@ -285,113 +278,41 @@ impl Engine {
         use_prev: bool,
         levels: Option<usize>,
         max_iter: u32,
-        tol: f64,
-        huber: f32,
-        tukey: f32,
-        w_min: f32,
-        w_sat: f32,
-        damping: f64,
-        level_tol_factor: f64,
-        coarse_max_iter: u32,
-        reweight_iters: u32,
     ) -> PyResult<SolveResult> {
         let obs_v = self.read_obs(&obs)?;
         let r_prev_m = read_mat3(&r_prev)?;
-        let params = SolveParams {
-            max_iter,
-            tol,
-            huber,
-            tukey,
-            w_min,
-            w_sat,
-            damping,
-            level_tol_factor,
-            coarse_max_iter,
-            reweight_iters,
-        };
-        let n_levels = levels.unwrap_or(self.subsets.len());
         if use_prev {
-            self.ensure_prev_map(w_sat.max(1.0));
+            self.ensure_prev_map();
         }
-        let out = py.detach(|| self.run_solve(&obs_v, &r_prev_m, w0, use_prev, &params, n_levels));
-        Ok(SolveResult {
-            w: out.w,
-            r: out.r,
-            cost: out.stats.cost,
-            rms: out.stats.rms,
-            inlier_frac: out.stats.inlier_frac,
-            overlap: out.stats.overlap,
-            iters: out.iters,
-            converged: out.converged,
-            hessian: out.hessian,
-            steps: out.steps,
-        })
+        let n_levels = levels.unwrap_or(LEVELS);
+        let out = py.detach(|| self.run_solve(&obs_v, &r_prev_m, w0, use_prev, n_levels, max_iter));
+        Ok(out.into())
     }
 
-    /// Relocalise against the accumulated map: evaluate `n_candidates` orientations spread
-    /// over SO(3) at the coarsest level, refine the `top_k` best with the full pyramid and
-    /// return the refined solution with the lowest cost (ties broken by overlap).
-    #[pyo3(signature = (obs, n_candidates=2000, top_k=5, max_iter=10, tol=3e-4, huber=1.345,
-                        tukey=4.685, w_min=0.1, w_sat=3.0, min_overlap=0.3))]
-    #[allow(clippy::too_many_arguments)]
+    /// Relocalize against the accumulated map: score orientations spread over SO(3) at the
+    /// coarsest level, refine the best few with the full pyramid and return the refined
+    /// solution with the lowest cost among those overlapping at least `min_overlap`.
     fn global_search(
         &mut self,
         py: Python<'_>,
         obs: PyReadonlyArray2<f32>,
-        n_candidates: usize,
-        top_k: usize,
-        max_iter: u32,
-        tol: f64,
-        huber: f32,
-        tukey: f32,
-        w_min: f32,
-        w_sat: f32,
         min_overlap: f64,
     ) -> PyResult<SolveResult> {
         let obs_v = self.read_obs(&obs)?;
-        let params = SolveParams {
-            max_iter,
-            tol,
-            huber,
-            tukey,
-            w_min,
-            w_sat,
-            damping: 1e-6,
-            level_tol_factor: 4.0,
-            coarse_max_iter: 3,
-            reweight_iters: 1000,
-        };
         let out = py.detach(|| {
-            let n_levels = self.subsets.len();
-            let coarse = Self::coarse_maps(&self.map, n_levels);
-            let obs_levels = self.observation_levels(&obs_v, n_levels);
-            let top = n_levels - 1;
+            let top = LEVELS - 1;
+            let coarse = self.map.coarse(top);
+            let obs_levels = self.observation_levels(&obs_v, LEVELS);
             let level = Level {
-                map: if top == 0 {
-                    &self.map
-                } else {
-                    &coarse[top - 1]
-                },
+                map: &coarse,
                 obs: &obs_levels[top],
-                gain: self.gain_level(top),
-                wt: self.wt_level(top),
                 subset: &self.subsets[top],
             };
-            // Deterministic quasi-uniform rotations: unit quaternions from a Halton-like set.
-            let mut scored: Vec<(f64, f64, Mat3)> = Vec::with_capacity(n_candidates);
-            let mut weights = vec![1.0f32; level.subset.len()];
-            for i in 0..n_candidates {
-                let q = halton_quaternion(i as u32 + 1);
-                let r = quat_to_mat(q);
-                let (_, _, stats) = solve::accumulate(
-                    &self.surface,
-                    &level,
-                    &r,
-                    &params,
-                    &mut weights,
-                    true,
-                    f32::INFINITY,
-                );
+            // Deterministic quasi-uniform rotations: unit quaternions from a Halton set.
+            let mut scored: Vec<(f64, f64, Mat3)> = Vec::with_capacity(GLOBAL_CANDIDATES);
+            for i in 0..GLOBAL_CANDIDATES {
+                let r = quat_to_mat(halton_quaternion(i as u32 + 1));
+                let (_, _, stats) = solve::accumulate(&self.surface, &level, &r, f32::INFINITY);
                 if stats.overlap >= min_overlap && stats.cost.is_finite() {
                     scored.push((stats.cost, stats.overlap, r));
                 }
@@ -401,9 +322,9 @@ impl Engine {
             let max_overlap = scored.iter().map(|s| s.1).fold(0.0, f64::max);
             scored.retain(|s| s.1 >= 0.75 * max_overlap);
             scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut best: Option<solve::SolveOutput> = None;
-            for (_, _, r0) in scored.iter().take(top_k) {
-                let refined = self.run_solve(&obs_v, r0, [0.0; 3], false, &params, n_levels);
+            let mut best: Option<SolveOutput> = None;
+            for (_, _, r0) in scored.iter().take(GLOBAL_TOP_K) {
+                let refined = self.run_solve(&obs_v, r0, [0.0; 3], false, LEVELS, MAX_ITER);
                 let better = match &best {
                     None => true,
                     Some(b) => {
@@ -417,228 +338,51 @@ impl Engine {
             best
         });
         let out = out.ok_or_else(|| PyValueError::new_err("global search found no candidate"))?;
-        Ok(SolveResult {
-            w: out.w,
-            r: out.r,
-            cost: out.stats.cost,
-            rms: out.stats.rms,
-            inlier_frac: out.stats.inlier_frac,
-            overlap: out.stats.overlap,
-            iters: out.iters,
-            converged: out.converged,
-            hessian: out.hessian,
-            steps: out.steps,
-        })
-    }
-
-    /// Photometric cost and overlap of `obs` at orientation `r` (no optimization).
-    #[pyo3(signature = (obs, r, use_prev=false, level=0, huber=1.345, tukey=4.685, w_min=0.1, w_sat=3.0))]
-    #[allow(clippy::too_many_arguments)]
-    fn cost(
-        &mut self,
-        obs: PyReadonlyArray2<f32>,
-        r: PyReadonlyArray2<f64>,
-        use_prev: bool,
-        level: usize,
-        huber: f32,
-        tukey: f32,
-        w_min: f32,
-        w_sat: f32,
-    ) -> PyResult<(f64, f64)> {
-        let obs_v = self.read_obs(&obs)?;
-        let r_m = read_mat3(&r)?;
-        if use_prev {
-            self.ensure_prev_map(w_sat.max(1.0));
-        }
-        let base = if use_prev { &self.prev_map } else { &self.map };
-        let level = level.min(self.subsets.len() - 1);
-        let map_l = if level == 0 {
-            base.clone()
-        } else {
-            Self::coarse_maps(base, level + 1)
-                .pop()
-                .expect("coarse level")
-        };
-        let obs_levels = self.observation_levels(&obs_v, level + 1);
-        let params = SolveParams {
-            max_iter: 0,
-            tol: 0.0,
-            huber,
-            tukey,
-            w_min,
-            w_sat,
-            damping: 0.0,
-            level_tol_factor: 1.0,
-            coarse_max_iter: 0,
-            reweight_iters: 1,
-        };
-        let lvl = Level {
-            map: &map_l,
-            obs: &obs_levels[level],
-            gain: self.gain_level(level),
-            wt: self.wt_level(level),
-            subset: &self.subsets[level],
-        };
-        let mut weights = vec![1.0f32; lvl.subset.len()];
-        let (_, _, stats) = solve::accumulate(
-            &self.surface,
-            &lvl,
-            &r_m,
-            &params,
-            &mut weights,
-            true,
-            f32::INFINITY,
-        );
-        Ok((stats.cost, stats.overlap))
-    }
-
-    /// Normal equations `(H, b, cost, overlap)` of the finest level at orientation `r`,
-    /// for diagnostics and tests (numerical gradient checks).
-    #[pyo3(signature = (obs, r, use_prev=false, huber=1.345, tukey=4.685, w_min=0.1, w_sat=3.0))]
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    fn normal_equations(
-        &mut self,
-        obs: PyReadonlyArray2<f32>,
-        r: PyReadonlyArray2<f64>,
-        use_prev: bool,
-        huber: f32,
-        tukey: f32,
-        w_min: f32,
-        w_sat: f32,
-    ) -> PyResult<([[f64; 3]; 3], [f64; 3], f64, f64)> {
-        let obs_v = self.read_obs(&obs)?;
-        let r_m = read_mat3(&r)?;
-        if use_prev {
-            self.ensure_prev_map(w_sat.max(1.0));
-        }
-        let base = if use_prev { &self.prev_map } else { &self.map };
-        let obs_levels = self.observation_levels(&obs_v, 1);
-        let params = SolveParams {
-            max_iter: 0,
-            tol: 0.0,
-            huber,
-            tukey,
-            w_min,
-            w_sat,
-            damping: 0.0,
-            level_tol_factor: 1.0,
-            coarse_max_iter: 0,
-            reweight_iters: 1,
-        };
-        let lvl = Level {
-            map: base,
-            obs: &obs_levels[0],
-            gain: self.gain_level(0),
-            wt: self.wt_level(0),
-            subset: &self.subsets[0],
-        };
-        let mut weights = vec![1.0f32; lvl.subset.len()];
-        let (h, b, stats) = solve::accumulate(
-            &self.surface,
-            &lvl,
-            &r_m,
-            &params,
-            &mut weights,
-            true,
-            f32::INFINITY,
-        );
-        Ok((h, b, stats.cost, stats.overlap))
+        Ok(out.into())
     }
 
     /// Splat `obs` into the maps at orientation `r`. The previous-frame map is replaced;
-    /// the accumulated map is updated with forgetting factor `lambda_` (1 = none) and
-    /// optionally cleared outside a `margin`-cell dilation of the current view.
-    #[pyo3(signature = (obs, r, lambda_=1.0, w_max=50.0, forget_outside=false, margin=1, update_main=true))]
-    #[allow(clippy::too_many_arguments)]
+    /// the accumulated map, unless `update_main` is off, is updated, each pixel with its
+    /// `weight` if given, and optionally cleared outside a small dilation of the view.
+    #[pyo3(signature = (obs, r, forget_outside=false, update_main=true, weight=None))]
     fn update(
         &mut self,
         py: Python<'_>,
         obs: PyReadonlyArray2<f32>,
         r: PyReadonlyArray2<f64>,
-        lambda_: f32,
-        w_max: f32,
         forget_outside: bool,
-        margin: usize,
         update_main: bool,
+        weight: Option<PyReadonlyArray2<f32>>,
     ) -> PyResult<()> {
         let obs_v = self.read_obs(&obs)?;
+        let weight_v = weight.as_ref().map(|w| self.read_obs(w)).transpose()?;
         let r_m = read_mat3(&r)?;
         py.detach(|| {
-            let rt = geom::transpose(&r_m);
-            let mut rt32 = [[0.0f32; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    rt32[i][j] = rt[i][j] as f32;
-                }
-            }
             // Remember this frame for the (lazily built) previous-frame map.
             self.prev_obs.clear();
             self.prev_obs
                 .extend(self.index.iter().map(|&i| obs_v[i as usize]));
             self.prev_r = Some(r_m);
             self.prev_map_valid = false;
-            if update_main {
-                let (gain0, wt0) = match &self.photo {
-                    Some(p) => (Some(p.gain[0].as_slice()), Some(p.wt[0].as_slice())),
-                    None => (None, None),
-                };
-                let map = &mut self.map;
-                let touched_set = &mut self.touched;
-                touched_set.clear();
-                for (k, &i) in self.index.iter().enumerate() {
-                    let v = self.surface[k];
-                    let p = [
-                        rt32[0][0] * v[0] + rt32[0][1] * v[1] + rt32[0][2] * v[2],
-                        rt32[1][0] * v[0] + rt32[1][1] * v[1] + rt32[1][2] * v[2],
-                        rt32[2][0] * v[0] + rt32[2][1] * v[1] + rt32[2][2] * v[2],
-                    ];
-                    let (u, vv) = map.project(p);
-                    // Touched cells are only needed to forget the rest of the map.
-                    let touched = if forget_outside {
-                        Some(&mut *touched_set)
-                    } else {
-                        None
-                    };
-                    // The map holds unshaded texture, so a gain-corrected pixel
-                    // contributes obs/gain, with weight gain^2 (inverse noise variance
-                    // of that estimate) times its own reliability.
-                    let g = gain0.map_or(1.0, |g| g[k]);
-                    let value = if g > 0.0 {
-                        obs_v[i as usize] / g
-                    } else {
-                        obs_v[i as usize]
-                    };
-                    let scale = wt0.map_or(1.0, |w| w[k]) * g * g;
-                    map.splat(u, vv, value, lambda_, w_max, scale, touched);
+            if !update_main {
+                return;
+            }
+            self.touched.clear();
+            let rt = to_f32(&transpose(&r_m));
+            for (k, &i) in self.index.iter().enumerate() {
+                let (u, v) = self.map.project(mul3_f32(&rt, self.surface[k]));
+                // Touched cells are only needed to forget the rest of the map.
+                let touched = forget_outside.then_some(&mut self.touched);
+                let w = weight_v.as_ref().map_or(1.0, |w| w[i as usize]);
+                if w > 0.0 {
+                    self.map.splat(u, v, obs_v[i as usize], w, W_MAX, touched);
                 }
-                if forget_outside {
-                    map.forget_outside(&touched_set.mask, margin);
-                }
+            }
+            if forget_outside {
+                self.map.forget_outside(&self.touched.mask);
             }
         });
         Ok(())
-    }
-
-    /// Splat the remembered last frame into `prev_map` if it is stale.
-    fn ensure_prev_map(&mut self, w_max: f32) {
-        if self.prev_map_valid {
-            return;
-        }
-        self.prev_map.clear();
-        if let Some(r) = self.prev_r {
-            let rt = geom::transpose(&r);
-            for (k, &value) in self.prev_obs.iter().enumerate() {
-                let v = self.surface[k];
-                let p = [
-                    (rt[0][0] as f32) * v[0] + (rt[0][1] as f32) * v[1] + (rt[0][2] as f32) * v[2],
-                    (rt[1][0] as f32) * v[0] + (rt[1][1] as f32) * v[1] + (rt[1][2] as f32) * v[2],
-                    (rt[2][0] as f32) * v[0] + (rt[2][1] as f32) * v[1] + (rt[2][2] as f32) * v[2],
-                ];
-                let (u, vv) = self.prev_map.project(p);
-                self.prev_map.splat(u, vv, value, 1.0, w_max, 1.0, None);
-            }
-        }
-        self.prev_map_valid = true;
     }
 
     fn reset(&mut self) {
@@ -650,98 +394,41 @@ impl Engine {
     }
 
     fn map_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
-        Array2::from_shape_vec((self.map.h, self.map.w), self.map.mean.clone())
-            .expect("shape")
-            .into_pyarray(py)
+        to_pyarray(py, (6 * self.map.n, self.map.n), self.map.mean.clone())
     }
 
     fn map_weight<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
-        Array2::from_shape_vec((self.map.h, self.map.w), self.map.weight.clone())
-            .expect("shape")
-            .into_pyarray(py)
-    }
-
-    /// Replace the accumulated map (e.g. with a saved template).
-    /// Set the static camera-frame photometric fields (both `window_size` x
-    /// `window_size` float32), or clear them with `None`. `gain` scales the map value the
-    /// observation is compared against; `wt` scales how much the pixel counts. Cleared
-    /// fields take the exact code path the tracker had before they existed.
-    #[pyo3(signature = (gain=None, wt=None))]
-    fn set_photometric(
-        &mut self,
-        gain: Option<PyReadonlyArray2<f32>>,
-        wt: Option<PyReadonlyArray2<f32>>,
-    ) -> PyResult<()> {
-        if gain.is_none() && wt.is_none() {
-            self.photo = None;
-            return Ok(());
-        }
-        let n_levels = self.subsets.len();
-        let ones = vec![1.0f32; self.n * self.n];
-        let gain_v = match &gain {
-            Some(a) => self.read_obs(a)?,
-            None => ones.clone(),
-        };
-        let wt_v = match &wt {
-            Some(a) => self.read_obs(a)?,
-            None => ones,
-        };
-        self.photo = Some(Photometric {
-            gain: self.observation_levels(&gain_v, n_levels),
-            wt: self.observation_levels(&wt_v, n_levels),
-        });
-        Ok(())
+        to_pyarray(py, (6 * self.map.n, self.map.n), self.map.weight.clone())
     }
 
     /// Render the accumulated map into the window at orientation `r`: the model the
     /// residual is taken against. Returns `(value, confidence)`, both `window_size` x
     /// `window_size` float32 and zero where the map has not been seen.
-    #[pyo3(signature = (r, w_min=0.1, w_sat=3.0))]
     #[allow(clippy::type_complexity)]
     fn render<'py>(
         &self,
         py: Python<'py>,
         r: PyReadonlyArray2<f64>,
-        w_min: f32,
-        w_sat: f32,
     ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
         let r_m = read_mat3(&r)?;
         let n = self.n;
         let (value, conf) = py.detach(|| {
-            let rt = geom::transpose(&r_m);
-            let mut rt32 = [[0.0f32; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    rt32[i][j] = rt[i][j] as f32;
-                }
-            }
             let mut value = vec![0.0f32; n * n];
             let mut conf = vec![0.0f32; n * n];
+            let rt = to_f32(&transpose(&r_m));
             for (k, &i) in self.index.iter().enumerate() {
-                let v = self.surface[k];
-                let p = [
-                    rt32[0][0] * v[0] + rt32[0][1] * v[1] + rt32[0][2] * v[2],
-                    rt32[1][0] * v[0] + rt32[1][1] * v[1] + rt32[1][2] * v[2],
-                    rt32[2][0] * v[0] + rt32[2][1] * v[1] + rt32[2][2] * v[2],
-                ];
-                let (u, vv) = self.map.project(p);
-                if let Some(s) = self.map.sample(u, vv, w_min, w_sat) {
+                let (u, v) = self.map.project(mul3_f32(&rt, self.surface[k]));
+                if let Some(s) = self.map.sample(u, v) {
                     value[i as usize] = s.value;
                     conf[i as usize] = s.confidence;
                 }
             }
             (value, conf)
         });
-        Ok((
-            Array2::from_shape_vec((n, n), value)
-                .expect("shape")
-                .into_pyarray(py),
-            Array2::from_shape_vec((n, n), conf)
-                .expect("shape")
-                .into_pyarray(py),
-        ))
+        Ok((to_pyarray(py, (n, n), value), to_pyarray(py, (n, n), conf)))
     }
 
+    /// Replace the accumulated map (e.g. with a saved template).
     fn set_map(
         &mut self,
         mean: PyReadonlyArray2<f32>,
@@ -749,8 +436,9 @@ impl Engine {
     ) -> PyResult<()> {
         let m = mean.as_array();
         let w = weight.as_array();
-        if m.shape() != [self.map.h, self.map.w] || w.shape() != [self.map.h, self.map.w] {
-            return Err(PyValueError::new_err("map arrays must be (map_h, map_w)"));
+        let shape = [6 * self.map.n, self.map.n];
+        if m.shape() != shape || w.shape() != shape {
+            return Err(PyValueError::new_err("map arrays must be (6 face, face)"));
         }
         self.map.mean = m.iter().copied().collect();
         self.map.weight = w.iter().copied().collect();
@@ -808,5 +496,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(core_version, m)?)?;
     m.add_class::<Engine>()?;
     m.add_class::<SolveResult>()?;
+    // The solver constants the Python state machine reasons with.
+    m.add("W_MIN", W_MIN)?;
+    m.add("MAX_ITER", MAX_ITER)?;
+    m.add("TOL", solve::TOL)?;
     Ok(())
 }
