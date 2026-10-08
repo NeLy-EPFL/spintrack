@@ -46,7 +46,8 @@ FOLLOW_TOL_PX = 0.25
 class FrameResult:
     """One tracked frame. Distances are in ball radii (radians of ball rotation).
 
-    The animal-frame properties follow `spintrack.path`: lab x forward, y right, z down.
+    The animal-frame properties follow `spintrack.path`: lab x forward, y left, z up, so
+    sideways motion and turning are positive to the left.
     """
 
     frame: int
@@ -62,16 +63,16 @@ class FrameResult:
     @property
     def forward(self) -> float:
         """Forward motion over this frame."""
-        return float(self.w_lab[1])
+        return -float(self.w_lab[1])
 
     @property
     def side(self) -> float:
-        """Sideways motion over this frame, positive to the animal's right."""
-        return -float(self.w_lab[0])
+        """Sideways motion over this frame, positive to the animal's left."""
+        return float(self.w_lab[0])
 
     @property
     def turn(self) -> float:
-        """Change of heading over this frame in rad, positive turning right."""
+        """Change of heading over this frame in rad, positive turning left."""
         return -float(self.w_lab[2])
 
     @property
@@ -86,7 +87,7 @@ class FrameResult:
 
     @property
     def y(self) -> float:
-        """Integrated position to the right of the starting heading."""
+        """Integrated position to the left of the starting heading."""
         return float(self.values[15])
 
 
@@ -322,7 +323,7 @@ class Tracker:
         self.refit_center(center, circle)
 
     def _values(self, frame, ts_ms, wall_ms, step, delta_ts):
-        """The 25 FicTrac columns for one tracked frame (also advances the path)."""
+        """The 25 columns for one tracked frame (also advances the path)."""
         w_cam = self.R_wc @ step.w_win
         R_cam = self.R_wc @ step.R_win @ self.R_wc0.T
         w_lab = self.cam_to_lab @ w_cam

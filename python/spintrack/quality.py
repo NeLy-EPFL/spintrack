@@ -48,7 +48,13 @@ class RunQuality:
 
 
 # The `checks` entries the terminal block shows, in order; the sidecar keeps them all.
-SUMMARY_CHECKS = ("ball", "vfov", "ball moved", "radius")
+SUMMARY_CHECKS = ("ball", "vfov", "camera position", "walking", "ball moved", "radius")
+# Net walking, in ball radii, below which its direction says nothing of the camera: on
+# 48 lab trials with the camera's azimuth measured, one walked 5 radii 106 deg away
+# from its body axis, while those over 10 radii stayed within 25 deg of it.
+MIN_WALK = 10.0
+# A net walking direction this far from forward questions the camera position.
+WALK_OFF_DEG = 45.0
 
 
 def running_median(x, k: int) -> np.ndarray:
@@ -212,6 +218,31 @@ def summarize_run(
         illumination=illumination,
         episodes=episodes,
     )
+
+
+def walking_check(w_lab, position_deg=None) -> str | None:
+    """Where the animal's net walking points, from the per-frame lab-frame rotations
+    of the tracked frames; None when it barely walked.
+
+    Animals walk mostly forward, so a net direction far from it suggests a wrong
+    camera azimuth: walking that points `a` deg to the left of forward reads as
+    forward with the azimuth `a` deg larger.
+    """
+    w = np.asarray(w_lab, dtype=np.float64).reshape(-1, 3)
+    forward, side = -float(w[:, 1].sum()), float(w[:, 0].sum())
+    distance = float(np.hypot(forward, side))
+    if distance < 1.0:
+        return None
+    angle = float(np.degrees(np.arctan2(side, forward)))  # positive to the left
+    way = "left" if angle > 0 else "right"
+    line = f"net {distance:.1f} ball radii, {abs(angle):.0f} deg {way} of forward"
+    if distance >= MIN_WALK and abs(angle) > WALK_OFF_DEG:
+        line += "; if the animal walked forward, the camera position is wrong"
+        if position_deg is not None:
+            azimuth = (position_deg[1] + angle) % 360.0
+            azimuth -= 360.0 * (azimuth > 180.0)  # within (-180, 180]
+            line += f" (an azimuth near {azimuth:.0f} deg would make it forward)"
+    return line
 
 
 def format_summary(q: RunQuality) -> str:

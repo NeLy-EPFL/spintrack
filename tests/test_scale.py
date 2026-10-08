@@ -206,11 +206,11 @@ def test_lab_columns_apply_the_camera_to_animal_rotation_in_the_right_direction(
         rows[SKIP:, 5:8].mean(axis=0),
         expected,
     )
-    # And the fictive path is where that reaches a reader: forward is `dr_lab` y, so a
-    # positive one runs along +x while the negative z turns the heading
-    # (`spintrack.path`, pinned against a circle in `test_path.py`). The endpoint has to
-    # be the one those increments integrate to, sign and all.
-    assert expected[1] > 0  # forward
+    # And the fictive path is where that reaches a reader: forward is `-dr_lab` y and
+    # turning left `-dr_lab` z (`spintrack.path`, pinned against FicTrac's own columns
+    # in `test_path.py`). The endpoint has to be the one those increments integrate to,
+    # sign and all.
+    assert expected[1] > 0  # the ball rolls forward: the animal walks backward
     want = integrate_path(np.tile(expected, (len(rows) - 1, 1)))[-1]
     assert np.allclose(rows[-1, 14:16], want[:2], rtol=0.02)  # x, y
     assert abs((rows[-1, 16] - want[2] + np.pi) % (2 * np.pi) - np.pi) < 0.02

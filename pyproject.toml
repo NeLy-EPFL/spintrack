@@ -23,6 +23,12 @@ classifiers = [
 ]
 dependencies = [
     "av>=13",
+    # fastapi and uvicorn serve the preview page of `spintrack run` and `spintrack gui`
+    # (spintrack.web), on localhost; uvicorn is imported only when a page is served.
+    "fastapi>=0.115",
+    # h5py reads deeperfly's pose results, which place the camera relative to the fly
+    # (spintrack.calibrate.deeperfly).
+    "h5py>=3.11",
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
     # pillow, torch, torchvision and transformers run SAM 3 (spintrack.segment).
@@ -32,6 +38,7 @@ dependencies = [
     "torch>=2.9",
     "torchvision>=0.24",
     "transformers>=5",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +78,7 @@ cache-keys = [
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13",  # FastAPI's TestClient, for the page's tests
     "pytest>=8.0",
     "ruff>=0.6",
 ]

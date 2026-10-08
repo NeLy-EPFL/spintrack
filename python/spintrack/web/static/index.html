@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spintrack</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23d9dde3'/%3E%3Cpath d='M2 9c3 2 9 2 12 0' stroke='%23515a66' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header>
+  <span class="brand">spintrack</span>
+  <span id="video" class="video"></span>
+  <span id="state" class="chip"></span>
+  <span id="message" class="message"></span>
+  <span class="grow"></span>
+  <span id="stats" class="stats"></span>
+  <button id="stop" class="danger" hidden>Stop</button>
+  <div class="bar"><div id="bar"></div></div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<main id="main">
+  <aside id="controls" hidden></aside>
+  <section class="viewer">
+    <div class="stage" id="stage">
+      <img id="frame" alt="">
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="placeholder" class="placeholder">waiting for the first frame</div>
+    </div>
+    <div class="legend">
+      <span><i class="sw outline"></i>ball</span>
+      <span><i class="sw trail"></i>the fly's trail over the ball</span>
+      <span><i class="sw ignore"></i>ignored</span>
+      <label><input type="checkbox" id="show-axes"> axes</label>
+      <span id="frame-info" class="muted"></span>
+    </div>
+    <div id="transport" hidden></div>
+  </section>
+  <section class="side">
+    <figure>
+      <figcaption>tracking window</figcaption>
+      <img id="window" class="pixelated" alt="">
+    </figure>
+    <figure>
+      <figcaption>fictive path <span id="path-scale" class="muted"></span></figcaption>
+      <svg id="path" xmlns="http://www.w3.org/2000/svg"></svg>
+    </figure>
+    <figure class="wide">
+      <figcaption>surface map <span id="coverage" class="muted"></span></figcaption>
+      <div id="net" class="net"><img id="map" alt=""></div>
+    </figure>
+  </section>
+  <section class="traces">
+    <canvas id="traces"></canvas>
+  </section>
+  <section class="bottom">
+    <div id="summary" class="summary" hidden><pre></pre></div>
+    <details id="log-box">
+      <summary>log</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<script type="module" src="static/app.js"></script>
+</body>
+</html>

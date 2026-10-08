@@ -11,8 +11,8 @@ writes `tracks.parquet`, `summary.json`, `log.txt`, `config.toml` and `debug.mp4
 ## The config
 
 - `vfov_deg = 2.3893` comes from the rig's multi-camera calibration (focal length 24168.6 px at 1008 rows: `2 atan(504 / f)`). Downscaling does not change it. The view is nearly orthographic, so the ball spans only 1.2 deg of half-angle.
-- `rim` are points on the ball's rim detected on the full-resolution video (`spintrack calibrate --auto`), halved. The bottom of the ball is cut off by the image edge.
-- `position_deg = [0, 180, 0]` places the camera directly behind the animal, level with the ball center (`spintrack calibrate config.toml --camera-position 0 180 0`). The camera-frame columns do not depend on it; the lab-frame columns, the path and the trail in the debug video do.
+- `rim` are points on the ball's rim detected on the full-resolution video (as `spintrack run` detects it), halved. The bottom of the ball is cut off by the image edge.
+- `position_deg = [0, 180, 0]` places the camera directly behind the animal, level with the ball center. The camera-frame columns do not depend on it; the lab-frame columns, the path and the trail on the page and in the debug video do.
 
 ## A ball that moves in its holder
 

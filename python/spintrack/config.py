@@ -9,10 +9,11 @@
     [ball]
     rim = [[656.5, 411.0], [142.5, 411.5], [145.0, 321.0], [255.0, 156.0]]
 
-Every key has a default except the field of view, the camera position and the ball's
-rim, which `spintrack calibrate` writes; `docs/guide.md` lists them all. Paths are
-relative to the file. An unknown key is an error, so that a typo cannot pass for a
-default.
+Every key is optional: a run finds the ball, the field of view and the camera position
+in the recording when the config leaves them out. `docs/guide.md` lists the keys. Paths
+are relative to the file. An unknown key is an error, so that a typo cannot pass for a
+default. On the command line, `KEY=VALUE` arguments (`tracking.window_px=80`) override
+the config's keys.
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 import tomllib
+import typing
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
@@ -38,9 +41,21 @@ from pydantic import (
 from spintrack.calibrate.sliders import camera_to_lab_from_angles
 from spintrack.geometry import rotvec_to_matrix
 
+# A command-line override: a dotted key, `=`, and a value.
+OVERRIDE = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)=(.*)", re.DOTALL)
+# The types of a key that takes only text, which an override passes verbatim.
+TEXT = {str, type(None)}
+# Keys that stand in for others: an override of one clears them, unless also set.
+REPLACES = {
+    "camera.position_deg": ("camera.rotation",),
+    "camera.rotation": ("camera.position_deg",),
+    "camera.calibration": ("camera.position_deg", "camera.rotation", "camera.vfov_deg"),
+    "camera.azimuth_deg": ("camera.position_deg", "camera.rotation"),
+}
 # The keys that hold paths, as (table, key); None is the top level.
 PATHS = (
     (None, "video"),
+    ("camera", "calibration"),
     ("tracking", "initial_map"),
     ("tracking", "initial_illumination"),
 )
@@ -62,6 +77,15 @@ class CameraConfig(_Table):
     # gives. One of the two, or neither until it is known.
     position_deg: tuple[float, float, float] | None = None
     rotation: tuple[float, float, float] | None = None
+    # A deeperfly calibration (a calibration file, a manifest or a project folder) and
+    # its view that filmed the video, found from the manifest's videos when not given.
+    # It gives the field of view and the camera position the keys above leave out.
+    calibration: str | None = None
+    view: str | None = None
+    # Where the camera sits around the animal when nothing above says: 0 in front, 90
+    # at its right, 180 behind, -90 at its left. The elevation and the twist then come
+    # from where the animal stands on the ball.
+    azimuth_deg: float | None = Field(None, ge=-360.0, le=360.0)
 
     @model_validator(mode="after")
     def _one_transform(self) -> Self:
@@ -124,6 +148,7 @@ class TrackingConfig(_Table):
 class OutputConfig(_Table):
     name: str | None = None  # the output folder is NAME_spintrack; default the video's
     debug_video: bool = False  # also write debug.mp4
+    debug_axes: bool = False  # draw the ball's axes in debug.mp4
     debug_codec: str = "h264"
 
 
@@ -186,6 +211,75 @@ class Config(_Table):
         return path
 
 
+def is_override(arg: str) -> bool:
+    """Whether a command-line argument is a `KEY=VALUE` override rather than a path."""
+    return OVERRIDE.fullmatch(arg) is not None
+
+
+def apply_overrides(cfg: Config, overrides: Sequence[str]) -> Config:
+    """A copy of `cfg` with `KEY=VALUE` overrides applied, validated as a whole.
+
+    A value is read as TOML (`80`, `true`, `[0, 180, 0]`); a list may drop its brackets
+    (`0,180,0`), `none` restores a key's default, and a key that takes only text takes
+    the value verbatim. Relative paths are relative to the current directory.
+    """
+    changes = {}
+    for item in overrides:
+        match = OVERRIDE.fullmatch(item)
+        if match is None:
+            raise ValueError(f"{item!r} is not KEY=VALUE")
+        key, raw = match.groups()
+        changes[key] = _override_value(key, raw)
+    return with_changes(cfg, changes, "command line")
+
+
+def with_changes(cfg: Config, changes: dict, where: str = "changes") -> Config:
+    """A copy of `cfg` with values set by dotted key, validated as a whole.
+
+    Setting `camera.position_deg` clears `camera.rotation`, and the other way around;
+    setting `camera.calibration` clears both and `camera.vfov_deg` (`REPLACES`).
+    Raises `ValueError`, naming `where` and each wrong key.
+    """
+    data = cfg.model_dump()
+    for key in changes.keys() & REPLACES.keys():
+        for other in REPLACES[key]:
+            if other not in changes:
+                table, name = other.split(".")
+                data[table][name] = None
+    for key, value in changes.items():
+        *tables, name = key.split(".")
+        owner = data
+        for table in tables:
+            if type(owner.get(table)) is not dict:
+                owner[table] = {}  # not a table: validation names the key
+            owner = owner[table]
+        owner[name] = value
+    try:
+        return Config.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError(_explain(where, exc)) from None
+
+
+def _override_value(key: str, raw: str):
+    """An override's value, typed by its key: see `apply_overrides`."""
+    model, field = Config, None
+    for part in key.split("."):
+        field = getattr(model, "model_fields", {}).get(part)
+        if field is None:
+            break  # an unknown key: validation names it
+        model = field.annotation
+    if raw.strip().lower() in ("none", "null"):
+        return None if field is None else field.get_default(call_default_factory=True)
+    if field is not None and set(typing.get_args(model) or (model,)) <= TEXT:
+        return raw
+    for text in (raw, f"[{raw}]"):
+        try:
+            return tomllib.loads(f"v = {text}")["v"]
+        except tomllib.TOMLDecodeError:
+            pass
+    return raw
+
+
 def leading_comments(path: str | Path) -> list[str]:
     """The comment lines at the top of a config file, for `Config.save` to keep."""
     out = []
@@ -239,7 +333,7 @@ def _toml_value(value, nested: bool = False) -> str:
     return "[" + ", ".join(items) + "]"
 
 
-def _explain(path: Path, exc: ValidationError) -> str:
+def _explain(path: Path | str, exc: ValidationError) -> str:
     """The validation errors, one per line, with a suggestion for unknown keys."""
     tables = {
         name: field.annotation.model_fields

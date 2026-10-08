@@ -1,19 +1,27 @@
 """Fill in the geometry a config leaves open, from the recording itself.
 
-`prepare_config` detects the ball when the config does not describe one (and compares
-the two when it does), and fits the field of view when the config has none. It needs a
-source it can read before tracking begins, so a live camera is refused.
+`complete_config` runs `prepare_config` when the config lacks the ball, the field of
+view or the camera position, and refuses when nothing says where the camera sits around
+the animal: a video cannot tell the animal's front from its back. `prepare_config` takes
+the field of view and the camera position from a deeperfly calibration when there is
+one (`camera.calibration`, or a deeperfly project next to the video that lists it),
+detects the ball when the config does not describe one (and compares the two when it
+does), places the camera at `camera.azimuth_deg` from where the animal stands when
+nothing else does, and fits the field of view when nothing gives it. It needs a source
+it can read before tracking begins, so a live camera is refused.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _replace
 
 import numpy as np
 
 from spintrack import segment
+from spintrack.calibrate import deeperfly
+from spintrack.calibrate.deeperfly import CalibratedView
 from spintrack.camera import source_camera
 from spintrack.config import BallConfig, Config
 from spintrack.detect import (
@@ -31,10 +39,29 @@ from spintrack.sphere import fit_ball
 log = logging.getLogger("spintrack")
 
 CAMERA_SOURCE_MESSAGE = (
-    "automatic geometry needs a seekable source: it looks at frames before tracking "
-    "starts. Record a short clip and run `spintrack calibrate CLIP.toml --auto`, then "
-    "use the config it writes."
+    "a live camera needs a config with the ball, the field of view and the camera "
+    "position: they are found in frames read before tracking starts. Record a short "
+    "clip, track it (spintrack run CLIP) or fix it (spintrack gui CLIP), and pass the "
+    "config.toml it writes."
 )
+NO_POSITION = (
+    "where the camera sits around the animal is unknown, and a video cannot tell the "
+    "animal's front from its back. Say it: camera.azimuth_deg=180 for a camera behind "
+    "the animal, 0 in front, 90 at its right, -90 at its left (or "
+    "camera.position_deg=ELEV,AZIM,TWIST, or set it in spintrack gui)"
+)
+MIN_ANIMAL_SCORE = 0.3  # a weaker animal mask places no camera
+# Where the animal's silhouette sits, from the ball's center in ball radii: beyond
+# `ON_RIM` it stands on the outline (a level camera, the elevation's cosine is too flat
+# there to measure); within `ABOVE` it is seen from above, which the silhouette cannot
+# orient; beyond `OFF_BALL` it is not on the ball.
+ON_RIM = 0.95
+ABOVE = 0.5
+OFF_BALL = 2.0
+# A twist this small is read as none: the silhouette's own asymmetry (posture, tether)
+# is about this large, and cameras are mostly mounted level. On the lab's five example
+# recordings the silhouette's twist is -1.2 to 1.2 deg.
+LEVEL_TWIST_DEG = 2.0
 # A detected radius this far from the config's is worth saying out loud: a relative
 # radius error costs about twice as much of every in-plane rotation reported.
 DISAGREEMENT_WARN = 0.03
@@ -101,6 +128,9 @@ class Prepared:
     config_radius_px: float | None = None
     radius_disagreement: float | None = None  # detected / config - 1
     vfov: VfovFit | None = None
+    vfov_from: CalibratedView | None = None  # the calibration that gave it
+    camera_position: str = "config"  # "config", "calibration", "estimated", "unknown"
+    camera: CameraFit | CalibratedView | None = None
     notes: list[str] = field(default_factory=list)
 
     def report(self) -> dict:
@@ -143,6 +173,36 @@ class Prepared:
         )
 
 
+def complete_config(
+    cfg: Config, src_spec, *, require_position: bool = True
+) -> Prepared | None:
+    """`prepare_config` when the config leaves geometry open; None when it does not.
+
+    Raises `ValueError` (`NO_POSITION`) when nothing says where the camera sits, before
+    any slow work, unless not `require_position`, which leaves the position unset.
+    """
+    camera = cfg.camera
+    if cfg.ball.rim and camera.vfov_deg is not None and camera.to_animal() is not None:
+        return None
+    if require_position and not _position_given(cfg, src_spec):
+        raise ValueError(NO_POSITION)
+    prepared = prepare_config(cfg, src_spec)
+    if require_position and camera.to_animal() is None:
+        raise ValueError(NO_POSITION)
+    return prepared
+
+
+def _position_given(cfg: Config, src_spec) -> bool:
+    """Whether the config or a deeperfly project says where the camera sits."""
+    camera = cfg.camera
+    return (
+        camera.to_animal() is not None
+        or camera.azimuth_deg is not None
+        or camera.calibration is not None
+        or deeperfly.find_manifest(src_spec) is not None
+    )
+
+
 def prepare_config(
     cfg: Config,
     src_spec,
@@ -152,19 +212,29 @@ def prepare_config(
     vfov_frames: int = VFOV_FRAMES,
     params=None,
 ) -> Prepared:
-    """Detect the ball, fit the field of view if unknown, and report what was found.
+    """Detect the ball, place the camera and fit the field of view where unknown.
 
     The detection is used only when the config has no ball of its own; when it has one,
     the two are compared and the config's is kept, and a failed detection is only
-    reported. The field of view is fitted with the pixel circle held fixed, since the
-    two together set the ball's angular radius and the cost cannot separate them.
-    Mutates `cfg`.
+    reported. Without a camera position, `place_camera` places it at
+    `camera.azimuth_deg` from the animal's silhouette, and leaves it unset without that
+    azimuth (`camera_position` "unknown"). The field of view is fitted with
+    the pixel circle held fixed, since the two together set the ball's angular radius
+    and the cost cannot separate them. Mutates `cfg`.
     """
     if str(src_spec).isdigit():
         raise ValueError(CAMERA_SOURCE_MESSAGE)
     frames = sample_frames(str(src_spec), n_frames, span)
     height, width = frames[0].shape
     prepared = Prepared()
+    calibrated = _calibration(cfg, src_spec, width, height)
+    if calibrated is not None:
+        if cfg.camera.to_animal() is None:
+            cfg.camera.position_deg = calibrated.position_deg
+            prepared.camera_position, prepared.camera = "calibration", calibrated
+        if cfg.camera.vfov_deg is None:
+            cfg.camera.vfov_deg = calibrated.vfov_deg(height)
+            prepared.vfov_from = calibrated
     try:
         # The comparison with a configured ball is only a check, not worth a model.
         prepared.detection = find_ball(frames, n_frames, use_model=not cfg.ball.rim)
@@ -201,6 +271,12 @@ def prepare_config(
                 f"{detection.confidence:.2f}"
             )
 
+    if cfg.camera.to_animal() is None:
+        frame = frames[len(frames) // 2]
+        prepared.camera = place_camera(frame, cfg.ball.rim, cfg.camera.azimuth_deg)
+        position = prepared.camera.position_deg
+        prepared.camera_position = "unknown" if position is None else "estimated"
+        cfg.camera.position_deg = position
     if cfg.camera.vfov_deg is None:
         circle = fit_circle(cfg.ball.rim)
         prepared.vfov = fit_vfov(
@@ -208,6 +284,112 @@ def prepare_config(
         )
         cfg.camera.vfov_deg = prepared.vfov.vfov
     return prepared
+
+
+@dataclass
+class CameraFit:
+    """The camera's elevation and twist from where the animal stands on the ball, and
+    the azimuth the config gave (`camera.azimuth_deg`)."""
+
+    azimuth_deg: float | None  # None: unknown, and so the position
+    reason: str  # what decided the elevation and the twist
+    elevation_deg: float = 0.0  # level, unless the silhouette said otherwise
+    twist_deg: float = 0.0
+    measured: bool = False  # whether the silhouette gave them
+    angle_deg: float | None = None  # the animal about the ball, clockwise from up
+    distance: float | None = None  # from the ball's center, in ball radii
+    score: float | None = None  # the animal mask's
+
+    @property
+    def position_deg(self) -> tuple[float, float, float] | None:
+        if self.azimuth_deg is None:
+            return None
+        return (self.elevation_deg, float(self.azimuth_deg), self.twist_deg)
+
+    def report(self) -> dict:
+        """The sidecar's account of it."""
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    def line(self) -> str:
+        """One line for the terminal block."""
+        if self.measured:
+            rest = (
+                f"elevation {self.elevation_deg:g}, twist {self.twist_deg:g} deg from "
+                f"where the animal stands ({self.reason})"
+            )
+        else:
+            rest = f"level assumed ({self.reason})"
+        if self.azimuth_deg is None:
+            return f"unknown: no azimuth given; {rest}"
+        return f"azimuth {self.azimuth_deg:g} from camera.azimuth_deg; {rest}"
+
+
+def _calibration(cfg: Config, src_spec, width: int, height: int):
+    """The deeperfly view that gives what the config leaves open: the config's
+    `camera.calibration`, or a manifest next to the video that lists it."""
+    camera = cfg.camera
+    if camera.to_animal() is not None and camera.vfov_deg is not None:
+        return None
+    path = camera.calibration
+    try:
+        if path is None:
+            path = deeperfly.find_manifest(src_spec)
+            if path is None:
+                return None
+        view = deeperfly.read_view(path, camera.view, src_spec)
+        deeperfly.check_size(view, width, height)
+    except ValueError as exc:
+        if camera.calibration is not None:
+            raise
+        log.warning("not using the deeperfly calibration %s: %s", path, exc)
+        return None
+    if view.distorted:
+        log.warning(
+            "%s: spintrack ignores view %s's lens distortion", view.file, view.name
+        )
+    return view
+
+
+def place_camera(image: np.ndarray, rim, azimuth: float | None = None) -> CameraFit:
+    """The camera at `azimuth`, its elevation and twist from where the animal stands on
+    the ball in `image`.
+
+    The animal stands on the ball's top, so its silhouette's direction from the ball's
+    center gives the camera's twist, and its distance the elevation: on the outline for
+    a level camera, inside it, at the elevation's cosine, for a camera above. A twist
+    under `LEVEL_TWIST_DEG` is taken for none, and without a silhouette the camera is
+    taken for level. Which way the animal faces does not show in a silhouette, hence
+    `azimuth`. The geometry is orthographic, which the narrow fields of view of
+    trackball rigs allow.
+    """
+    try:
+        found = segment.animal_mask(image)
+    except segment.SegmenterUnavailable as exc:
+        return CameraFit(azimuth, str(exc))
+    if found is None or found[1] < MIN_ANIMAL_SCORE:
+        return CameraFit(azimuth, "no animal found on the ball")
+    mask, score = found
+    cx, cy, r = fit_circle(rim)
+    ys, xs = np.nonzero(mask)
+    dx, dy = xs.mean() - cx, ys.mean() - cy
+    distance = float(np.hypot(dx, dy) / r)
+    angle = float(np.degrees(np.arctan2(dx, -dy)))
+    fit = CameraFit(azimuth, "", angle_deg=round(angle, 1))
+    fit.distance, fit.score = round(distance, 3), round(score, 2)
+    if distance > OFF_BALL:
+        fit.reason = "the animal found is not on the ball"
+    elif distance < ABOVE:
+        fit.reason = "the animal is seen from above, which its silhouette cannot orient"
+    else:
+        on_rim = distance >= ON_RIM
+        elevation = 0.0 if on_rim else float(np.degrees(np.arccos(distance)))
+        # A camera twisted clockwise sees the animal turned anticlockwise.
+        twist = 0.0 if abs(angle) < LEVEL_TWIST_DEG else -angle
+        fit.elevation_deg, fit.twist_deg = round(elevation, 1), round(twist, 1) + 0.0
+        fit.measured = True
+        where = "on the ball's outline" if on_rim else "inside the ball's outline"
+        fit.reason = f"it stands {where}, SAM 3 score {score:.2f}"
+    return fit
 
 
 def find_ball(frames, n_frames: int = 100, *, use_model: bool = True) -> BallDetection:
@@ -329,11 +511,14 @@ def fit_vfov(
     region tracks identically; the fit says so rather than pretending to a number.
     """
     lo, hi, count = grid or VFOV_GRID
+    log.info(
+        "fitting the field of view: tracking %d frames at each candidate", n_frames
+    )
     points = _circle_points(circle)
     values = np.geomspace(lo, hi, count)
     costs, turns = _costs_at(src_spec, cfg, points, values, n_frames, params)
     for value, cost in zip(values, costs, strict=True):
-        log.info("vfov %.3g deg: cost %.5g", value, cost)
+        log.debug("vfov %.3g deg: cost %.5g", value, cost)
     curve = [(float(v), float(c)) for v, c in zip(values, costs, strict=True)]
     usable = np.isfinite(costs)
     if usable.sum() < 3:
@@ -359,7 +544,7 @@ def fit_vfov(
             inner = inner[1:-1]
             more, _ = _costs_at(src_spec, cfg, points, inner, n_frames, params)
             for value, cost in zip(inner, more, strict=True):
-                log.info("vfov %.3g deg: cost %.5g", value, cost)
+                log.debug("vfov %.3g deg: cost %.5g", value, cost)
             vfov = _parabola_minimum(
                 np.r_[values, inner], np.r_[costs, more], values[[best - 1, best + 1]]
             )

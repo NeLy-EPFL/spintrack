@@ -1,1 +1,1 @@
-"""Interactive and programmatic calibration of the ball and the animal frame."""
+"""The camera position: from angles around the animal, or from a calibration square."""

@@ -16,7 +16,11 @@ First release: a FicTrac-compatible trackball tracker with a Rust core.
 
 ### Interfaces
 
-- `spintrack run`, `calibrate` and `map`. `run` takes a config, or a video with `--config`, and `spintrack VIDEO` is short for `spintrack run VIDEO`. `calibrate --auto` detects the ball and fits the field of view from a recording, and `--camera-position` writes where the camera sits, both without a window; `run --camera-position` overrides the config's for one run.
+- Two commands. `spintrack run VIDEO...` tracks videos given only which side the camera films from (`camera.azimuth_deg`): it detects the ball, fits the field of view and takes the camera's elevation and twist from where the animal stands, when the config (`-c`) does not say. `KEY=VALUE` arguments override any config key for one run. `spintrack VIDEO` is short for `spintrack run VIDEO`.
+- `spintrack gui VIDEO`: a page that tracks a clip of the video live while the ball, the camera position, the field of view, the ignored regions and the tracking parameters are changed, saves them as a config, and tracks the whole video with it.
+- A preview of every run, in the browser: the frame with the ball, the animal's trail and the ignored regions, the tracking window, the map, the path, the speeds and the cost, and a Stop. `run` prints its link; it costs nothing until opened.
+- A deeperfly calibration gives the field of view and the camera position: found next to a video a deeperfly project lists, or named with `camera.calibration` (and `camera.view`). With the project's pose results, the camera is placed relative to the fly's body, from its triangulated thorax-coxa points.
+- The camera position from the animal: SAM 3 finds the animal on the ball, whose place on the outline gives the elevation and the twist. The azimuth, which side the camera films from, is the one thing to give (`camera.azimuth_deg`), unless a deeperfly project says it; a run without it refuses, as FicTrac does without `c2a_r`. Every run checks the azimuth against the animal's net walking.
 - Ball detection with SAM 3: the model proposes the ball's silhouette and the rim is measured and checked on the image. It found all 225 balls of 266 recordings from six rigs and refused the 41 without a usable ball; the classical detector, used when the model cannot be loaded, found 108.
 - A TOML config with readable names in tables (`camera`, `ball`, `mask`, `tracking`, `output`, `stream`), validated on load with pydantic: an unknown key is an error that names the key it most resembles. Paths are relative to the config. The camera-to-animal transform is the camera's position (`camera.position_deg`) or a rotation vector (`camera.rotation`), and the ball is its rim points (`ball.rim`).
 - Outputs: one folder per run, `NAME_spintrack` next to the video, holding the records as Parquet with named columns and units (`tracks.parquet`), a JSON summary of the run's quality and inputs, the run's log, the config as run (`config.toml`), and an optional annotated debug video. Existing outputs are never overwritten without `--overwrite`.
@@ -25,7 +29,8 @@ First release: a FicTrac-compatible trackball tracker with a Rust core.
 
 ### Compatibility with FicTrac
 
-- Streams FicTrac's 25-field records in FicTrac's line format, with path integration ported line for line. It reads no FicTrac `config.txt` and writes no `.dat` file; `docs/fictrac.md` translates both, key by key and column by column. A camera-to-animal transform is required.
+- Streams FicTrac's 25-field records in FicTrac's line format, with path integration ported line for line. It reads no FicTrac `config.txt` and writes no `.dat` file; `docs/fictrac.md` translates both, key by key and column by column.
+- The animal frame is x forward, y left, z up, as in deeperfly and flygym, where FicTrac's is y right, z down: in `tracks.parquet` and the Python API, sideways motion, turning, the heading and the path's y are positive to the left. The streams are converted to FicTrac's signs. `spintrack.calibrate.sliders.rotation_from_fictrac` converts a `c2a_r`.
 - Rotation columns are in the true camera and lab frames, which FicTrac's are not; column 5 is a photometric residual. See `docs/fictrac.md` and `docs/output.md`.
 
 ### Packaging

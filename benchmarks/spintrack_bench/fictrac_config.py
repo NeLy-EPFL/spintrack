@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from spintrack.calibrate.sliders import rotation_from_fictrac
 from spintrack.camera import source_camera
 from spintrack.config import Config
 from spintrack.sphere import ball_outline
@@ -89,9 +90,10 @@ def to_spintrack(path: str | Path, size: tuple[int, int]) -> Config:
         tracking["norm_window"] = v["thr_win_pc"]
     if v.get("sphere_map_fn"):
         tracking["initial_map"] = str(path.parent / v["sphere_map_fn"])
+    rotation = rotation_from_fictrac(v["c2a_r"]) if v.get("c2a_r") else None
     return Config(
         video=str(path.parent / v["src_fn"]) if v.get("src_fn") else None,
-        camera={"vfov_deg": vfov, "fisheye": fisheye, "rotation": v.get("c2a_r")},
+        camera={"vfov_deg": vfov, "fisheye": fisheye, "rotation": rotation},
         ball={"rim": rim},
         mask={"ignore": [_pairs(polygon) for polygon in ignore]},
         tracking=tracking,

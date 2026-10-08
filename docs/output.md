@@ -9,11 +9,11 @@ A run writes one folder, `NAME_spintrack` next to the video or `--out DIR` (the 
 | `log.txt` | the lines the run printed, warnings included |
 | `config.toml` | the config as run, with the command line's changes and the ball if the run detected it; `spintrack run` on it, with `--out` another folder and the run's `--two-pass` and `--max-frames`, repeats the run |
 | `debug.mp4` | with `--debug-video`: the annotated video ([guide](guide.md#the-debug-video)) |
-| `map.npz` | with `--save-map`: the final surface map, for `--load-map` or `spintrack map` |
+| `map.npz` | with `--save-map`: the final surface map, for `tracking.initial_map`, or `spintrack.maps.render_map` to draw it |
 
 ## Frames and units
 
-The camera frame has x to the right of the image, y down and z along the optical axis. The lab frame is the animal's: x forward, y to its right, z down. The config's camera position (`camera.position_deg` or `camera.rotation`) takes one to the other.
+The camera frame has x to the right of the image, y down and z along the optical axis. The lab frame is the animal's: x forward, y to its left, z up, so positive turning is to the left (counterclockwise seen from above), as for any right-handed frame with z up. The config's camera position (`camera.position_deg` or `camera.rotation`) takes one to the other. FicTrac's lab frame is x forward, y right, z down: the streamed records are converted to it ([below](#differences-from-fictracs-output)).
 
 Rotations are right-handed rotation vectors (axis times angle) in radians. Distances are in ball radii, which equal radians of ball rotation. Multiply by the ball's radius for a distance, and per-frame values by the frame rate for a rate:
 
@@ -32,14 +32,14 @@ In FicTrac's order, which is also that of the streamed line; columns are numbere
 | 1 | `frame` | source frame index, from 0 | | counts dropped frames too |
 | 2-4 | `dr_cam_x`, `_y`, `_z` | rotation since the last tracked frame | rad | camera |
 | 5 | `err` | weighted mean squared photometric residual | | lower is better |
-| 6-8 | `dr_lab_x`, `_y`, `_z` | rotation since the last tracked frame | rad | lab: forward walking is +y, a step to the right is -x, a right turn is -z |
+| 6-8 | `dr_lab_x`, `_y`, `_z` | rotation since the last tracked frame | rad | lab: the ball turns under the animal, so forward walking is -y, a step to the left is +x, a left turn is -z |
 | 9-11 | `r_cam_x`, `_y`, `_z` | absolute orientation | rad | camera, 0 at the first frame |
 | 12-14 | `r_lab_x`, `_y`, `_z` | absolute orientation, `C R_cam C^T` with `C` the camera-to-lab rotation | rad | lab, 0 at the first frame |
-| 15-16 | `pos_x`, `pos_y` | integrated fictive position | ball radii | x along the initial heading, y to its right |
-| 17 | `heading` | integrated heading, [0, 2 pi) | rad | grows as the animal turns right |
-| 18 | `direction` | direction of motion relative to the heading, [0, 2 pi) | rad | 0 forward, pi/2 to the right |
+| 15-16 | `pos_x`, `pos_y` | integrated fictive position | ball radii | x along the initial heading, y to its left |
+| 17 | `heading` | integrated heading, [0, 2 pi) | rad | grows as the animal turns left |
+| 18 | `direction` | direction of motion relative to the heading, [0, 2 pi) | rad | 0 forward, pi/2 to the left |
 | 19 | `speed` | forward and sideways motion combined | rad/frame | |
-| 20-21 | `forward_total`, `side_total` | integrated forward and sideways motion, ignoring heading | ball radii | side positive to the right |
+| 20-21 | `forward_total`, `side_total` | integrated forward and sideways motion, ignoring heading | ball radii | side positive to the left |
 | 22 | `timestamp` | video position, or capture time for a camera | ms | |
 | 23 | `seq` | frames since tracking last (re)started | | |
 | 24 | `delta_ts` | time since the last tracked frame, 0 on the first | ms | |
@@ -71,12 +71,14 @@ The file is written when the run ends, also when it ends in an error or is stopp
 
 `summary.json` holds the version (`spintrack`) and two sections:
 
-- `provenance`: the config and source, where the field of view (`vfov`), the ball and the camera position came from, and `geometry`: the ball's image circle (`center_px`, `radius_px`), the window size, and the follower's record (`radius_measured_px`, the moves as `[start, end, px]` in `episodes`, `stopped_at`).
+- `provenance`: the config, the command line's `overrides` and the source; where the field of view (`vfov`), the ball and the camera position came from (`config`, `command line`, `detected`, `estimated` or `assumed`, with what the detection or the animal's silhouette measured); and `geometry`: the ball's image circle (`center_px`, `radius_px`), the window size, and the follower's record (`radius_measured_px`, the moves as `[start, end, px]` in `episodes`, `stopped_at`).
 - `quality`: `n_frames`, `n_tracked`, `n_dropped`; cost percentiles (`cost_median`, `cost_p90`, `cost_p99`) and solver iterations; `sources`, how many frames were solved against the map, the previous frame, by global search or by a reset; `map_coverage`, the fraction of the ball mapped; the hard-tracking `episodes`; and `checks`, the terminal summary's lines.
 
 ## Differences from FicTrac's output
 
-Path integration is a line-for-line port of FicTrac's (given FicTrac's columns 6-8, it reproduces its columns 15-21), and the frame, sequence and delta-timestamp columns mean the same. What differs:
+Path integration is a line-for-line port of FicTrac's (given FicTrac's columns 6-8, it reproduces its columns 15-21, mirrored), and the frame, sequence and delta-timestamp columns mean the same. What differs:
+
+- **The lab frame** is z up, FicTrac's z down: columns 7-8 and 13-14 have the opposite sign, and the path is FicTrac's mirrored (columns 16, 17, 18 and 21: y, heading and direction to the left, sideways motion positive to the left). The streams (`--udp`, `--tcp`, `--serial`, `--print`) send FicTrac's signs, so FicTrac's clients work unchanged; `spintrack.io.records.to_fictrac` converts a record either way.
 
 - **Column 5** is a weighted mean squared photometric residual, not FicTrac's matching error; compare it only within a run.
 - **Columns 2-4 and 9-11** are in the true camera frame. FicTrac writes its tracking-window frame (z toward the ball's center) under the camera label.

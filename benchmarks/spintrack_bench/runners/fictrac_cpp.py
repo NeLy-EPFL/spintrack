@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from spintrack.geometry import rotation_between
-from spintrack.io.records import read_dat
+from spintrack.io.records import read_dat, to_fictrac
 from spintrack_bench.fictrac_config import read_fictrac_config, write_fictrac_config
 
 # The C++ builds are local; point the environment at others.
@@ -132,17 +132,18 @@ def window_to_camera_frame(dat: np.ndarray, center) -> np.ndarray:
 
 
 def fictrac_lab_frame(dat: np.ndarray, center, cam_to_lab) -> np.ndarray:
-    """Put FicTrac's lab-frame increments (columns 5-7) in the true lab frame.
+    """FicTrac's records in spintrack's frame, its lab-frame increments (columns 5-7)
+    in the true lab frame; `cam_to_lab` is spintrack's.
 
     FicTrac applies `c2a_r` to its window-frame vectors (see `window_to_camera_frame`),
     so its lab columns are rotated by the ball's off-axis angle: `C R C^T` undoes it.
     On a rig whose sideslip and turning are correlated this is worth percents of
     turning.
     """
-    out = np.array(dat, dtype=np.float64, copy=True)
+    out = np.array([to_fictrac(row) for row in dat]).reshape(-1, dat.shape[1])
     R = rotation_between(
         np.array([0.0, 0.0, 1.0]), np.asarray(center, dtype=np.float64)
     )
     C = np.asarray(cam_to_lab, dtype=np.float64)
-    out[:, 5:8] = dat[:, 5:8] @ (C @ R @ C.T).T
+    out[:, 5:8] = out[:, 5:8] @ (C @ R @ C.T).T
     return out

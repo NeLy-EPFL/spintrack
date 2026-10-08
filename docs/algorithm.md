@@ -33,7 +33,7 @@ A window pixel spans several source pixels, and bilinear sampling at that decima
 
 **Accept.** A solve is accepted when the increment is within `tracking.max_step_rad`, at least a quarter of the window falls on seen map cells, and at least half of those are inliers. There is no gate on the cost, because a walking animal's cost is much higher than a standing one's and a cost gate rejects the frames where it starts to walk.
 
-**Relocalize.** The global search scores quasi-uniform orientations over SO(3) at the coarsest level, refines the best few through the pyramid, and keeps the cheapest that overlaps enough. The frame reports zero motion, as in FicTrac, since the jump corrects the estimate rather than measuring the ball. A map loaded with `--load-map` or `tracking.initial_map` is localized this way on the first frame.
+**Relocalize.** The global search scores quasi-uniform orientations over SO(3) at the coarsest level, refines the best few through the pyramid, and keeps the cheapest that overlaps enough. The frame reports zero motion, as in FicTrac, since the jump corrects the estimate rather than measuring the ball. A map loaded with `tracking.initial_map` is localized this way on the first frame.
 
 **Report.** The increment goes to camera coordinates through the window's orientation, to lab coordinates through the camera-to-animal rotation, and into the path through a port of FicTrac's `Trackball::updatePath`. The absolute orientation stays referred to the first window, so a window move does not make it step.
 
@@ -69,5 +69,5 @@ The second pass replays a window trajectory planned from all of the first pass's
 
 - **Scale and geometry**, `tests/test_scale.py`: a ball rendered with none of spintrack's camera, sphere or rotation code comes back at scale 1.0000 within 0.05%; a relative radius error `eps` scales the in-plane rotation by about `1 - 1.9 eps` and leaves the rotation about the optical axis unchanged; a hand-worked quarter turn pins the direction in which the camera rotation is applied.
 - **Path integration**, `tests/test_path.py`: on 200 rows FicTrac wrote for a lab trial (`tests/data/fictrac-003-head.dat`), FicTrac's columns 6-8 reproduce its columns 15-21 to 1e-12, and `FrameResult.forward`, `side` and `turn` sum to its columns 17, 20 and 21.
-- **Camera position**, `tests/test_calibrate.py`: `--camera-position` angles give the expected frame at three camera poses, and the calibration square recovers a synthetic pose.
+- **Camera position**, `tests/test_calibrate.py`: `camera.position_deg` angles give the expected frame at three camera poses, the calibration square recovers a synthetic pose, and a square projected from six camera poses and clicked in FicTrac's order gives the rotation of their angles. `tests/test_autofit.py`: an animal on the ball's top, seen from a known position, places the camera there.
 - **Precision**, the [benchmark](benchmark.md): per-frame error, drift and scale against exact synthetic truth. Its scenes share spintrack's camera code, which is why the scale test exists.

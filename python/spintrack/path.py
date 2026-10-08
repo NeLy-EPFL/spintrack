@@ -1,10 +1,13 @@
 """Fictive path integration from per-frame ball rotations in the lab frame.
 
-Lab frame (FicTrac convention): x forward, y right, z down. A ball rotation vector
-`dr_lab` maps to animal motion as: `forward = dr_lab[1]`, `side = -dr_lab[0]` (positive
-to the animal's right), `heading -= dr_lab[2]`. Positions are in radians of ball
-rotation (multiply by the ball radius for distance). The world frame has x along the
-initial heading and y to the initial right, matching FicTrac's output columns 15-21.
+Lab frame: x forward, y left, z up. The ball turns under the animal, so a ball rotation
+vector `dr_lab` maps to animal motion as `forward = -dr_lab[1]`, `side = dr_lab[0]`
+(positive to the animal's left) and `heading -= dr_lab[2]` (counterclockwise seen from
+above, so positive turning left). Positions are in radians of ball rotation (multiply
+by the ball radius for distance), with x along the initial heading and y to its left.
+
+FicTrac's frame is x forward, y right, z down, and its columns 15-21 the mirror image of
+these: `spintrack.io.records.to_fictrac` converts.
 """
 
 from __future__ import annotations
@@ -34,9 +37,10 @@ class PathStep:
 class PathIntegrator:
     """Accumulate lab-frame rotation vectors into heading and 2-D position.
 
-    A line-for-line port of FicTrac's `Trackball::updatePath`, so that the path columns
-    match FicTrac's to print precision given the same rotations: each step is walked in
-    four substeps along a direction turning with the heading.
+    A line-for-line port of FicTrac's `Trackball::updatePath` in this lab frame, so that
+    the path columns are FicTrac's mirrored, to print precision, given the same
+    rotations: each step is walked in four substeps along a direction turning with the
+    heading.
     """
 
     def __init__(self) -> None:
@@ -52,8 +56,8 @@ class PathIntegrator:
         self.pos_y = 0.0
 
     def step(self, dr_lab) -> PathStep:
-        forward = float(dr_lab[1])
-        side = -float(dr_lab[0])
+        forward = -float(dr_lab[1])
+        side = float(dr_lab[0])
         step_mag = math.sqrt(forward * forward + side * side)
         step_dir = math.atan2(side, forward)
         if step_dir < 0:

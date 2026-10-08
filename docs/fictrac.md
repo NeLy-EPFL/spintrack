@@ -6,9 +6,9 @@ spintrack streams FicTrac's records in FicTrac's line format, so a closed-loop r
 
 | FicTrac | spintrack |
 |---|---|
-| `fictrac config.txt` | `spintrack run config.toml`, or `spintrack VIDEO --config config.toml` |
-| `configGui config.txt` | `spintrack calibrate config.toml` (a window), or `--auto` and `--camera-position` (no window) |
-| | `--debug-video`, `--load-map`, `--udp`, `--tcp`, `--serial`, `--two-pass`, `--save-map`, `--out`, `--overwrite` |
+| `fictrac config.txt` | `spintrack run config.toml`, or `spintrack run VIDEO -c config.toml`, or `spintrack run VIDEO` alone |
+| `configGui config.txt` | `spintrack gui VIDEO` (a page in the browser, tracking while you set it up) |
+| | `--debug-video`, `--udp`, `--tcp`, `--serial`, `--two-pass`, `--save-map`, `--out`, `--overwrite`, and `KEY=VALUE` for any config key |
 
 `spintrack run --help` lists every option.
 
@@ -22,7 +22,7 @@ spintrack does not read `config.txt`. Its config is a TOML file with the keys gr
 | `vfov` | `camera.vfov_deg` | |
 | `fisheye` | `camera.fisheye` | |
 | `src_fps` | `camera.fps` | used only when the video has no frame rate |
-| `c2a_r` | `camera.rotation` | or `camera.position_deg`, which `--camera-position` writes; one of the two is required |
+| `c2a_r` | `camera.rotation` | converted, as FicTrac's animal frame has y right and z down: `spintrack.calibrate.sliders.rotation_from_fictrac(c2a_r)`; or give `camera.position_deg` instead, or neither and let the run place the camera |
 | `roi_circ` | `ball.rim` | `{ x1, y1, x2, y2, ... }` becomes `[[x1, y1], [x2, y2], ...]` |
 | `roi_ignr` | `mask.ignore` | each polygon becomes a list of `[x, y]` the same way |
 | `q_factor` | `tracking.window_px` | `10 * q_factor` |
@@ -38,7 +38,7 @@ spintrack does not read `config.txt`. Its config is a TOML file with the keys gr
 | `sock_host`, `sock_port` | `stream.udp` | `"HOST:PORT"` |
 | `com_port`, `com_baud` | `stream.serial` | `"PORT:BAUD"` |
 
-`roi_c` and `roi_r` have no counterpart: give the rim points they were fitted from, or let `calibrate --auto` detect the ball. The calibration square's corners (`c2a_src`, `c2a_cnrs_xy`, ...) are replaced by the rotation they give, which FicTrac writes as `c2a_r` anyway. The other FicTrac keys (`do_display`, `save_raw`, `thr_ratio`, `thr_rgb_tfrm`, `opt_max_err`, `opt_max_evals`, `opt_tol`, `c2a_t`, `enh_cfg_disp`, `reconfig`) mean nothing to spintrack and are errors in its config, as is any unknown key. For example,
+`roi_c` and `roi_r` have no counterpart: give the rim points they were fitted from, or leave the ball out for the run to detect it. The calibration square's corners (`c2a_src`, `c2a_cnrs_xy`, ...) are replaced by the rotation they give, which FicTrac writes as `c2a_r` anyway. The other FicTrac keys (`do_display`, `save_raw`, `thr_ratio`, `thr_rgb_tfrm`, `opt_max_err`, `opt_max_evals`, `opt_tol`, `c2a_t`, `enh_cfg_disp`, `reconfig`) mean nothing to spintrack and are errors in its config, as is any unknown key. For example,
 
 ```
 src_fn         : camera_F.mp4
@@ -56,7 +56,7 @@ video = "camera_F.mp4"
 
 [camera]
 vfov_deg = 2
-rotation = [0.895359, -0.895359, -1.378731]
+rotation = [-1.510689, -1.510689, 0.981054]  # rotation_from_fictrac; position_deg [24, 0, 0]
 
 [ball]
 rim = [[1375, 993], [1246, 515], [722, 383], [410, 623]]
@@ -68,9 +68,9 @@ forget_outside_view = true
 
 Three things are handled differently:
 
-- A camera position is required, because without one the lab columns would be camera columns under another name. `spintrack calibrate CONFIG --camera-position ELEV AZIM TWIST` writes it ([guide](guide.md#the-camera-position)); `rotation = [0, 0, 0]` asks for the identity explicitly.
-- The field of view must be known when tracking. `calibrate --auto` fits it once when the config has none.
-- A config without a ball is not an error: the ball is detected in the recording.
+- Without a camera position, the camera is placed from where the animal stands on the ball, behind it unless told otherwise, and every run checks the azimuth against the animal's net walking ([guide](guide.md#the-camera-position)). `rotation = [0, 0, 0]` asks for the identity explicitly.
+- Without a field of view, the run fits it from the recording.
+- Without a ball, the run detects it in the recording.
 
 ## Records
 
@@ -100,7 +100,7 @@ Three things are handled differently:
 
 ### The streamed line
 
-`--udp`, `--tcp`, `--serial` and `--print`, or the config's `stream.udp` and `stream.serial`, send each record as FicTrac does: the 25 fields separated by `", "`, floats with 14 significant digits, `frame` and `seq` as integers. Sockets and serial prefix it with `FT, `; every line ends with a newline. FicTrac's clients read it unchanged, and `spintrack.io.records.parse_row` reads one back.
+`--udp`, `--tcp`, `--serial` and `--print`, or the config's `stream.udp` and `stream.serial`, send each record as FicTrac does: the 25 fields separated by `", "`, floats with 14 significant digits, `frame` and `seq` as integers. Sockets and serial prefix it with `FT, `; every line ends with a newline. The record is converted to FicTrac's lab frame (y right, z down) on the way out (`spintrack.io.records.to_fictrac`), so FicTrac's clients read the signs they expect, and `spintrack.io.records.parse_row` reads one back.
 
 ## What differs and why
 
@@ -116,6 +116,7 @@ FicTrac's tracking window also stays where the config put it. When the ball move
 
 ### Other differences
 
+- The lab frame is x forward, y left, z up rather than FicTrac's y right, z down, so in `tracks.parquet` the lab rotations' y and z, and the path's y, heading, direction and sideways motion, have the opposite sign. The streams keep FicTrac's.
 - Column 5 is a photometric residual, not FicTrac's matching error; columns 12-14 start at 0 rather than at `c2a_r`; column 22 holds the video position on the first row too. See [output.md](output.md#differences-from-fictracs-output).
 - The surface map is an equi-angular cubemap rather than FicTrac's equal-area grid. FicTrac sphere-map PNGs load and are converted.
 - Each run writes one folder: the records as Parquet with named columns, a summary of the run's quality, the run's log and the config as run. It refuses to overwrite an earlier run's files without `--overwrite`.

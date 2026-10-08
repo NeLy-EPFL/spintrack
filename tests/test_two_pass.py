@@ -118,7 +118,7 @@ def test_cli_two_pass_runs_the_video_twice(tmp_path):
     cfg.save(tmp_path / "config.toml")
     out = tmp_path / "out"
     argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--two-pass"]
-    assert main([*argv, "--save-map"]) == 0
+    assert main([*argv, "--save-map", "--no-preview"]) == 0
     assert pl.read_parquet(out / "tracks.parquet").height == n
     assert (out / "map.npz").exists()
     assert "two-pass" in (out / "summary.json").read_text()

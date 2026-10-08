@@ -16,7 +16,8 @@ def test_the_example_loads_with_its_paths_relative_to_it():
     assert cfg.ball.rim[0] == (656.5, 411.0)  # half pixels, not rounded
     assert cfg.tracking.window_px == 120 and cfg.tracking.max_bad_frames == 100
     # The two ways of giving the camera-to-animal transform agree.
-    rotation = Config(camera={"rotation": [1.2091996] * 3}).camera.to_animal()
+    rotation = [-1.2091996, 1.2091996, -1.2091996]  # behind, level: [0, 180, 0]
+    rotation = Config(camera={"rotation": rotation}).camera.to_animal()
     assert np.allclose(cfg.camera.to_animal(), rotation, atol=1e-6)
 
 

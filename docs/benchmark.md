@@ -21,7 +21,7 @@ The tables give the median and 95th-percentile per-frame rotation error in degre
 
 ## What the synthetic benchmark cannot verify
 
-The scenes are rendered with spintrack's own camera and sphere code, and their motion is put in camera coordinates with the same `--camera-position` code the tracker inverts. An error in the camera model, in the depth an assumed radius implies, or in the direction the camera rotation is applied would cancel between renderer and tracker. `tests/test_scale.py` closes that gap with a ball rendered without any of that code (see [algorithm.md](algorithm.md#what-is-verified-and-how)).
+The scenes are rendered with spintrack's own camera and sphere code, and their motion is put in camera coordinates with the same `camera.position_deg` code the tracker inverts. An error in the camera model, in the depth an assumed radius implies, or in the direction the camera rotation is applied would cancel between renderer and tracker. `tests/test_scale.py` closes that gap with a ball rendered without any of that code (see [algorithm.md](algorithm.md#what-is-verified-and-how)).
 
 All walking scenes are driven by the same seeded walking motion, so the tables have one activity level and cannot show an effect that depends on how fast the animal moves.
 

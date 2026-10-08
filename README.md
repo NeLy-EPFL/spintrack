@@ -19,17 +19,39 @@ Streaming over a serial port needs the `serial` extra: install `"spintrack[seria
 The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball. A second example, `examples/ball_drop/`, shows the tracking window following a ball that sinks in its holder and comes back up. In a clone of the repository:
 
 ```console
-$ spintrack run examples/sample/config.toml --debug-video
+$ spintrack examples/sample/sample.mp4 camera.azimuth_deg=180
+preview: http://127.0.0.1:8300/?token=... (from another machine: ssh -L 8300:localhost:8300 HOST)
+loading SAM 3 on cuda (the first use downloads 3.4 GB)
+fitting the field of view: tracking 1000 frames at each candidate
 spintrack 0.1.0: examples/sample/sample.mp4 (800x504, 100 fps, 1050 frames)
-done: 1050 frames, 0 dropped, 5.7 s (183 fps)
+done: 1050 frames, 0 dropped, 1.9 s (559 fps)
 run quality: 1050 frames, 1050 tracked, 0 dropped
+ball: detected at (400.5, 371.5) r 260.8 px by SAM 3 (score 0.75), rim confirms 86% of its outline
+vfov: 3.31 deg (fitted; not identifiable, the cost is flat over 1-11 deg, and the rotation scale does not depend on it)
+camera position: azimuth 180 from camera.azimuth_deg; elevation 0, twist 0 deg from where the animal stands (it stands on the ball's outline, SAM 3 score 0.84)
+walking: net 4.0 ball radii, 7 deg right of forward
 ball moved: no
-radius: silhouette 258.3 px, config 259.8 px (-0.6%)
+radius: silhouette 258.3 px, config 260.1 px (-0.7%)
 hard tracking: none
-wrote tracks.parquet, summary.json, log.txt, config.toml, debug.mp4 in examples/sample/sample_spintrack
+wrote tracks.parquet, summary.json, log.txt, config.toml in examples/sample/sample_spintrack
 ```
 
-For a rig of your own, `spintrack calibrate config.toml --src clip.mp4 --auto --camera-position 0 180 0` writes a config from a recording, and `spintrack clip.mp4 --config config.toml` tracks it (`spintrack VIDEO` is short for `spintrack run VIDEO`); the [user guide](docs/guide.md) explains each step.
+`spintrack VIDEO` is short for `spintrack run VIDEO`. A run finds the ball (with SAM 3), fits the field of view and takes the camera's elevation and twist from where the fly stands; the summary says what it found. What a video cannot tell is the fly's front from its back, so say where the camera sits around the fly, as FicTrac also requires: `camera.azimuth_deg=180` behind it, `0` in front, `90` at its right, `-90` at its left. A rig's config (`-c`) can hold it. A video that belongs to a [deeperfly](https://github.com/NeLy-EPFL/deeperfly) project takes its field of view and camera position from the project's calibration instead, relative to the fly's body when the project holds pose results. Then the azimuth is not needed. The link opens a live view of the run: the frame with the ball and the fly's trail over it, the tracking window, the surface map, the path and the speeds. It costs the run nothing until opened.
+
+When the run gets something wrong, fix it while watching the tracking:
+
+```bash
+spintrack gui examples/sample/sample.mp4
+```
+
+The gui tracks a 10 s clip over and over while you drag the ball's outline, set the camera position, mask the fly and change the tracking parameters, and saves them as a config (`spintrack.toml` next to the video). Use that config for every video of the rig, and change any key for one run on the command line:
+
+```bash
+spintrack run session/*.mp4 -c spintrack.toml
+spintrack run trial3.mp4 -c spintrack.toml tracking.window_px=80 --debug-video
+```
+
+The [user guide](docs/guide.md) explains each step.
 
 ## What you get
 
@@ -38,7 +60,7 @@ Each run writes one folder, `NAME_spintrack` next to the video (or `--out DIR`),
 - `tracks.parquet`: one row per tracked frame, FicTrac's 25 columns by name, with units.
 - `summary.json`: run quality and the provenance of every geometric input.
 - `log.txt`: what the run printed.
-- `config.toml`: the config as run, with the command line's changes and any ball the run detected; `spintrack run` on it, with `--out` another folder and the run's `--two-pass` and `--max-frames`, repeats the run.
+- `config.toml`: the config as run, with the command line's changes and what the run found in the recording; `spintrack run` on it, with `--out` another folder and the run's `--two-pass` and `--max-frames`, repeats the run.
 - `debug.mp4` with `--debug-video`: the frame, the tracking window, the surface map and the path, for checking a run by eye.
 - `map.npz` with `--save-map`: the ball's surface map, to start a later run from.
 
@@ -54,7 +76,7 @@ df = track.to_polars()  # columns by name: forward_total, heading, ...
 print(track.quality.n_dropped, df.select("forward_total", "heading").tail())
 ```
 
-For a live camera, feed frames from your own capture code to a `Tracker`. The config must already describe the ball, so calibrate on a recorded clip first.
+For a live camera, feed frames from your own capture code to a `Tracker`. The config must already describe the ball, the field of view and the camera position, so track a recorded clip of the rig first and use the `config.toml` the run writes.
 
 ```python
 from spintrack import Config, Tracker
@@ -64,7 +86,7 @@ tracker = Tracker(cfg, width, height)
 for gray, ts_ms in frames():  # your camera SDK: 2-D uint8 images, timestamps in ms
     res = tracker.process_frame(gray, ts_ms)
     if res is not None:  # None: the frame could not be tracked
-        print(res.forward, res.side, res.turn, res.heading)  # rad, this frame
+        print(res.forward, res.side, res.turn)  # rad this frame; side, turn: left +
 ```
 
 ## Accuracy and speed
@@ -81,8 +103,8 @@ The synthetic scenes have exact ground truth; the error ranges leave out `static
 
 ## FicTrac compatibility
 
-- The config is a TOML file with readable names in tables, checked on load: an unknown key is an error. [docs/fictrac.md](docs/fictrac.md) translates a FicTrac `config.txt` key by key; spintrack requires the camera-to-animal rotation (FicTrac's `c2a_r`).
-- The UDP, TCP and serial streams have FicTrac's 25 fields and line format, and `tracks.parquet` the same columns by name; the path columns are integrated exactly as FicTrac does. There is no `.dat` file.
+- The config is a TOML file with readable names in tables, checked on load: an unknown key is an error. [docs/fictrac.md](docs/fictrac.md) translates a FicTrac `config.txt` key by key.
+- The UDP, TCP and serial streams have FicTrac's 25 fields, line format and signs, so FicTrac's clients work unchanged. `tracks.parquet` has the same columns by name, in spintrack's lab frame: x forward, y left, z up, where FicTrac's is y right, z down, so the lab rotations' y and z and the path's y, heading and sideways motion have the opposite sign. The path is integrated exactly as FicTrac does, mirrored. There is no `.dat` file.
 - The rotation columns are in the true camera and lab frames. FicTrac writes its tracking-window frame as the camera frame, which inflates its turning wherever sideslip and turning are correlated, so re-track old FicTrac data instead of pooling it with spintrack's. See [docs/fictrac.md](docs/fictrac.md).
 
 ## Develop

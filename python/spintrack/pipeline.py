@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from spintrack.config import Config
+from spintrack.config import Config, apply_overrides
 from spintrack.io.recorders import Recorder
 from spintrack.io.records import COLUMNS, N_COLUMNS
 from spintrack.io.sources import FrameSource, open_source
-from spintrack.quality import RunQuality, summarize_run
+from spintrack.quality import RunQuality, summarize_run, walking_check
 from spintrack.sphere import pixel_circle
 from spintrack.tracker import Tracker
 
@@ -31,20 +31,6 @@ if TYPE_CHECKING:
 log = logging.getLogger("spintrack")
 
 PROGRESS_S = 10.0  # seconds between progress reports
-
-NO_POSITION = (
-    "no camera position: the lab-frame and forward/side columns would be camera-frame "
-    "values\nin disguise. Fix: spintrack calibrate CONFIG --camera-position ELEV AZIM "
-    "TWIST (a camera\ndirectly behind the animal, level with the ball, is 0 180 0), "
-    "or write `rotation = [0, 0, 0]`\nunder [camera] to use the identity explicitly."
-)
-NO_CONFIG = (
-    "no config: a video alone has no field of view or camera position. Write a config "
-    "with\n`spintrack calibrate CONFIG --src VIDEO --camera-position ELEV AZIM TWIST "
-    "--auto` (a camera\ndirectly behind the animal, level with the ball, is 0 180 0; "
-    "--auto fits the ball and the\nfield of view) and pass it: spintrack VIDEO "
-    "--config CONFIG"
-)
 
 
 @dataclass
@@ -70,17 +56,17 @@ class RunStats:
 def open_config(
     config: Config | str | Path | None,
     src: str | int | None = None,
+    overrides: Sequence[str] = (),
     two_pass: bool = False,
-    camera_position: Sequence[float] | None = None,
 ) -> tuple[Config, str]:
-    """Load `config` and resolve its source, refusing what cannot be tracked.
+    """Load `config`, apply `overrides`, and resolve its source.
 
-    `config` is a config file, a `Config` (copied), or None for the defaults. `src` (a
-    video path or a camera index) overrides the config's `video`, and
-    `camera_position` (elevation, azimuth, twist in degrees) its camera position. The
-    returned config names the source as `video`. Raises `ValueError` when there is no
-    source, no camera position, no field of view, or `two_pass` is asked of a live
-    camera, which cannot be read twice.
+    `config` is a config file, a `Config` (copied), or None for the defaults, and
+    `overrides` are `KEY=VALUE` strings. `src` (a video path or a camera index)
+    overrides the config's `video`. The returned config names the source as `video`;
+    what it leaves open (the ball, the field of view, the camera position),
+    `autofit.complete_config` fills in. Raises `ValueError` when there is no source,
+    or `two_pass` is asked of a live camera, which cannot be read twice.
     """
     if config is None:
         cfg = Config()
@@ -88,24 +74,14 @@ def open_config(
         cfg = config.model_copy(deep=True)
     else:
         cfg = Config.load(config)
+    if overrides:
+        cfg = apply_overrides(cfg, overrides)
     if src is not None:
         cfg.video = int(src) if str(src).isdigit() else str(src)
-    if camera_position is not None:
-        cfg.camera.rotation = None
-        cfg.camera.position_deg = tuple(camera_position)
     if cfg.video is None:
         raise ValueError(
-            "no source: set `video` in the config, or name the video: "
-            "spintrack run VIDEO --config CONFIG"
-        )
-    if cfg.camera.to_animal() is None:
-        raise ValueError(NO_POSITION if config is not None else NO_CONFIG)
-    if cfg.camera.vfov_deg is None:
-        raise ValueError(
-            "no field of view: fit it once with `spintrack calibrate CONFIG --auto`, "
-            "which writes camera.vfov_deg into the config"
-            if config is not None
-            else NO_CONFIG
+            "no source: name the video (spintrack run VIDEO), or set `video` in the "
+            "config"
         )
     src = str(cfg.video)
     if two_pass and src.isdigit():
@@ -151,14 +127,16 @@ def run(
     max_frames: int | None = None,
     progress: Callable[[RunStats], None] | None = None,
     debug_video: str | Path | None = None,
-    debug_axes: bool = False,
     save_map: str | Path | None = None,
+    view=None,
 ) -> RunStats:
     """Track `source` and write every record to each of `recorders`.
 
     Returns the run statistics, with the quality summary and the final ball geometry.
-    `debug_video` writes an annotated video (with the ball's axes if `debug_axes`),
-    `save_map` the final surface map. `progress` is called every few seconds.
+    `debug_video` writes an annotated video (with the ball's axes if the config's
+    `output.debug_axes`), `save_map` the final surface map. `progress` is called every
+    few seconds. `view` (a `spintrack.web.live.LiveView`) sees every frame, and its
+    `stop_requested` ends the run early, as Ctrl-C does.
 
     `two_pass_source` opens the same recording a second time: the ball is mapped in a
     throwaway first pass and this run starts from that map, so the opening frames are
@@ -171,7 +149,7 @@ def run(
         first = Tracker(cfg, source.width, source.height)
         again = two_pass_source()
         try:
-            _track(first, again, (), max_frames, progress)
+            _track(first, again, (), max_frames, progress, view=view)
         finally:
             again.close()
         log.info(
@@ -185,14 +163,14 @@ def run(
     if debug_video:
         from spintrack.debug_video import DebugCanvas, DebugVideoWriter
 
-        canvas = DebugCanvas(tracker, axes=debug_axes)
+        canvas = DebugCanvas(tracker, axes=cfg.output.debug_axes)
         writer = DebugVideoWriter(
             debug_video, canvas.size, source.fps, cfg.output.debug_codec
         )
         debug = (canvas, writer)
     try:
         stats, per_frame = _track(
-            tracker, source, recorders, max_frames, progress, debug
+            tracker, source, recorders, max_frames, progress, debug, view
         )
     finally:
         if debug is not None:
@@ -214,17 +192,23 @@ def run(
         )
         checks, stats.geometry = _checks(tracker, first)
         stats.quality.checks.update(checks)
+        tracked = np.asarray(w_cam)[np.asarray(ok, dtype=bool)]
+        walking = walking_check(tracked @ tracker.cam_to_lab.T, cfg.camera.position_deg)
+        if walking is not None:
+            stats.quality.checks["walking"] = walking
     if save_map:
         tracker.save_map(save_map)
     return stats
 
 
-def _track(tracker, source, recorders, max_frames, progress, debug=None):
+def _track(tracker, source, recorders, max_frames, progress, debug=None, view=None):
     """The frame loop of `run`; returns its stats and per-frame solver rows."""
     total = getattr(source, "n_frames", None)
     if max_frames is not None:
         total = max_frames if total is None else min(total, max_frames)
     stats = RunStats(total=total)
+    if view is not None:
+        view.attach(tracker, stats)
     # (frame, ts, tracked, cost, iterations, solve source, camera-frame increment)
     per_frame: list[tuple] = []
     t0 = reported = time.perf_counter()
@@ -261,6 +245,10 @@ def _track(tracker, source, recorders, max_frames, progress, debug=None):
                 canvas, writer = debug
                 fps = stats.frames / max(now - t0, 1e-9)
                 writer.write(canvas.render(frame.image, result, fps))
+            if view is not None:
+                view.frame(frame, result)
+                if view.stop_requested:
+                    break
             if progress is not None and now - reported >= PROGRESS_S:
                 reported = now
                 stats.wall_s = now - t0
@@ -343,14 +331,13 @@ def track(
     """Track the recording a config describes and return its records.
 
     `config` is a config file, a `Config` or None (the defaults); `src` overrides its
-    `video`. The run is that of `spintrack run`, with the same refusals and ball
-    detection, minus the files.
+    `video`. The run is that of `spintrack run`, with the same refusals and the same
+    geometry found in the recording, minus the files.
     """
-    cfg, spec = open_config(config, src, two_pass)
-    if not cfg.ball.rim:
-        from spintrack.autofit import prepare_config
+    from spintrack.autofit import complete_config
 
-        prepare_config(cfg, spec)
+    cfg, spec = open_config(config, src, two_pass=two_pass)
+    complete_config(cfg, spec)
     rows = _Rows()
     source = open_source(spec)
     try:

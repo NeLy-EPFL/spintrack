@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spintrack.calibrate.sliders import camera_to_lab_from_angles
+from spintrack.calibrate.sliders import FICTRAC_TO_ANIMAL, camera_to_lab_from_angles
 from spintrack.camera import source_camera
 from spintrack.geometry import matrix_to_rotvec
 from spintrack.sphere import ball_outline
@@ -90,7 +90,9 @@ class SceneSpec:
         return c / np.linalg.norm(c)
 
     def cam_to_lab(self) -> np.ndarray:
-        return camera_to_lab_from_angles(
+        """Camera to lab in FicTrac's frame (x forward, y right, z down), as the
+        motion is generated and FicTrac's `c2a_r` written."""
+        return FICTRAC_TO_ANIMAL @ camera_to_lab_from_angles(
             self.c2a_elevation_deg, self.c2a_azimuth_deg, self.c2a_twist_deg
         )
 

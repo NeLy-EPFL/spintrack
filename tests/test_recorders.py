@@ -3,7 +3,7 @@ import socket
 import numpy as np
 
 from spintrack.io.recorders import STREAM_PREFIX, UdpRecorder
-from spintrack.io.records import N_COLUMNS, parse_row
+from spintrack.io.records import N_COLUMNS, parse_row, to_fictrac
 
 ROW = np.arange(N_COLUMNS, dtype=np.float64)
 
@@ -18,4 +18,5 @@ def test_udp_recorder_sends_prefixed_line():
     msg = server.recv(4096).decode()
     server.close()
     assert msg.startswith(STREAM_PREFIX) and msg.endswith("\n")
-    assert np.allclose(parse_row(msg[len(STREAM_PREFIX) :]), ROW)
+    # In FicTrac's frame, for FicTrac's clients.
+    assert np.allclose(parse_row(msg[len(STREAM_PREFIX) :]), to_fictrac(ROW))

@@ -72,13 +72,35 @@ class VideoSource:
         rate = stream.average_rate
         self.fps = float(rate) if rate else -1.0
         self.n_frames = stream.frames or None  # from the container; None if it says 0
+        self._stream = stream
         self._start = stream.start_time or 0
         self._tick = stream.time_base.numerator / stream.time_base.denominator
         self._frames = self._container.decode(stream)
         self._index = 0
+        self._pending = None  # a frame `seek` decoded and `read` has not returned
+
+    def seek(self, index: int) -> None:
+        """Make frame `index` the next `read`: from the keyframe before, decoding on.
+
+        Frames are numbered from their timestamps, which assumes a constant rate.
+        """
+        if self.fps <= 0:
+            raise OSError("cannot seek in a video with no frame rate")
+        target = self._start + round(index / self.fps / self._tick)
+        self._container.seek(target, stream=self._stream, backward=True)
+        self._frames = self._container.decode(self._stream)
+        self._pending = None
+        for frame in self._frames:
+            at = round((frame.pts - self._start) * self._tick * self.fps)
+            if at >= index:
+                self._pending = frame
+                break
+        self._index = index
 
     def read(self) -> Frame | None:
-        frame = next(self._frames, None)
+        frame, self._pending = self._pending, None
+        if frame is None:
+            frame = next(self._frames, None)
         if frame is None:
             return None
         # Computed as OpenCV's `CAP_PROP_POS_MSEC` is, to the last bit.

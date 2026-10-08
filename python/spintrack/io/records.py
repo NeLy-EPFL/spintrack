@@ -9,7 +9,12 @@ and side motion (19-20); timestamp in ms (21); sequence counter (22); delta time
 
 The line is what FicTrac writes to its `.dat` file and streams: fields separated by
 `", "`, floats with 14 significant digits, `frame` and `seq` as integers. spintrack
-streams it (`spintrack.io.recorders`); `read_dat` loads a file FicTrac wrote.
+streams it (`spintrack.io.recorders`), in FicTrac's frame (`to_fictrac`); `read_dat`
+loads a file FicTrac wrote.
+
+spintrack's lab frame is x forward, y left, z up; FicTrac's is x forward, y right, z
+down. The lab rotations (5-7, 11-13) differ in the sign of y and z, and the path (15-17,
+20) is mirrored: y, the heading, the direction and the side motion change sign.
 """
 
 from __future__ import annotations
@@ -49,6 +54,15 @@ COLUMNS = (
 N_COLUMNS = len(COLUMNS)
 INT_COLUMNS = frozenset({0, 22})
 DELIMITER = ", "
+
+
+def to_fictrac(values: Sequence[float]) -> np.ndarray:
+    """A record in FicTrac's frame: what FicTrac would have written for the frame."""
+    out = np.array(values, dtype=np.float64)
+    out[[6, 7, 12, 13, 15, 20]] *= -1.0
+    angles = (-out[[16, 17]]) % (2.0 * np.pi) + 0.0  # + 0.0: no "-0"
+    out[[16, 17]] = np.where(angles >= 2.0 * np.pi, 0.0, angles)
+    return out
 
 
 def format_row(values: Sequence[float]) -> str:

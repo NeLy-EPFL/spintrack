@@ -1,12 +1,14 @@
-"""Where the ball is, from a promptable segmentation model (SAM 3).
+"""Where the ball and the animal are, from a promptable segmentation model (SAM 3).
 
 The model only proposes the ball's silhouette; `spintrack.detect.ball_from_masks`
-measures the rim on the image itself. The checkpoint (3.4 GB) downloads on first use.
+measures the rim on the image itself. The animal's silhouette places the camera
+(`spintrack.autofit.place_camera`). The checkpoint (3.4 GB) downloads on first use.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 
 import numpy as np
@@ -24,6 +26,9 @@ SOURCES = (
 # Masks of both prompts are pooled: on the lab test set "ball" alone missed one rig's
 # ball that "sphere" found, and neither proposed a ball where there was none.
 PROMPTS = ("ball", "sphere")
+# The animal, to place the camera by: on the lab's rigs "insect" finds the fly at scores
+# of 0.78-0.94, and "fly" at 0.11-0.32.
+ANIMAL_PROMPTS = ("insect",)
 MIN_SCORE = 0.1
 MAX_MASKS = 5  # per prompt
 
@@ -59,22 +64,36 @@ def _model():
     raise SegmenterUnavailable("cannot load SAM 3: " + "; ".join(errors))
 
 
-def ball_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Candidate ball masks in a 2-D uint8 image, as `(masks, scores)`, best first.
+_encoded: dict = {}  # the last image's key and encoding
 
-    `masks` is `(k, h, w)` uint8. The image is encoded once and every prompt decoded
-    against it.
-    """
+
+def _vision(image: np.ndarray):
+    """The model's encoding of a 2-D uint8 image, kept for the next prompt on it."""
     import torch
 
-    model, processor, device, dtype = _model()
+    key = (image.shape, hashlib.blake2b(image.tobytes(), digest_size=16).digest())
+    if _encoded.get("key") != key:
+        model, processor, device, dtype = _model()
+        rgb = np.repeat(np.asarray(image, np.uint8)[..., None], 3, axis=2)
+        pixels = processor(images=rgb, return_tensors="pt").pixel_values
+        with torch.inference_mode():
+            vision = model.get_vision_features(pixels.to(device, dtype))
+        _encoded.clear()
+        _encoded.update(key=key, vision=vision)
+    return _encoded["vision"]
+
+
+def _masks(image: np.ndarray, prompts) -> tuple[np.ndarray, np.ndarray]:
+    """The masks the prompts find in `image`, pooled, best first: `(k, h, w)` uint8 and
+    their scores. The image is encoded once and every prompt decoded against it."""
+    import torch
+
+    model, processor, device, _ = _model()
     h, w = image.shape
-    rgb = np.repeat(np.asarray(image, np.uint8)[..., None], 3, axis=2)
-    pixels = processor(images=rgb, return_tensors="pt").pixel_values
+    vision = _vision(image)
     masks, scores = [], []
     with torch.inference_mode():
-        vision = model.get_vision_features(pixels.to(device, dtype))
-        for prompt in PROMPTS:
+        for prompt in prompts:
             text = processor(text=prompt, return_tensors="pt").to(device)
             out = model(
                 vision_embeds=vision,
@@ -91,3 +110,19 @@ def ball_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if not masks:
         return np.zeros((0, h, w), np.uint8), np.zeros(0)
     return np.stack(masks)[order], np.asarray(scores)[order]
+
+
+def ball_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Candidate ball masks in a 2-D uint8 image, as `(masks, scores)`, best first.
+
+    `masks` is `(k, h, w)` uint8.
+    """
+    return _masks(image, PROMPTS)
+
+
+def animal_mask(image: np.ndarray) -> tuple[np.ndarray, float] | None:
+    """The animal on the ball in a 2-D uint8 image: its mask and score, or None."""
+    masks, scores = _masks(image, ANIMAL_PROMPTS)
+    if not len(masks):
+        return None
+    return masks[0].astype(bool), float(scores[0])

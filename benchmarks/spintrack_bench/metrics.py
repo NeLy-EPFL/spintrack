@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from spintrack.calibrate.sliders import FICTRAC_TO_ANIMAL
 from spintrack.geometry import rotvec_to_matrix
 from spintrack.path import integrate_path
 
@@ -165,6 +166,8 @@ def summarize(
     fps: float,
     fail_deg: float = 5.0,
 ) -> Summary:
+    # The scenes' lab frame is FicTrac's; spintrack's path integrates its own.
+    cam_to_lab = FICTRAC_TO_ANIMAL @ np.asarray(cam_to_lab, dtype=np.float64)
     n = len(true_cam)
     errors = frame_errors_deg(est_cam, true_cam)
     present = np.isfinite(errors)

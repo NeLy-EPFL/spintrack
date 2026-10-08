@@ -1,9 +1,10 @@
 """Record sinks: the `Recorder` protocol, and the live ones (UDP/TCP sockets, serial
 port, terminal); `spintrack.io.parquet.ParquetWriter` is the file one.
 
-The live sinks send each record as FicTrac's 25-field line
-(`spintrack.io.records.format_row`). Socket and serial sinks prefix it with `FT, ` and
-end it with a newline, which is what existing FicTrac clients parse.
+The live sinks send each record as FicTrac's 25-field line in FicTrac's frame
+(`spintrack.io.records.to_fictrac`, `format_row`), so that existing FicTrac clients read
+the signs they expect. Socket and serial sinks prefix it with `FT, ` and end it with a
+newline, which is what those clients parse.
 """
 
 from __future__ import annotations
@@ -13,9 +14,13 @@ import sys
 from collections.abc import Sequence
 from typing import Protocol
 
-from spintrack.io.records import format_row
+from spintrack.io.records import format_row, to_fictrac
 
 STREAM_PREFIX = "FT, "
+
+
+def _line(values: Sequence[float]) -> str:
+    return format_row(to_fictrac(values))
 
 
 class Recorder(Protocol):
@@ -29,7 +34,7 @@ class TerminalRecorder:
         self._stream = stream or sys.stdout
 
     def write(self, values: Sequence[float]) -> None:
-        self._stream.write(format_row(values) + "\n")
+        self._stream.write(_line(values) + "\n")
 
     def close(self) -> None:
         self._stream.flush()
@@ -43,9 +48,7 @@ class UdpRecorder:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def write(self, values: Sequence[float]) -> None:
-        self._sock.sendto(
-            (STREAM_PREFIX + format_row(values) + "\n").encode(), self._addr
-        )
+        self._sock.sendto((STREAM_PREFIX + _line(values) + "\n").encode(), self._addr)
 
     def close(self) -> None:
         self._sock.close()
@@ -59,7 +62,7 @@ class TcpRecorder:
         self._sock.settimeout(None)
 
     def write(self, values: Sequence[float]) -> None:
-        self._sock.sendall((STREAM_PREFIX + format_row(values) + "\n").encode())
+        self._sock.sendall((STREAM_PREFIX + _line(values) + "\n").encode())
 
     def close(self) -> None:
         self._sock.close()
@@ -78,7 +81,7 @@ class SerialRecorder:
         self._port = serial.Serial(port, int(baud))
 
     def write(self, values: Sequence[float]) -> None:
-        self._port.write((STREAM_PREFIX + format_row(values) + "\n").encode())
+        self._port.write((STREAM_PREFIX + _line(values) + "\n").encode())
 
     def close(self) -> None:
         self._port.close()

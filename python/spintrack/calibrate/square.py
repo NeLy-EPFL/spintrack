@@ -1,11 +1,16 @@
 """Camera-to-animal rotation from a calibration square drawn in an animal plane.
 
-The user marks the four corners (top-left, top-right, bottom-right, bottom-left as seen
-in the image) of a square lying in one of the animal's coordinate planes. Solving the
-square's pose gives the rotation between camera and animal frames; the square's true
-size is irrelevant for the rotation.
+The user clicks the four corners of a square lying in one of the animal's coordinate
+planes, in the order FicTrac's configGui asks for, which names them in the animal's
+terms (see `SQUARE_CORNERS`) and so holds from any side and image orientation. The
+order is what tells the sides apart: corners clicked in mirrored order fit just as
+well, by the square turned over, and the rotation comes out a half turn off. Solving
+the square's pose gives the rotation between camera and animal frames; the square's
+true size is irrelevant for the rotation.
 
-Animal frame (FicTrac convention): x forward, y right, z down.
+`SQUARE_CORNERS` and `square_pose` are in FicTrac's animal frame (x forward, y right,
+z down), as FicTrac's own corners are; `camera_to_lab_from_square` converts to
+spintrack's (x forward, y left, z up).
 """
 
 from __future__ import annotations
@@ -13,11 +18,13 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from spintrack.calibrate.sliders import FICTRAC_TO_ANIMAL
 from spintrack.camera import Camera
 from spintrack.geometry import normalize, rotvec_to_matrix
 
-# Unit-square corners in animal coordinates, order TL, TR, BR, BL, per plane. The first
-# two corners span the plane's first axis, the last coordinate pairs the other axis.
+# FicTrac's unit-square corners (its XY_CNRS, YZ_CNRS, XZ_CNRS) in click order: xy
+# front-left, front-right, back-right, back-left; yz left-up, right-up, right-down,
+# left-down; xz front-up, back-up, back-down, front-down.
 SQUARE_CORNERS: dict[str, np.ndarray] = {
     "xy": np.array(
         [[0.5, -0.5, 0.0], [0.5, 0.5, 0.0], [-0.5, 0.5, 0.0], [-0.5, -0.5, 0.0]]
@@ -34,10 +41,11 @@ SQUARE_CORNERS: dict[str, np.ndarray] = {
 def square_pose(
     corners_xy, camera: Camera, plane: str
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Pose `(R, t)` of the square with `camera_point = R @ animal_point + t`.
+    """Pose `(R, t)` of the square with `camera_point = R @ animal_point + t`, the
+    animal point in FicTrac's frame.
 
     `plane` is `"xy"`, `"yz"` or `"xz"`.
-    Initialized with a planar PnP solve on normalized coordinates (so any camera model
+    Initialized with a PnP solve (SQPnP) on normalized coordinates (so any camera model
     works), then refined by Gauss-Newton on the direction residuals.
     """
     if plane not in SQUARE_CORNERS:
@@ -50,11 +58,13 @@ def square_pose(
     if np.any(rays[:, 2] <= 0):
         raise ValueError("square corners must be in front of the camera")
     normalized = (rays[:, :2] / rays[:, 2:3]).reshape(-1, 1, 2)
+    # Not IPPE: its rotation vector is garbage at an exact half turn, the pose of an
+    # untwisted camera at the animal's left or of one straight below it.
     ok, rvec, tvec = cv2.solvePnP(
-        obj, normalized, np.eye(3), None, flags=cv2.SOLVEPNP_IPPE
+        obj, normalized, np.eye(3), None, flags=cv2.SOLVEPNP_SQPNP
     )
     if not ok:
-        raise RuntimeError("planar pose initialisation failed")
+        raise RuntimeError("planar pose initialization failed")
     params = np.concatenate([rvec.ravel(), tvec.ravel()])
 
     def residuals(p: np.ndarray) -> np.ndarray:
@@ -73,3 +83,10 @@ def square_pose(
         if np.linalg.norm(delta) < 1e-12:
             break
     return rotvec_to_matrix(params[:3]), params[3:]
+
+
+def camera_to_lab_from_square(corners_xy, camera: Camera, plane: str) -> np.ndarray:
+    """Rotation matrix `R` with `v_lab = R @ v_camera` in spintrack's animal frame, the
+    matrix of `camera.rotation`, from a square's corners as `square_pose` takes them."""
+    R, _ = square_pose(corners_xy, camera, plane)
+    return FICTRAC_TO_ANIMAL @ R.T

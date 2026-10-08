@@ -20,9 +20,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from spintrack.geometry import normalize
 from spintrack.maps import NET_LABELS, NET_SHAPE
-from spintrack.sphere import ball_outline
+from spintrack.scene import TRAIL_FRAMES, Scene
 from spintrack.tracker import FrameResult, Tracker
 
 log = logging.getLogger(__name__)
@@ -36,12 +35,8 @@ PATH_BGR = (0, 255, 255)
 HEAD_BGR = (0, 0, 255)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
-# The animal's trail over the ball: how many frames of it to keep, as FicTrac's
-# DRAW_SPHERE_HIST_LENGTH.
-TRAIL_FRAMES = 1024
-# Draw the trail only where the surface faces the camera by more than this cosine: near
-# the limb it is so foreshortened that any trail there hugs the outline.
-TRAIL_LIMB_COS = 0.1
+__all__ = ["TRAIL_FRAMES", "DebugCanvas", "DebugVideoWriter"]
+
 # Trail color by age, oldest first: dark blue to cyan.
 TRAIL_BGR = [
     tuple(bgr)
@@ -99,68 +94,30 @@ class DebugCanvas:
         self.main_w = round(tracker.width * self.scale)
         self.tile = height // 5
         self.width = self.main_w + 4 * self.tile
-        self.sin_half = np.sin(tracker.half_angle)
-        # The animal rides on top of the ball, so the surface point it touches is the
-        # lab frame's up in camera coordinates.
-        self.up_cam = -tracker.cam_to_lab[2]
         self.ignore = [
             np.round(np.reshape(poly, (-1, 2)) * self.scale).astype(np.int32)
             for poly in tracker.cfg.mask.ignore
         ]
-        self._geometry_version = -1
-        self._update_outline()
-        self._path = np.empty((1024, 2), np.float64)  # grown by doubling
-        self._n_path = 0
-        self.path_bbox = [-0.1, 0.1, -0.1, 0.1]
-        # Where the animal has touched the ball, in its body frame, oldest first.
-        self._trail = np.empty((TRAIL_FRAMES, 3), np.float64)
-        self._n_trail = 0
-        self._R_cam = None  # last tracked orientation, so a dropped frame still draws
+        self.scene = Scene(tracker)
+        self._outline_version = None
 
     @property
     def size(self) -> tuple[int, int]:
         return self.width, self.height
 
-    @property
-    def path_pts(self) -> np.ndarray:
-        """The integrated path so far, as an (n, 2) array of (x, y)."""
-        return self._path[: self._n_path]
-
-    def _append_path(self, x: float, y: float) -> None:
-        if self._n_path == len(self._path):
-            self._path = np.resize(self._path, (2 * len(self._path), 2))
-        self._path[self._n_path] = (x, y)
-        self._n_path += 1
-        b = self.path_bbox
-        b[:] = min(b[0], x), max(b[1], x), min(b[2], y), max(b[3], y)
-
-    def _append_trail(self, contact_body: np.ndarray) -> None:
-        """Keep the last `TRAIL_FRAMES` contact points, oldest first."""
-        if self._n_trail == TRAIL_FRAMES:
-            self._trail[:-1] = self._trail[1:]
-            self._n_trail -= 1
-        self._trail[self._n_trail] = contact_body
-        self._n_trail += 1
-
-    def _update_outline(self) -> None:
-        """Re-project the ball outline; the window may have moved onto a moved ball."""
-        tr, scale = self.tracker, self.scale
-        self._geometry_version = tr.geometry_version
-        outline = ball_outline(tr.camera, tr.center, tr.half_angle, 90) * scale
-        self.outline = np.round(outline).astype(np.int32)
-        cx, cy, _ = tr.camera.project(tr.center)
-        self.center_px = (int(cx * scale), int(cy * scale))
+    def trail_points(self) -> tuple[np.ndarray, np.ndarray]:
+        """The scene's trail in main-panel coordinates, and which points are seen."""
+        pts, seen = self.scene.trail_points()
+        return pts * self.scale, seen
 
     def render(
         self, gray: np.ndarray, result: FrameResult | None, fps: float | None = None
     ) -> np.ndarray:
-        tr, t = self.tracker, self.tile
-        if tr.geometry_version != self._geometry_version:
-            self._update_outline()
-        if result is not None:
-            self._R_cam = result.R_cam
-            self._append_trail(result.R_cam.T @ self.up_cam)
-            self._append_path(float(result.values[14]), float(result.values[15]))
+        t, scene = self.tile, self.scene
+        scene.update(result)
+        if self._outline_version != scene.geometry_version:
+            self._outline_version = scene.geometry_version
+            self.outline = np.round(scene.outline * self.scale).astype(np.int32)
         main = cv2.resize(
             gray, (self.main_w, self.height), interpolation=cv2.INTER_AREA
         )
@@ -181,51 +138,32 @@ class DebugCanvas:
 
     def _draw_axes(self, main: np.ndarray, result: FrameResult | None) -> None:
         """The ball's axes (arrows, turning with it) and the lab axes (thin, fixed)."""
-        tr, c = self.tracker, self.center_px
+        axes, scale = self.scene.axes(), self.scale
+        c = tuple(round(v * scale) for v in self.scene.center_px)
 
-        def tip(axis_cam):
-            p = normalize(tr.center + 0.8 * self.sin_half * axis_cam)
-            x, y, _ = tr.camera.project(p)
-            return int(x * self.scale), int(y * self.scale)
+        def px(tip):
+            return round(tip[0] * scale), round(tip[1] * scale)
 
         if result is not None:
-            for i, color in enumerate(AXIS_BGR):
-                end = tip(result.R_cam[:, i])
-                cv2.arrowedLine(main, c, end, color, 2, cv2.LINE_AA, tipLength=0.2)
-        for i, color in enumerate(AXIS_BGR):
-            end = tip(tr.cam_to_lab[i])
+            for tip, color in zip(axes["ball"], AXIS_BGR, strict=True):
+                cv2.arrowedLine(main, c, px(tip), color, 2, cv2.LINE_AA, tipLength=0.2)
+        for i, (tip, color) in enumerate(zip(axes["lab"], AXIS_BGR, strict=True)):
+            end = px(tip)
             cv2.line(main, c, end, color, 1, cv2.LINE_AA)
             cv2.putText(main, "xyz"[i], (end[0] + 3, end[1] + 3), FONT, 0.45, color, 1)
 
-    def trail_points(self) -> tuple[np.ndarray, np.ndarray]:
-        """Where the animal's past contact points sit now: main-panel coordinates
-        (n, 2), oldest first, and which of them the camera can see."""
-        tr = self.tracker
-        # Each stored point is body-fixed, so the ball's current orientation says where
-        # the surface carried it.
-        contact = self._trail[: self._n_trail] @ self._R_cam.T
-        seen = contact @ tr.center < -self.sin_half - TRAIL_LIMB_COS
-        x, y, inside = tr.camera.project(tr.center + self.sin_half * contact)
-        seen &= inside
-        pts = np.stack([np.where(seen, x, 0.0), np.where(seen, y, 0.0)], axis=1)
-        return pts * self.scale, seen
-
     def _draw_trail(self, main: np.ndarray) -> None:
-        """Draw the trail the animal has walked over the ball, as FicTrac does.
-
-        The animal stays put while the ball turns under it, so the surface point it
-        touched at frame `i` is now `R_cam @ R_cam(i).T @ up`: the animal's path,
-        inverted, painted on the ball. Only the near side is drawn, brighter with
-        recency.
-        """
-        if self._R_cam is None or self._n_trail < 2:
+        """Draw the trail the animal has walked over the ball, as FicTrac does: only
+        the near side, brighter with recency (`Scene.trail_points`)."""
+        n = self.scene.n_trail
+        if self.scene.R_cam is None or n < 2:
             return
         pts, seen = self.trail_points()
         pts = pts.astype(np.int32)
         bands = len(TRAIL_BGR)
         for band in range(bands):
-            lo = band * self._n_trail // bands
-            hi = (band + 1) * self._n_trail // bands + 1  # overlap, to join the bands
+            lo = band * n // bands
+            hi = (band + 1) * n // bands + 1  # overlap, to join the bands
             edges = np.flatnonzero(np.diff(np.r_[False, seen[lo:hi], False]))
             runs = [
                 pts[lo + i : lo + j]
@@ -247,25 +185,26 @@ class DebugCanvas:
     def _draw_path(
         self, panel: np.ndarray, result: FrameResult | None, margin: int = 12
     ) -> None:
-        """The fictive path (x north/up, y east/right), scaled to fit the panel."""
+        """The fictive path (x up, y left), scaled to fit the panel."""
         h, w = panel.shape[:2]
-        if self._n_path >= 2 and min(h, w) >= 60:
-            b = self.path_bbox
+        path = self.scene.path_pts
+        if len(path) >= 2 and min(h, w) >= 60:
+            b = self.scene.path_bbox
             span = max(b[1] - b[0], b[3] - b[2], 1e-6)
             size = min(h, w) - 2 * margin
-            path = self._path[max(0, self._n_path - 20000) : self._n_path]
+            path = path[-20000:]
             pts = np.empty((len(path), 2), np.int32)
             # Centered: the bounding box's shorter side gets the slack.
             x0 = (w - (b[3] - b[2]) / span * size) / 2
             y0 = (h + (b[1] - b[0]) / span * size) / 2
-            pts[:, 0] = x0 + (path[:, 1] - b[2]) / span * size
+            pts[:, 0] = x0 + (b[3] - path[:, 1]) / span * size
             pts[:, 1] = y0 - (path[:, 0] - b[0]) / span * size
             cv2.polylines(panel, [pts], False, PATH_BGR, 1, cv2.LINE_AA)
             head = tuple(int(v) for v in pts[-1])
             cv2.circle(panel, head, 3, HEAD_BGR, -1, cv2.LINE_AA)
             if result is not None:
                 hd = result.heading
-                tip = (int(head[0] + 14 * np.sin(hd)), int(head[1] - 14 * np.cos(hd)))
+                tip = (int(head[0] - 14 * np.sin(hd)), int(head[1] - 14 * np.cos(hd)))
                 cv2.arrowedLine(panel, head, tip, HEAD_BGR, 1, cv2.LINE_AA, 0, 0.4)
             text = f"{span:.2g} r"
             (tw, _), _ = cv2.getTextSize(text, FONT, 0.4, 1)

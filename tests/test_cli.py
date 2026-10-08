@@ -1,6 +1,5 @@
 """The command line: a synthetic ball with known rotation, and the committed clip."""
 
-import hashlib
 import logging
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from spintrack.cli import main
 from spintrack.config import Config
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
 from spintrack.io.records import COLUMNS
+from spintrack.pipeline import open_config
 
 W, H = 160, 120
 CENTER = normalize(np.array([0.0, 0.0, 1.0]))
@@ -44,7 +44,8 @@ def test_cli_run_measures_a_known_rotation(tmp_path):
     cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
     cfg.save(tmp_path / "config.toml")
     out = tmp_path / "out"
-    assert main(["run", str(tmp_path / "config.toml"), "--out", str(out)]) == 0
+    argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--no-preview"]
+    assert main(argv) == 0
     dat = pl.read_parquet(out / "tracks.parquet").to_numpy()
     assert dat.shape == (n, len(COLUMNS))
     assert list(dat[:, 0].astype(int)) == list(range(n))
@@ -66,39 +67,30 @@ def test_cli_run_measures_a_known_rotation(tmp_path):
     assert np.isclose(dat[-1, 16], (-dat[1:, 7].sum()) % (2 * np.pi), atol=1e-6)
 
 
-def test_cli_run_refuses_a_config_or_video_without_camera_position(tmp_path, caplog):
-    """Without one, the lab-frame columns would silently be camera-frame values."""
-    cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
-    cfg.camera.rotation = None
-    cfg.save(tmp_path / "config.toml")
-    out = tmp_path / "out"
-    assert main(["run", str(tmp_path / "config.toml"), "--out", str(out)]) == 2
-    # A video alone has no config at all; the refusal says what to pass.
-    video = tmp_path / "ball.mp4"
-    video.symlink_to(SAMPLE.parent / "sample.mp4")
-    with caplog.at_level(logging.ERROR, logger="spintrack"):
-        assert main([str(video)]) == 2
-    assert "--config CONFIG" in caplog.records[-1].getMessage()
-    assert {p.name for p in tmp_path.iterdir()} == {"config.toml", "ball.mp4"}
-
-
-def test_cli_calibrate_camera_position_replaces_a_rotation(tmp_path):
-    """The position goes in place of the square's rotation, under the file's notes."""
+def test_overrides_change_the_config_and_name_a_wrong_key(tmp_path, caplog):
+    """KEY=VALUE arguments go over the config; a typo is an error with a suggestion."""
     path = tmp_path / "config.toml"
     path.write_text(
-        '# rig 2\nvideo = "ball.mp4"\n\n[camera]\nvfov_deg = 40\nrotation = [0, 1, 0]\n'
+        'video = "ball.mp4"\n\n[camera]\nvfov_deg = 40\nrotation = [0, 1, 0]\n'
     )
-    argv = ["calibrate", str(path), "--camera-position", "0", "180", "0"]
-    assert main(argv) == 0
-    written = Config.load(path)
-    assert written.camera.position_deg == (0.0, 180.0, 0.0)
-    assert written.camera.rotation is None
-    assert written.video == str(tmp_path / "ball.mp4")
-    assert path.read_text().startswith("# rig 2\n")
+    cfg, _ = open_config(
+        path,
+        overrides=["camera.position_deg=0,180,0", "tracking.window_px=80"],
+    )
+    # The position replaces the config's rotation, its alternative.
+    assert cfg.camera.position_deg == (0.0, 180.0, 0.0) and cfg.camera.rotation is None
+    assert cfg.tracking.window_px == 80 and cfg.camera.vfov_deg == 40
+    cfg, _ = open_config(path, overrides=["output.name=2024", "ball.rim=none"])
+    assert cfg.output.name == "2024" and cfg.ball.rim == []
+    with caplog.at_level(logging.ERROR, logger="spintrack"):
+        argv = [str(tmp_path / "ball.mp4"), "tracking.windw_px=80", "--no-preview"]
+        assert main(argv) == 2
+    assert "did you mean tracking.window_px?" in caplog.records[-1].getMessage()
 
 
 def run_sample(out, *extra):
-    return main(["run", str(SAMPLE), "--max-frames", "40", "--out", str(out), *extra])
+    argv = ["run", str(SAMPLE), "--max-frames", "40", "--out", str(out), *extra]
+    return main([*argv, "--no-preview"])
 
 
 def test_run_names_its_outputs_and_keeps_them(tmp_path):
@@ -123,11 +115,11 @@ def test_run_names_its_outputs_and_keeps_them(tmp_path):
 
 def test_run_writes_the_config_it_ran(tmp_path):
     """config.toml holds the command line's changes, and running it repeats the run."""
-    assert run_sample(tmp_path / "a", "--camera-position", "30", "180", "0") == 0
+    assert run_sample(tmp_path / "a", "camera.position_deg=30,180,0") == 0
     written = Config.load(tmp_path / "a" / "config.toml")
     assert written.camera.position_deg == (30.0, 180.0, 0.0)
     assert written.video == str(SAMPLE.parent / "sample.mp4")
-    argv = ["--max-frames", "40", "--out", str(tmp_path / "b")]
+    argv = ["--max-frames", "40", "--out", str(tmp_path / "b"), "--no-preview"]
     assert main(["run", str(tmp_path / "a" / "config.toml"), *argv]) == 0
     a, b = (pl.read_parquet(tmp_path / x / "tracks.parquet") for x in "ab")
     assert a.drop("wall_ms").equals(b.drop("wall_ms"))
@@ -138,7 +130,7 @@ def test_run_writes_a_folder_next_to_the_video(tmp_path):
     for name in ("sample.mp4", "clip.mp4"):
         (tmp_path / name).symlink_to(SAMPLE.parent / "sample.mp4")
     # `spintrack VIDEO` is `spintrack run VIDEO`, here with the rig's config.
-    argv = ["--config", str(tmp_path / "config.toml"), "--max-frames", "20"]
+    argv = ["-c", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-preview"]
     assert main([str(tmp_path / "clip.mp4"), *argv]) == 0
     assert (tmp_path / "clip_spintrack" / "tracks.parquet").exists()
     # The folder's config names the video it ran, relative to the folder.
@@ -147,7 +139,8 @@ def test_run_writes_a_folder_next_to_the_video(tmp_path):
     # A config names the video in `video`, and the folder after `output.name` if set.
     with (tmp_path / "config.toml").open("a") as f:
         f.write('\n[output]\nname = "trial"\n')
-    assert main(["run", str(tmp_path / "config.toml"), "--max-frames", "20"]) == 0
+    argv = ["run", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-preview"]
+    assert main(argv) == 0
     assert pl.read_parquet(tmp_path / "trial_spintrack" / "tracks.parquet").height == 20
 
 
@@ -162,21 +155,15 @@ def test_track_returns_what_run_writes(tmp_path):
 
 
 def test_errors_are_one_line(tmp_path, caplog):
-    argv = ["run", str(tmp_path / "missing.mp4"), "--config", str(SAMPLE)]
+    argv = [
+        "run",
+        str(tmp_path / "missing.mp4"),
+        "--config",
+        str(SAMPLE),
+        "--no-preview",
+    ]
     with caplog.at_level(logging.ERROR, logger="spintrack"):
         assert main([*argv, "--out", str(tmp_path)]) == 2
     (record,) = caplog.records
     assert record.getMessage().startswith("error: ") and not record.exc_info
     assert not any(tmp_path.iterdir())
-
-
-def test_map_never_overwrites_its_input(tmp_path):
-    """A FicTrac template is a `.png` too, so the default output must not be it."""
-    rng = np.random.default_rng(0)
-    template = tmp_path / "template.png"
-    cv2.imwrite(str(template), rng.integers(0, 256, (60, 120), dtype=np.uint8))
-    digest = hashlib.md5(template.read_bytes()).hexdigest()
-    assert main(["map", str(template)]) == 0
-    assert (tmp_path / "template-render.png").exists()
-    assert main(["map", str(template), "--out", str(template)]) == 2
-    assert hashlib.md5(template.read_bytes()).hexdigest() == digest

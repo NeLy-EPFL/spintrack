@@ -1,12 +1,79 @@
 # User guide
 
-From a recorded clip to a tracked file, and how to tell whether to trust it. Coming from FicTrac, [fictrac.md](fictrac.md) translates a `config.txt`; the sections on the camera position and on masking still apply.
+From a recording to a tracked file, and how to tell whether to trust it. `spintrack run VIDEO` finds what it needs in the recording; when it gets something wrong, `spintrack gui VIDEO` fixes it while you watch, and saves a config that later runs start from. Coming from FicTrac, [fictrac.md](fictrac.md) translates a `config.txt`; the sections on the camera position and on masking still apply.
 
-## Set up a rig
+## Run
 
-### The config
+```bash
+spintrack run trial3.mp4 camera.azimuth_deg=180            # a camera behind the fly
+spintrack run session/*.mp4 -c rig.toml                     # a rig's config, many videos
+spintrack run trial3.mp4 -c rig.toml tracking.window_px=80  # one key changed for this run
+spintrack run trial3_spintrack/config.toml --out redo       # repeat a run
+```
 
-A config is a TOML file that describes a rig and, through `video`, a recording of it. `spintrack calibrate` writes the measured parts; the example's is:
+`spintrack VIDEO` is short for `spintrack run VIDEO`. Where the config (`-c`) leaves them out, a run finds in the recording:
+
+- **the ball**, with SAM 3 ([below](#how-the-ball-is-found));
+- **the field of view and the camera position** from a deeperfly calibration, when the video belongs to a deeperfly project ([below](#a-deeperfly-calibration));
+- otherwise **the field of view**, by tracking 1000 frames under a range of candidates and keeping the one that fits best, which takes 10-20 s;
+- and **the camera's elevation and twist**, from where the animal stands on the ball ([below](#the-camera-position)).
+
+The one thing a run cannot find is which side the camera films the animal from, its front or its back, so without a deeperfly project it asks for the azimuth: `camera.azimuth_deg=180` for a camera behind the animal, `0` in front, `90` at its right, `-90` at its left. FicTrac requires the same, as `c2a_r`. Put it in the rig's config to run many videos.
+
+The summary at the end says what was found and how, and the run's `config.toml` records it.
+
+Each video gets one folder, `NAME_spintrack` next to it unless `--out` names another (for one video), where NAME is the config's `output.name` or the video's name. It holds `tracks.parquet`, `summary.json`, `log.txt` and `config.toml` ([output.md](output.md)). That `config.toml` is the config as run, with the command line's changes and what the run found, so `spintrack run NAME_spintrack/config.toml --out OTHER`, with the run's `--two-pass` and `--max-frames` if it had them, tracks the same video the same way. A run will not replace an earlier run's files without `--overwrite`. When one of several videos fails, the others still run and the exit status is 2. `--max-frames N` stops early. `--save-map` adds `map.npz`, which `tracking.initial_map=PATH` starts a later run from (as it does a FicTrac sphere-map PNG).
+
+### The preview
+
+A run prints a link, `preview: http://127.0.0.1:8300/?token=...`. Open it to watch the run: the frame with the ball's outline, the animal's trail over the ball and the ignored regions (and the axes, on request), the tracking window, the fictive path, the surface map, the last 10 s of forward, side and turning speed and of the solver's cost, and the summary at the end. Its Stop ends the run as Ctrl-C does, with the records so far written. The page costs the run nothing until it is opened, and little after: it captures at most 12 frames a second, and only while a page asks. On a remote machine, forward the port first, as the line says (`ssh -L 8300:localhost:8300 HOST`). `--no-preview` serves nothing; `--port` picks the port.
+
+What to check, on the page or in the debug video:
+
+- the outline stays on the ball's rim, including when the ball moves in its holder;
+- the trail starts under the animal and rides with the texture rather than sliding across it;
+- the map's faces show sharp texture, not smears;
+- the lighting gain (the map's corner tile) shows the holder's shadow and smooth shading, never texture;
+- the path moves only when the animal walks.
+
+### Change the config on the command line
+
+`KEY=VALUE` arguments set config keys for one run, over the config's: `tracking.window_px=80`, `camera.position_deg=0,180,0`, `output.debug_video=true`, `tracking.initial_map=map.npz`. A value is read as TOML, a list may drop its brackets, and `none` restores the default (`ball.rim=none` finds the ball again even when the config has one). Setting `camera.position_deg` replaces a config's `camera.rotation`, and the other way around. A misspelled key is an error that names the key it most resembles. In zsh, quote a value with brackets: `'ball.rim=[[1, 2], [3, 4], [5, 6]]'`.
+
+### Two passes
+
+`--two-pass` maps the ball in a throwaway first pass, then tracks again from that map. The second pass starts with the whole ball mapped and the lighting field converged, and if the ball moved in its holder, its window follows a trajectory planned from the whole first pass, without the online follower's delay. It doubles the run time and changes the per-frame error on synthetic truth by under 1%, so use it when the ball moves in its holder or the first seconds matter.
+
+### The debug video
+
+`--debug-video` (or `output.debug_video=true`) writes `debug.mp4`: on the left the frame as the preview shows it, on the right the tracking window, the fictive path (scale bar in ball radii), the map unfolded as a dice around the face the camera sees, the lighting gain and the frame's numbers. `output.debug_axes=true` adds the ball's axes.
+
+### Live cameras and streaming
+
+`spintrack run 0 -c config.toml` opens camera 0 through OpenCV; outputs go to `camera_spintrack` in the current directory, or to `NAME_spintrack` for an `output.name`. A live camera cannot be looked at before tracking starts, so the config must describe the ball, the field of view and the camera position: run or open a short recording of the rig first and pass the config it writes. `--two-pass` is refused. For cameras OpenCV cannot open (Basler, FLIR, ...), feed the vendor SDK's frames to the `Tracker` loop in the README.
+
+Records stream in FicTrac's line format (`FT, ` and the 25 fields) with `--udp HOST:PORT`, `--tcp HOST:PORT`, `--serial PORT[:BAUD]` (install the `serial` extra) and `--print`. The config's `stream.udp` and `stream.serial` do what the flags do.
+
+## Fix it in the gui
+
+```bash
+spintrack gui trial3.mp4                # saves spintrack.toml next to the video
+spintrack gui trial3.mp4 -c rig.toml    # starts from rig.toml and saves to it
+```
+
+The gui opens the preview's page in a browser (with `--no-browser`, or without a display, it prints the link), finds what the config leaves out as a run does (without an azimuth, it asks which side the camera films from, and tracks as if from behind until told), and then tracks a clip of the video, 10 s from its start, over and over at its own speed. Every change restarts the clip, so its effect shows within seconds. The panel on the left changes:
+
+- **Ball**: drag the circle's center or edge, click points on the ball's edge, or have SAM 3 find it again.
+- **Camera position**: presets (behind, in front, at either side, above), sliders for the elevation, azimuth and twist, or the four corners of a calibration square, clicked in FicTrac's order, which names them in the animal's terms and so holds from any side (for the xy plane: front-left, front-right, back-right, back-left; the gui gives each plane's). Tick *axes* under the frame to check: x (red) points forward, y (green) to the animal's left, z (blue) up, and the trail starts under the animal.
+- **Field of view**: type it, or fit it again.
+- **Ignored regions**: click a polygon's corners over what moves but is not the ball ([below](#mask-the-animal)).
+- **Tracking**: the parameters of the config's `[tracking]`, each with its default a click away.
+
+Under the frame, pick the clip's start and length and the playback speed; Space pauses and `.` steps a paused clip by a frame. **Save** writes the config, to `-c`'s file or to `spintrack.toml` next to the video, keeping the comments at the file's top, and shows the command that uses it: `spintrack run VIDEO... -c spintrack.toml`. **Track the whole video** saves, then runs as `spintrack run` would, on the same page.
+
+## The config
+
+A config is a TOML file that describes a rig and, through `video`, a recording of it. Every key is optional. The example's is:
 
 ```toml
 video = "sample.mp4"
@@ -29,12 +96,15 @@ Every key, with its default where it has one:
 | key | default | meaning |
 |---|---|---|
 | `video` | | the video, relative to the config, or a camera index (a number) |
-| `camera.vfov_deg` | | the vertical field of view in degrees; `calibrate --auto` fits it when missing |
+| `camera.vfov_deg` | fitted | the vertical field of view in degrees |
 | `camera.fisheye` | `false` | an equidistant (f-theta) lens rather than a pinhole |
 | `camera.fps` | | the frame rate, for a source that does not report one |
-| `camera.position_deg` | | where the camera sits around the animal: elevation, azimuth, twist ([below](#the-camera-position)); required to run |
+| `camera.position_deg` | found | where the camera sits around the animal: elevation, azimuth, twist ([below](#the-camera-position)) |
 | `camera.rotation` | | the camera-to-animal rotation vector instead, as a calibration square gives it |
-| `ball.rim` | | points on the ball's rim, `[x, y]` in image pixels; detected when missing |
+| `camera.calibration` | found next to the video | a deeperfly calibration, manifest or project folder, for the field of view and the camera position ([below](#a-deeperfly-calibration)) |
+| `camera.view` | from the manifest | the calibration's view that filmed the video |
+| `camera.azimuth_deg` | | which side the camera films from, when nothing above says: 180 behind the animal, 0 in front, 90 at its right, -90 at its left; required then |
+| `ball.rim` | detected | points on the ball's rim, `[x, y]` in image pixels |
 | `mask.ignore` | `[]` | polygons to ignore, each a list of `[x, y]` pixels ([below](#mask-the-animal)) |
 | `tracking.window_px` | `60` | the side of the square tracking window |
 | `tracking.global_search` | `false` | relocalize against the whole map when the local solve fails |
@@ -48,112 +118,92 @@ Every key, with its default where it has one:
 | `tracking.initial_illumination` | | start the lighting correction from a `map.npz` saved on the same rig, which helps short recordings |
 | `output.name` | the video's name | names the output folder, `NAME_spintrack` |
 | `output.debug_video` | `false` | also write `debug.mp4`, as `--debug-video` does |
+| `output.debug_axes` | `false` | draw the ball's axes in `debug.mp4` |
 | `output.debug_codec` | `"h264"` | its codec: `h264`, `hevc` or `vp9`, or OpenCV's `mp4v`, `xvid`, `mjpg` |
 | `stream.udp` | | stream the records to `HOST:PORT` over UDP |
 | `stream.serial` | | stream the records to `PORT[:BAUD]` |
 
-Paths are relative to the config. An unknown key is an error that names the key it most resembles, so a typo cannot pass for a default.
+Paths are relative to the config. An unknown key is an error that names the key it most resembles, so a typo cannot pass for a default. A config that describes the ball fixes it for every video it is used with; leave `ball.rim` out of a rig's config to find the ball in each video instead.
 
 Calibration now limits accuracy more than the code does. A 1% error in the ball's radius changes the rotation reported about axes in the image plane (forward walking, for a camera behind the animal) by about 2%. Where sideslip and turning are correlated (0.83-0.97 on the trials measured), 1 deg of error in the camera position changes turning by about 2%.
 
-### Find the ball
+### How the ball is found
 
-`calibrate --auto` creates the config if needed, detects the ball, fits `camera.vfov_deg` if it is missing, and with `--camera-position` writes the camera position (next section), all without a window:
-
-```console
-$ spintrack calibrate config.toml --src clip.mp4 --auto --camera-position 0 180 0
-...
-ball: detected at (390.4, 387.9) r 261.5 px, confidence 1.00
-vfov: 2.454 deg (fitted; not identifiable, the cost is flat over 1-6.02 deg, and the rotation scale does not depend on it)
-wrote config.toml
-```
-
-Detection uses the first 100 frames (`--frames`) and exits with status 2 rather than write a ball it is unsure of. The field of view is fitted only here (`run` refuses a config without one), so all runs of a rig share it. On a long lens the fit is flat, as above, and any value in the flat range gives the same rotations; if you know the field of view, write it. `run` detects the ball itself when the config has none, but writing it once keeps a rig's runs consistent.
-
-Detection looks at the per-pixel 90th percentile of those frames: as the ball turns, its dark markings pass over every pixel of it, so the high percentile shows the ball's plain surface while the static background stays as it is. Two detectors work on that image:
+Detection looks at the per-pixel 90th percentile of the first 100 frames: as the ball turns, its dark markings pass over every pixel of it, so the high percentile shows the ball's plain surface while the static background stays as it is. Two detectors work on that image:
 
 - By default, SAM 3 is asked for a "ball" and a "sphere". Its masks only say where the ball is: the rim is measured on the image in a narrow band around each mask, and a candidate is kept only if the rim confirms enough of the outline the mask shows, fits a circle tightly, stands out of the noise and agrees with the mask; among those, SAM's score decides. On 266 recordings from six rigs this found all 225 balls without a wrong one and refused all 41 recordings with no usable ball in view. It takes 0.3 s on a GPU or about 13 s on a CPU, once per recording. The checkpoint (3.4 GB) downloads on first use, without a Hugging Face login, from [an ungated copy](https://huggingface.co/tkclam/sam3) of Meta's [gated original](https://huggingface.co/facebook/sam3); its files are byte-identical to Meta's. Its [license](https://github.com/facebookresearch/sam3/blob/main/LICENSE) asks publications that use it to acknowledge SAM.
 - When the checkpoint cannot be loaded (offline before its first download), a classical detector thresholds the image instead. It is as precise when it answers, but on the same recordings it found only 108 of the 225 balls, refusing the rest.
 
-Both assume a ball lighter than its markings, as on every rig tested. A ball that moves in its holder during the first frames reads slightly large; the summary's radius line shows it.
-
-Without `--auto`, a window opens: `c` marks rim points, `i` draws an ignore polygon, `s` marks a calibration square's corners (written as `camera.rotation`), `a` sets the camera position with sliders, `w` writes the config. `calibrate` rewrites the whole file: the comments at its top are kept, those further down are not.
+Both assume a ball lighter than its markings, as on every rig tested, and a run refuses a recording where neither is sure rather than guess; place the ball in the gui then. A ball that moves in its holder during the first frames reads slightly large; the summary's radius line shows it. The field of view is fitted with the ball's outline held fixed. On a long lens the fit is flat and any value in the flat range gives the same rotations, which the summary says; if you know the field of view, write it.
 
 ### The camera position
 
-`--camera-position ELEV AZIM TWIST` writes where the camera sits, in degrees, as `camera.position_deg`. The azimuth runs around the animal's vertical axis: 0 in front, 90 at its right, 180 behind, -90 at its left. The elevation is the angle above the horizontal, and the twist rolls the camera about its optical axis. The camera is assumed to look at the ball's center, with image-down as close to animal-down as the geometry allows.
+`camera.position_deg` is where the camera sits, in degrees: elevation, azimuth, twist. The azimuth runs around the animal's vertical axis: 0 in front, 90 at its right, 180 behind, -90 at its left. The elevation is the angle above the horizontal, and the twist rolls the camera about its optical axis. The camera is assumed to look at the ball's center, with image-down as close to animal-down as the geometry allows.
 
 | camera | `position_deg` | the same as `rotation` | image right is the animal's |
 |---|---|---|---|
-| behind the animal, level with the ball | `[0, 180, 0]` | `[1.2092, 1.2092, 1.2092]` | right |
-| behind, 30 deg above | `[30, 180, 0]` | `[0.8155, 0.8155, 1.4125]` | right |
-| in front, level | `[0, 0, 0]` | `[1.2092, -1.2092, -1.2092]` | left |
-| at the animal's right, level | `[0, 90, 0]` | `[1.5708, 0, 0]` | front |
-| at the animal's left, level | `[0, -90, 0]` | `[0, -2.2214, -2.2214]` | back |
-| above, head toward the top of the image | `[90, 0, 180]` | `[0, 0, 1.5708]` | right |
-| above, head toward the bottom of the image | `[90, 0, 0]` | `[0, 0, -1.5708]` | left |
+| behind the animal, level with the ball | `[0, 180, 0]` | `[-1.2092, 1.2092, -1.2092]` | right |
+| behind, 30 deg above | `[30, 180, 0]` | `[-1.5835, 1.5835, -0.9142]` | right |
+| in front, level | `[0, 0, 0]` | `[-1.2092, -1.2092, 1.2092]` | left |
+| at the animal's right, level | `[0, 90, 0]` | `[-1.5708, 0, 0]` | front |
+| at the animal's left, level | `[0, -90, 0]` | `[0, -2.2214, 2.2214]` | back |
+| above, head toward the top of the image | `[90, 0, 180]` | `[2.2214, -2.2214, 0]` | right |
+| above, head toward the bottom of the image | `[90, 0, 0]` | `[-2.2214, -2.2214, 0]` | left |
 
-A config gives one of `position_deg` and `rotation`. `rotation = [0, 0, 0]` makes the camera frame the animal frame on purpose, and FicTrac's `c2a_r` works unchanged as `rotation`. `run --camera-position` overrides the config's for one run.
+A config gives one of `position_deg` and `rotation`, the camera-to-animal rotation vector in the animal frame (x forward, y left, z up). `rotation = [0, 0, 0]` makes the camera frame the animal frame on purpose. FicTrac's `c2a_r` is in its own frame (y right, z down); `spintrack.calibrate.sliders.rotation_from_fictrac` converts it.
+
+Without either, a deeperfly project the video belongs to places the camera ([below](#a-deeperfly-calibration)). Without one, `camera.azimuth_deg` says which side the camera films from, and SAM 3 is asked for the "insect" in the recording, whose silhouette gives the rest: the animal stands on the ball's top, so its direction from the ball's center gives the twist, and its distance the elevation (on the outline for a level camera, inside it, at the elevation's cosine, for a camera above). A silhouette cannot resolve small angles: on the outline the elevation is taken as 0, and a twist under 2 deg as none. A camera above the animal, or no animal found, leaves the camera level, and the summary says so. On the lab's five example recordings, all from cameras level behind the fly, the silhouette gives elevation and twist 0. Without any of these, a run refuses, before any slow work.
+
+Every run then checks the azimuth against the animal's net walking, since animals walk mostly forward: the summary's `walking` line says where the net walking points, and when it points more than 45 deg from forward over at least 10 ball radii, it says which azimuth would make it forward. It is a check for gross errors, not a measurement: on 48 octacam trials with the azimuth measured against the fly's body axis, most flies walked under half a ball radius net in 20 s, and one that walked 5 radii did so 106 deg from its body axis. An experiment that makes the animal walk backward reads as 180 deg off; read the line knowing the experiment.
+
+Neither the silhouette nor the walking can tell the azimuth: on octacam trials, SAM 3's "eye", "wing" and "abdomen" fired on flies seen from behind as often as on flies seen from the front. A nominal azimuth is good to a few degrees, though: on 48 octacam trials, the fly's body axis was 2.1 deg (median) and at most 7.6 deg from straight behind the camera that filmed it from behind. For the precise value, use a deeperfly project, or measure it in the gui: the sliders with the axes drawn on the ball, or the corners of a calibration square aligned with the animal's axes, as FicTrac's configGui does.
+
+### A deeperfly calibration
+
+A rig calibrated by [deeperfly](https://github.com/NeLy-EPFL/deeperfly) gives the field of view and the camera position, without a fit. When the video is listed in a deeperfly project next to it (`deeperfly/deeperfly.toml` in the video's folder, as octacam recordings are), a run uses the project's active calibration for the view that filmed the video, and says so. Elsewhere, name it: `camera.calibration=PATH`, a calibration file (`calibrations/NNNN-label.toml`), a manifest or a project folder, and `camera.view=NAME` when the manifest does not list the video. deeperfly's world (x forward, y left, z up) is the animal frame, so a solved view's rotation needs no conversion; a video downscaled from the calibrated size keeps its field of view, and one of another aspect ratio is refused. The config's own `vfov_deg`, `position_deg` or `rotation` win over the calibration's.
+
+A calibration alone places the camera in the rig, not on the fly, and flies are never mounted exactly along the rig's axis: on 48 octacam trials, their bodies pointed 2.3 deg (median) and up to 11.7 deg off it. So when the project also holds pose results (`deeperfly/results/*.h5`, the newest of one animal), the run triangulates the fly's thorax-coxa points with the calibration and places the camera relative to the fly's body: its long axis, from the hind to the front coxae, is forward, and the rig's up is up. The summary says how far the body pointed from the rig's axis. On those 48 trials this agrees with deeperfly's own triangulation to 0.13 deg, and it takes about a second.
 
 ### Mask the animal
 
-The solver assumes that everything in the tracking window turns with the ball. The animal does not, so cover it with `mask.ignore` polygons in image pixels, `ignore = [[[611, 348], [912, 337], [880, 450]], ...]`, from the calibrator's `i` step or by hand. Cover the legs' whole reach, not just the body: the robust weights reject legs only at the cost of the texture behind them, and legs at the rim also pull the ball follower's silhouette look. The debug video outlines the ignored regions in red.
-
-## Run
-
-```bash
-spintrack run config.toml                       # the video the config names
-spintrack other.mp4 --config config.toml        # another recording of the same rig
-spintrack run config.toml --out results/trial3  # into a folder of your choice
-```
-
-`spintrack VIDEO` is short for `spintrack run VIDEO`; a `run` argument ending in `.toml` is a config, anything else a video (or a camera index). Each run writes one folder, `NAME_spintrack` next to the video unless `--out` names another, where NAME is the config's `output.name` or the video's name. It holds `tracks.parquet`, `summary.json`, `log.txt` and `config.toml` ([output.md](output.md)). That `config.toml` is the config as run, with the command line's changes (`--camera-position`, `--load-map`, `--debug-video`) and the ball if the run detected it, so `spintrack run NAME_spintrack/config.toml --out OTHER`, with the run's `--two-pass` and `--max-frames` if it had them, tracks the same video the same way. A run will not replace an earlier run's files without `--overwrite`. `--max-frames N` stops early. `--save-map` adds `map.npz`, which `--load-map` starts a later run from (as it does a FicTrac sphere-map PNG) and `spintrack map` renders as a picture.
-
-### Two passes
-
-`--two-pass` maps the ball in a throwaway first pass, then tracks again from that map. The second pass starts with the whole ball mapped and the lighting field converged, and if the ball moved in its holder, its window follows a trajectory planned from the whole first pass, without the online follower's delay. It doubles the run time and changes the per-frame error on synthetic truth by under 1%, so use it when the ball moves in its holder or the first seconds matter.
-
-### The debug video
-
-`--debug-video` writes `debug.mp4` (`--debug-axes` adds the ball's axes). On the left is the frame with the ball's outline in green, the `mask.ignore` regions in red and the animal's trail over the ball; on the right, the tracking window, the fictive path (scale bar in ball radii), the map unfolded as a dice around the face the camera sees, the lighting gain (how much texture contrast each part of the window gets; dark is shadow) and the frame's numbers. Check that:
-
-- the outline stays on the ball's rim, including when the ball moves in its holder;
-- the trail rides with the texture rather than sliding across it;
-- the map's faces show sharp texture, not smears;
-- the lighting gain shows the holder's shadow and smooth shading, never texture;
-- the path moves only when the animal walks.
-
-### Live cameras and streaming
-
-`spintrack run 0 --config config.toml` opens camera 0 through OpenCV; outputs go to `camera_spintrack` in the current directory, or to `NAME_spintrack` for an `output.name`. The config must already describe the ball and the field of view, since automatic geometry needs a recording, and `--two-pass` is refused. For cameras OpenCV cannot open (Basler, FLIR, ...), feed the vendor SDK's frames to the `Tracker` loop in the README.
-
-Records stream in FicTrac's line format (`FT, ` and the 25 fields) with `--udp HOST:PORT`, `--tcp HOST:PORT`, `--serial PORT[:BAUD]` (install the `serial` extra) and `--print`. The config's `stream.udp` and `stream.serial` do what the flags do.
+The solver assumes that everything in the tracking window turns with the ball. The animal does not, so cover it with `mask.ignore` polygons in image pixels, `ignore = [[[611, 348], [912, 337], [880, 450]], ...]`, drawn in the gui or written by hand. Cover the legs' whole reach, not just the body: the robust weights reject legs only at the cost of the texture behind them, and legs at the rim also pull the ball follower's silhouette look. The page and the debug video outline the ignored regions in red.
 
 ## Read the summary
 
-Every run ends with a short block; `summary.json` holds the same and more (see [output.md](output.md#the-summary)). On the example:
+Every run ends with a short block; `summary.json` holds the same and more (see [output.md](output.md#the-summary)). On the example with no config:
 
 ```
 run quality: 1050 frames, 1050 tracked, 0 dropped
+ball: detected at (400.5, 371.5) r 260.8 px by SAM 3 (score 0.75), rim confirms 86% of its outline
+vfov: 3.31 deg (fitted; not identifiable, the cost is flat over 1-11 deg, and the rotation scale does not depend on it)
+camera position: azimuth 180 from camera.azimuth_deg; elevation 0, twist 0 deg from where the animal stands (it stands on the ball's outline, SAM 3 score 0.84)
+walking: net 4.0 ball radii, 7 deg right of forward
 ball moved: no
-radius: silhouette 258.3 px, config 259.8 px (-0.6%)
+radius: silhouette 258.3 px, config 260.1 px (-0.7%)
 hard tracking: none
 ```
 
 - `run quality`: frames read, tracked and dropped. A dropped frame has no row in `tracks.parquet`.
-- `ball moved`: `no`, or the frames over which the ball moved in its holder and how far, in pixels. The window followed; check those frames in the debug video.
+- `ball`, `vfov`, `camera position`: what the run found in the recording, when the config did not say.
+- `walking`: where the animal's net walking points ([above](#the-camera-position)).
+- `ball moved`: `no`, or the frames over which the ball moved in its holder and how far, in pixels. The window followed; check those frames on the page or in the debug video.
 - `radius`: the silhouette's radius over the first frames against the config's, with a warning beyond 3%.
 - `hard tracking`: stretches where both the cost and the solver's iterations rose above the run's baseline. A few short ones in fast turns are normal; a long one means the model stopped fitting the ball.
-- A `ball` line comes first when the run detected the ball itself.
 
 ## Troubleshooting
 
+**"where the camera sits around the animal is unknown".** Add `camera.azimuth_deg=180` for a camera behind the animal (`0` in front, `90` at its right, `-90` at its left), or put it in the rig's config.
+
 **"the ball is only N px in radius".** Below 15 px of radius in the image, the reported rotation shrinks without any other sign, starting with the rotation about the optical axis (sideslip, for a camera behind the animal). Put more pixels on the ball.
 
-**The ball moved.** The window follows a ball that sinks or jerks in its holder, so the movement is not read as rotation. If the follower stopped, the window would have left the ball, usually because the look climbed onto the animal: mask the legs, check the debug video, and consider `--two-pass`.
+**No ball found.** SAM 3 and the rim check refused every candidate. Open the gui, drag the circle onto the ball and save, then run with that config.
 
-**The radius warning.** The config's ball is more than 3% off the silhouette. The follower uses the measured radius, but the rotation scale comes from the config's: re-run `calibrate --auto` or correct `ball.rim`. `too little rim in view to compare` means the silhouette is too hidden to measure.
+**The ball moved.** The window follows a ball that sinks or jerks in its holder, so the movement is not read as rotation. If the follower stopped, the window would have left the ball, usually because the look climbed onto the animal: mask the legs, check the page or the debug video, and consider `--two-pass`.
 
-**Dropped frames.** No solve passed the gates: the rotation exceeded `tracking.max_step_rad`, or too little of the window matched the map. Look at those frames in the debug video for an unmasked animal, blur or a ball that left the window. `global_search = true` recovers by relocalizing, and `max_bad_frames` restarts tracking after that many losses in a row. The row after a gap spans the gap, as its `delta_ts` says.
+**The radius warning.** The config's ball is more than 3% off the silhouette. The follower uses the measured radius, but the rotation scale comes from the config's: correct the ball in the gui, or run with `ball.rim=none` to detect it.
 
-**`run` refuses the config.** "no camera position": write one with `calibrate CONFIG --camera-position`, or pass `--camera-position` to the run. "no field of view": run `calibrate --auto` once. "invalid config": the message lists each wrong key and what it expected.
+**The walking line says the camera position is wrong.** Unless the animal walked backward or sideways on purpose, set the azimuth the line suggests, `camera.position_deg=0,AZIMUTH,0`, or measure the rig in the gui.
+
+**Dropped frames.** No solve passed the gates: the rotation exceeded `tracking.max_step_rad`, or too little of the window matched the map. Look at those frames for an unmasked animal, blur or a ball that left the window. `global_search = true` recovers by relocalizing, and `max_bad_frames` restarts tracking after that many losses in a row. The row after a gap spans the gap, as its `delta_ts` says.
+
+**"invalid config".** The message lists each wrong key, from the file or from the command line, and what it expected.
