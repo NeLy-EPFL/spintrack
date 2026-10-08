@@ -178,11 +178,6 @@ class GuiSession:
                 self.notes["ball"] = prepared.line()
                 if prepared.vfov is not None:
                     self.notes["field of view"] = prepared.vfov.line()
-                elif prepared.vfov_from is not None:
-                    view = prepared.vfov_from
-                    self.notes["field of view"] = (
-                        f"from the deeperfly calibration {view.file}, view {view.name}"
-                    )
                 camera = prepared.camera
                 if camera is not None:
                     self.notes["camera"] = (

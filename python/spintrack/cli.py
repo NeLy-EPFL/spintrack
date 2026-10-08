@@ -257,11 +257,6 @@ def _provenance(config, overrides, cfg, src: str, prepared) -> tuple[dict, dict]
         if prepared.vfov is not None:
             provenance["vfov"] = prepared.vfov.report()
             checks["vfov"] = prepared.vfov.line()
-        elif prepared.vfov_from is not None:
-            calibrated = prepared.vfov_from
-            source = f"{calibrated.file}, view {calibrated.name}"
-            provenance["vfov"] = {"value": camera.vfov_deg, "source": source}
-            checks["vfov"] = f"{camera.vfov_deg:.4g} deg from the calibration {source}"
     return provenance, checks
 
 

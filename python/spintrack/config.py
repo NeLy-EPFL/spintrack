@@ -49,13 +49,11 @@ TEXT = {str, type(None)}
 REPLACES = {
     "camera.position_deg": ("camera.rotation",),
     "camera.rotation": ("camera.position_deg",),
-    "camera.calibration": ("camera.position_deg", "camera.rotation", "camera.vfov_deg"),
     "camera.azimuth_deg": ("camera.position_deg", "camera.rotation"),
 }
 # The keys that hold paths, as (table, key); None is the top level.
 PATHS = (
     (None, "video"),
-    ("camera", "calibration"),
     ("tracking", "initial_map"),
     ("tracking", "initial_illumination"),
 )
@@ -77,15 +75,21 @@ class CameraConfig(_Table):
     # gives. One of the two, or neither until it is known.
     position_deg: tuple[float, float, float] | None = None
     rotation: tuple[float, float, float] | None = None
-    # A deeperfly calibration (a calibration file, a manifest or a project folder) and
-    # its view that filmed the video, found from the manifest's videos when not given.
-    # It gives the field of view and the camera position the keys above leave out.
-    calibration: str | None = None
-    view: str | None = None
     # Where the camera sits around the animal when nothing above says: 0 in front, 90
     # at its right, 180 behind, -90 at its left. The elevation and the twist then come
     # from where the animal stands on the ball.
     azimuth_deg: float | None = Field(None, ge=-360.0, le=360.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_deeperfly(cls, data):
+        if isinstance(data, dict) and {"calibration", "view"} & data.keys():
+            raise ValueError(
+                "camera.calibration and camera.view are gone: a deeperfly project "
+                "tracks its ball with deeperfly's [ball] stage, which runs spintrack "
+                "and puts the ball in the project's world frame"
+            )
+        return data
 
     @model_validator(mode="after")
     def _one_transform(self) -> Self:
@@ -236,8 +240,8 @@ def apply_overrides(cfg: Config, overrides: Sequence[str]) -> Config:
 def with_changes(cfg: Config, changes: dict, where: str = "changes") -> Config:
     """A copy of `cfg` with values set by dotted key, validated as a whole.
 
-    Setting `camera.position_deg` clears `camera.rotation`, and the other way around;
-    setting `camera.calibration` clears both and `camera.vfov_deg` (`REPLACES`).
+    Setting `camera.position_deg` clears `camera.rotation`, and the other way around
+    (`REPLACES`).
     Raises `ValueError`, naming `where` and each wrong key.
     """
     data = cfg.model_dump()

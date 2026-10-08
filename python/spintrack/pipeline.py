@@ -6,6 +6,7 @@ it. Decoding runs in a background thread so that video decode and tracking overl
 
 from __future__ import annotations
 
+import functools
 import logging
 import queue
 import threading
@@ -68,12 +69,7 @@ def open_config(
     `autofit.complete_config` fills in. Raises `ValueError` when there is no source,
     or `two_pass` is asked of a live camera, which cannot be read twice.
     """
-    if config is None:
-        cfg = Config()
-    elif isinstance(config, Config):
-        cfg = config.model_copy(deep=True)
-    else:
-        cfg = Config.load(config)
+    cfg = _load(config)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
     if src is not None:
@@ -89,6 +85,15 @@ def open_config(
             "--two-pass needs a recording it can read twice, not a live camera"
         )
     return cfg, src
+
+
+def _load(config: Config | str | Path | None) -> Config:
+    """`config` as a `Config` of its own: loaded, copied, or the defaults."""
+    if config is None:
+        return Config()
+    if isinstance(config, Config):
+        return config.model_copy(deep=True)
+    return Config.load(config)
 
 
 def _prefetch(source: FrameSource, q: queue.Queue, stop: threading.Event) -> None:
@@ -339,6 +344,7 @@ def track(
     config: Config | str | Path | None,
     *,
     src: str | int | None = None,
+    frames: Callable[[], FrameSource] | None = None,
     two_pass: bool = False,
     max_frames: int | None = None,
 ) -> Track:
@@ -347,19 +353,34 @@ def track(
     `config` is a config file, a `Config` or None (the defaults); `src` overrides its
     `video`. The run is that of `spintrack run`, with the same refusals and the same
     geometry found in the recording, minus the files.
+
+    `frames` opens the frames to track instead of the video, for a caller that decodes
+    them itself: it is called once, twice with `two_pass`, and the records count its
+    frames from 0. Nothing is found in the recording then, so the config must give the
+    ball, the field of view and the camera position.
     """
     from spintrack.autofit import complete_config
 
-    cfg, spec = open_config(config, src, two_pass=two_pass)
-    complete_config(cfg, spec)
+    if frames is None:
+        cfg, spec = open_config(config, src, two_pass=two_pass)
+        complete_config(cfg, spec)
+        frames = functools.partial(open_source, spec)
+    else:
+        cfg = _load(config)
+        camera = cfg.camera
+        if not (cfg.ball.rim and camera.vfov_deg and camera.to_animal() is not None):
+            raise ValueError(
+                "tracking frames rather than a video needs the ball (ball.rim), the "
+                "field of view (camera.vfov_deg) and the camera position in the config"
+            )
     rows = _Rows()
-    source = open_source(spec)
+    source = frames()
     try:
         stats = run(
             cfg,
             source,
             [rows],
-            two_pass_source=(lambda: open_source(spec)) if two_pass else None,
+            two_pass_source=frames if two_pass else None,
             max_frames=max_frames,
         )
     finally:

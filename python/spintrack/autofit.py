@@ -2,9 +2,7 @@
 
 `complete_config` runs `prepare_config` when the config lacks the ball, the field of
 view or the camera position, and refuses when nothing says where the camera sits around
-the animal: a video cannot tell the animal's front from its back. `prepare_config` takes
-the field of view and the camera position from a deeperfly calibration when there is
-one (`camera.calibration`, or a deeperfly project next to the video that lists it),
+the animal: a video cannot tell the animal's front from its back. `prepare_config`
 detects the ball when the config does not describe one (and compares the two when it
 does), places the camera at `camera.azimuth_deg` from where the animal stands when
 nothing else does, and fits the field of view when nothing gives it. It needs a source
@@ -21,8 +19,6 @@ import cv2
 import numpy as np
 
 from spintrack import segment
-from spintrack.calibrate import deeperfly
-from spintrack.calibrate.deeperfly import CalibratedView
 from spintrack.camera import source_camera
 from spintrack.config import BallConfig, Config
 from spintrack.detect import (
@@ -176,9 +172,8 @@ class Prepared:
     config_radius_px: float | None = None
     radius_disagreement: float | None = None  # detected / config - 1
     vfov: VfovFit | None = None
-    vfov_from: CalibratedView | None = None  # the calibration that gave it
-    camera_position: str = "config"  # "config", "calibration", "estimated", "unknown"
-    camera: CameraFit | CalibratedView | None = None
+    camera_position: str = "config"  # "config", "estimated", "unknown"
+    camera: CameraFit | None = None
     notes: list[str] = field(default_factory=list)
     texture: float | None = None  # `ball_texture` of a frame, gray levels
 
@@ -259,7 +254,7 @@ def complete_config(
     camera = cfg.camera
     if cfg.ball.rim and camera.vfov_deg is not None and camera.to_animal() is not None:
         return None
-    if require_position and not _position_given(cfg, src_spec):
+    if require_position and not _position_given(cfg):
         raise ValueError(NO_POSITION)
     prepared = prepare_config(cfg, src_spec)
     if require_position and camera.to_animal() is None:
@@ -267,15 +262,10 @@ def complete_config(
     return prepared
 
 
-def _position_given(cfg: Config, src_spec) -> bool:
-    """Whether the config or a deeperfly project says where the camera sits."""
+def _position_given(cfg: Config) -> bool:
+    """Whether the config says where the camera sits."""
     camera = cfg.camera
-    return (
-        camera.to_animal() is not None
-        or camera.azimuth_deg is not None
-        or camera.calibration is not None
-        or deeperfly.find_manifest(src_spec) is not None
-    )
+    return camera.to_animal() is not None or camera.azimuth_deg is not None
 
 
 def prepare_config(
@@ -302,10 +292,6 @@ def prepare_config(
     frames = sample_frames(str(src_spec), n_frames, span)
     height, width = frames[0].shape
     prepared = Prepared()
-    calibrated = _calibration(cfg, src_spec, width, height)
-    if calibrated is not None and cfg.camera.vfov_deg is None:
-        cfg.camera.vfov_deg = calibrated.vfov_deg(height)
-        prepared.vfov_from = calibrated
     try:
         # The comparison with a configured ball is only a check, not worth a model.
         prepared.detection = find_ball(frames, n_frames, use_model=not cfg.ball.rim)
@@ -345,13 +331,7 @@ def prepare_config(
     prepared.texture = ball_texture(frames[len(frames) // 2], fit_circle(cfg.ball.rim))
     if prepared.texture < MIN_TEXTURE:
         log.warning("the ball: %s", prepared.texture_warning())
-    if cfg.camera.to_animal() is None and calibrated is not None:
-        # Relative to where the animal stands on the ball, now that its image is known.
-        circle = fit_circle(cfg.ball.rim)
-        calibrated = deeperfly.on_ball(calibrated, circle, (height, width))
-        cfg.camera.position_deg = calibrated.position_deg
-        prepared.camera_position, prepared.camera = "calibration", calibrated
-    elif cfg.camera.to_animal() is None:
+    if cfg.camera.to_animal() is None:
         picks = np.linspace(0, len(frames), ANIMAL_FRAMES + 2)[1:-1].astype(int)
         prepared.camera = place_camera(
             [frames[i] for i in picks], cfg.ball.rim, cfg.camera.azimuth_deg
@@ -406,32 +386,6 @@ class CameraFit:
         if self.azimuth_deg is None:
             return f"unknown: no azimuth given; {rest}"
         return f"azimuth {self.azimuth_deg:g} from camera.azimuth_deg; {rest}"
-
-
-def _calibration(cfg: Config, src_spec, width: int, height: int):
-    """The deeperfly view that gives what the config leaves open: the config's
-    `camera.calibration`, or a manifest next to the video that lists it."""
-    camera = cfg.camera
-    if camera.to_animal() is not None and camera.vfov_deg is not None:
-        return None
-    path = camera.calibration
-    try:
-        if path is None:
-            path = deeperfly.find_manifest(src_spec)
-            if path is None:
-                return None
-        view = deeperfly.read_view(path, camera.view, src_spec)
-        deeperfly.check_size(view, width, height)
-    except ValueError as exc:
-        if camera.calibration is not None:
-            raise
-        log.warning("not using the deeperfly calibration %s: %s", path, exc)
-        return None
-    if view.distorted:
-        log.warning(
-            "%s: spintrack ignores view %s's lens distortion", view.file, view.name
-        )
-    return view
 
 
 def ball_texture(image: np.ndarray, circle) -> float:
