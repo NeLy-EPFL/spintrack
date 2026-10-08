@@ -1,17 +1,20 @@
-"""Run spintrack on a real recording (video + FicTrac config) and return `.dat` rows."""
+"""Run spintrack on a real recording (video + FicTrac config) and return its records.
+
+The lab's recordings come with FicTrac configs, which are translated on the fly.
+"""
 
 from __future__ import annotations
 
 import time
-from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
 
-from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.io.sources import VideoSource
 from spintrack.tracker import Tracker
+from spintrack_bench.fictrac_config import read_fictrac_config, to_spintrack
+from spintrack_bench.runners.spintrack_runner import apply_overrides
 
 
 def track_video(
@@ -20,18 +23,13 @@ def track_video(
     overrides: dict | None = None,
     max_frames: int | None = None,
 ) -> tuple[np.ndarray, dict, Tracker]:
-    """Returns (dat rows (M, 25), timing dict, the tracker)."""
+    """Returns (records (M, 25), timing dict, the tracker)."""
     config_path = Path(config_path)
-    cfg = Config.load(config_path)
+    src_fn = read_fictrac_config(config_path)["src_fn"]
+    src = VideoSource(Path(video_path) if video_path else config_path.parent / src_fn)
+    cfg = to_spintrack(config_path, (src.width, src.height))
     params = TrackParams()
-    names = {f.name for f in fields(TrackParams)}
-    for key, value in (overrides or {}).items():
-        if key in names:
-            setattr(params, key, value)
-        elif hasattr(cfg, key):
-            setattr(cfg, key, value)
-    video = Path(video_path) if video_path else (config_path.parent / cfg.src_fn)
-    src = VideoSource(video)
+    apply_overrides(cfg, params, overrides or {})
     tracker = Tracker(cfg, src.width, src.height, params)
     rows = []
     t_track = 0.0

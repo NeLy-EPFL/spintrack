@@ -1,9 +1,9 @@
 """Calibration steps that need no window: for lab servers and remote sessions.
 
-`spintrack calibrate CONFIG --c2a-angles ELEV AZIM TWIST` writes the camera-to-animal
-transform from the three angles `spintrack.calibrate.sliders` documents, and `--auto`
-fits the ball (and `vfov`) from the recording itself. Both write the keys the GUI
-writes, and both create CONFIG when it does not exist and `--src` names the video.
+`spintrack calibrate CONFIG --camera-position ELEV AZIM TWIST` writes where the camera
+sits, in the angles `spintrack.calibrate.sliders` documents, and `--auto` fits the ball
+(and the field of view) from the recording itself. Both create CONFIG when it does not
+exist and `--src` names the video.
 """
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ import logging
 from pathlib import Path
 
 from spintrack.autofit import prepare_config
-from spintrack.calibrate.sliders import c2a_from_angles
-from spintrack.config import Config
+from spintrack.config import Config, leading_comments
 from spintrack.detect import DetectionError
 
 log = logging.getLogger("spintrack")
@@ -28,52 +27,65 @@ def open_config(path: str | Path, src=None) -> Config:
         return Config.load(path)
     if src is None:
         raise ValueError(f"{path} does not exist; pass --src VIDEO to create it")
+    if path.suffix.lower() != ".toml":
+        raise ValueError(f"{path}: a config is a .toml file")
     log.info("creating %s for %s", path, src)
-    return Config(src_fn=str(src), path=path)
+    return Config(video=int(src) if str(src).isdigit() else str(src))
 
 
-def write_c2a_angles(
+def save_config(cfg: Config, path: str | Path, notes: list[str] | None = None) -> Path:
+    """Write `cfg` to `path`, keeping the comments at the top of the file there.
+
+    `notes`, from `calibrate --auto`, replace the ones an earlier fit left.
+    """
+    path = Path(path)
+    comments = leading_comments(path) if path.exists() else []
+    if notes is not None:
+        comments = [c for c in comments if not c.startswith(AUTO_COMMENTS)] + notes
+    return cfg.save(path, comments)
+
+
+def write_camera_position(
     config_path: str | Path, elevation: float, azimuth: float, twist: float, src=None
 ) -> Config:
-    """Set `c2a_r` from the camera position angles and save the config in place."""
+    """Set the camera position (degrees) and save the config in place."""
     cfg = open_config(config_path, src)
-    cfg.c2a_r = c2a_from_angles(elevation, azimuth, twist)
-    cfg.c2a_src = "sliders"
-    cfg.extra["c2a_angles"] = [float(elevation), float(azimuth), float(twist)]
-    path = cfg.save()
+    cfg.camera.rotation = None
+    cfg.camera.position_deg = (elevation, azimuth, twist)
+    path = save_config(cfg, config_path)
     log.info(
-        "c2a_r : { %.6f, %.6f, %.6f }  (elevation %g, azimuth %g, twist %g) -> %s",
-        *cfg.c2a_r, elevation, azimuth, twist, path,
+        "camera position: elevation %g, azimuth %g, twist %g -> %s",
+        elevation, azimuth, twist, path,
     )  # fmt: skip
     return cfg
 
 
 def write_auto_geometry(config_path: str | Path, src=None, n_frames: int = 100) -> int:
-    """Fit the ball (and, when `vfov` is `auto`, the field of view) and save the config.
+    """Fit the ball (and the field of view, when unknown) and save the config.
 
     Returns a process exit code: 2 when nothing trustworthy could be measured, so a
     scripted setup fails loudly instead of tracking against a guessed ball.
     """
     try:
         cfg = open_config(config_path, src)
-        prepared = prepare_config(cfg, cfg.source(src), n_frames=n_frames)
+        spec = src if src is not None else cfg.video
+        if spec is None:
+            raise ValueError(f"{config_path} names no video; pass --src VIDEO")
+        prepared = prepare_config(cfg, str(spec), n_frames=n_frames)
     except (DetectionError, ValueError) as exc:
         log.error("%s", exc)
         return 2
-    # One note per fit, replacing the previous run's rather than piling up.
-    cfg.comments = [c for c in cfg.comments if not c.startswith(AUTO_COMMENTS)]
+    notes = []
     detection = prepared.detection
     if detection is not None:
-        cfg.comments.append(
+        notes.append(
             f"{AUTO_COMMENTS[0]} calibrate --auto from {detection.n_frames} frames "
             f"(confidence {detection.confidence:.2f}, rim {detection.rim_fraction:.2f}"
             f", residual {detection.residual_px:.2f} px)"
         )
     if prepared.vfov is not None:
-        cfg.comments.append(
-            f"{AUTO_COMMENTS[1]} calibrate --auto: {prepared.vfov.line()}"
-        )
-    path = cfg.save()
+        notes.append(f"{AUTO_COMMENTS[1]} calibrate --auto: {prepared.vfov.line()}")
+    path = save_config(cfg, config_path, notes)
     log.info("ball: %s", prepared.line())
     if prepared.vfov is not None:
         log.info("vfov: %s", prepared.vfov.line())

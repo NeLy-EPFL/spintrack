@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from spintrack.camera import Camera
-from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
+from spintrack.geometry import normalize, rotvec_to_matrix
 
 # Unit-square corners in animal coordinates, order TL, TR, BR, BL, per plane. The first
 # two corners span the plane's first axis, the last coordinate pairs the other axis.
@@ -36,14 +36,13 @@ def square_pose(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pose `(R, t)` of the square with `camera_point = R @ animal_point + t`.
 
-    `plane` is `"xy"`, `"yz"` or `"xz"` (a FicTrac `c2a_cnrs_xy` style key is accepted).
+    `plane` is `"xy"`, `"yz"` or `"xz"`.
     Initialized with a planar PnP solve on normalized coordinates (so any camera model
     works), then refined by Gauss-Newton on the direction residuals.
     """
-    key = plane.lower()[-2:]
-    if key not in SQUARE_CORNERS:
+    if plane not in SQUARE_CORNERS:
         raise ValueError(f"unknown square plane {plane!r}")
-    obj = SQUARE_CORNERS[key]
+    obj = SQUARE_CORNERS[plane]
     pts = np.asarray(corners_xy, dtype=np.float64).reshape(-1, 2)
     if len(pts) != 4:
         raise ValueError("a square needs exactly four corners")
@@ -74,17 +73,3 @@ def square_pose(
         if np.linalg.norm(delta) < 1e-12:
             break
     return rotvec_to_matrix(params[:3]), params[3:]
-
-
-def camera_to_lab_from_square(corners_xy, camera: Camera, plane: str) -> np.ndarray:
-    """Rotation matrix mapping camera-frame vectors to animal/lab-frame vectors."""
-    R, _ = square_pose(corners_xy, camera, plane)
-    return R.T
-
-
-def c2a_from_square(corners_xy, camera: Camera, plane: str) -> tuple[list[float], list]:
-    """FicTrac-style `(c2a_r, c2a_t)`: rotation vector of camera-to-lab, and
-    translation.
-    """
-    R, t = square_pose(corners_xy, camera, plane)
-    return matrix_to_rotvec(R.T).tolist(), t.tolist()

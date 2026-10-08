@@ -4,13 +4,13 @@ Skipped unless `benchmarks/data/` has been generated
 (`uv run --group bench python benchmarks/bench.py synth`).
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from spintrack.camera import source_camera
-from spintrack.config import Config
 from spintrack.detect import DetectionError, detect_ball, sample_frames
 from spintrack.sphere import fit_ball
 
@@ -31,7 +31,7 @@ SCENES = sorted(p.parent for p in Path("benchmarks/data").glob("*/truth.npz"))
 @pytest.mark.parametrize("scene", SCENES, ids=lambda p: p.name)
 def test_detect_matches_ground_truth(scene):
     truth = np.load(scene / "truth.npz")
-    cfg = Config.load(scene / "config.txt")
+    spec = json.loads((scene / "scene.json").read_text())
     frames = sample_frames(str(scene / "video.mp4"), 100, 300)
     height, width = frames[0].shape
     try:
@@ -39,7 +39,7 @@ def test_detect_matches_ground_truth(scene):
     except DetectionError:
         assert scene.name == MAY_REFUSE
         return
-    camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
+    camera = source_camera(width, height, spec["vfov_deg"], spec["fisheye"])
     points = np.asarray(detection.rim_points(16), dtype=float).reshape(-1, 2)
     center, half_angle = fit_ball(points, camera)
 

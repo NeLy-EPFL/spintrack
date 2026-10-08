@@ -11,9 +11,5 @@ __pycache__/
 /benchmarks/results/*.npz
 /benchmarks/results/work/
 fictrac-*.log
-# spintrack outputs next to the example config
-/examples/**/*.dat
-/examples/**/*.parquet
-/examples/**/*.json
-/examples/**/*-debug.mp4
-/examples/**/*-map.npz
+# spintrack outputs next to the example videos
+/examples/**/*_spintrack/

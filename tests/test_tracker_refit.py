@@ -2,9 +2,8 @@
 
 import numpy as np
 
-from helpers import make_texture, render
+from helpers import ball_config, make_texture, render
 from spintrack.camera import PinholeCamera
-from spintrack.config import Config
 from spintrack.engine import TrackParams
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.sphere import pixel_circle
@@ -18,10 +17,8 @@ CAMERA = PinholeCamera(SIZE[0], SIZE[1], VFOV)
 STEP = (0.02, 0.05, 0.01)
 
 
-def config() -> Config:
-    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=HALF)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    return cfg
+def config():
+    return ball_config(SIZE, CENTER, HALF, VFOV)
 
 
 def shifted(dy: float):
@@ -136,8 +133,7 @@ def test_watch_keeps_up_with_a_jerk():
 
     rng = np.random.default_rng(0)
     texture = make_texture(rng, n_blobs=120)
-    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=half)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
+    cfg = ball_config(SIZE, CENTER, half, VFOV)
     tracker = Tracker(cfg, *SIZE, TrackParams(center_watch=True))
     R, error = np.eye(3), []
     for i in range(start + 40):
@@ -163,8 +159,7 @@ def test_watch_finds_a_resting_ball_that_jumped_out_of_reach():
     cx, cy0, _ = pixel_circle(CAMERA, CENTER, half)
     rng = np.random.default_rng(0)
     texture = make_texture(rng, n_blobs=120)
-    cfg = Config(vfov=VFOV, q_factor=6, roi_c=list(CENTER), roi_r=half)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
+    cfg = ball_config(SIZE, CENTER, half, VFOV)
     tracker = Tracker(cfg, *SIZE, TrackParams(center_watch=True))
     R, error = np.eye(3), []
     for i in range(start + 80):

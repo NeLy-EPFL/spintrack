@@ -11,33 +11,39 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from spintrack.config import Config
-from spintrack.io.dat import COLUMNS, N_COLUMNS
 from spintrack.io.recorders import Recorder
+from spintrack.io.records import COLUMNS, N_COLUMNS
 from spintrack.io.sources import FrameSource, open_source
 from spintrack.quality import RunQuality, summarize_run
 from spintrack.sphere import pixel_circle
 from spintrack.tracker import Tracker
 
 if TYPE_CHECKING:
-    import pandas as pd
+    import polars as pl
 
 log = logging.getLogger("spintrack")
 
 PROGRESS_S = 10.0  # seconds between progress reports
 
-NO_C2A = (
-    "no camera-to-animal transform (c2a_r): the lab-frame and forward/side columns "
-    "would be\ncamera-frame values in disguise. Fix: spintrack calibrate CONFIG "
-    "--c2a-angles ELEV AZIM TWIST\n(a camera directly behind the animal, level with "
-    "the ball, is 0 180 0), or write\n`c2a_r : { 0, 0, 0 }` to use the identity "
-    "explicitly."
+NO_POSITION = (
+    "no camera position: the lab-frame and forward/side columns would be camera-frame "
+    "values\nin disguise. Fix: spintrack calibrate CONFIG --camera-position ELEV AZIM "
+    "TWIST (a camera\ndirectly behind the animal, level with the ball, is 0 180 0), "
+    "or write `rotation = [0, 0, 0]`\nunder [camera] to use the identity explicitly."
+)
+NO_CONFIG = (
+    "no config: a video alone has no field of view or camera position. Write a config "
+    "with\n`spintrack calibrate CONFIG --src VIDEO --camera-position ELEV AZIM TWIST "
+    "--auto` (a camera\ndirectly behind the animal, level with the ball, is 0 180 0; "
+    "--auto fits the ball and the\nfield of view) and pass it: spintrack VIDEO "
+    "--config CONFIG"
 )
 
 
@@ -62,32 +68,46 @@ class RunStats:
 
 
 def open_config(
-    config: Config | str | Path, src: str | int | None = None, two_pass: bool = False
+    config: Config | str | Path | None,
+    src: str | int | None = None,
+    two_pass: bool = False,
+    camera_position: Sequence[float] | None = None,
 ) -> tuple[Config, str]:
     """Load `config` and resolve its source, refusing what cannot be tracked.
 
-    `src` (a video path or a camera index) overrides `src_fn`, which is relative to the
-    config file. Raises `ValueError` when there is no source, no camera-to-animal
-    transform, or `two_pass` is asked of a live camera, which cannot be read twice.
+    `config` is a config file, a `Config` (copied), or None for the defaults. `src` (a
+    video path or a camera index) overrides the config's `video`, and
+    `camera_position` (elevation, azimuth, twist in degrees) its camera position. The
+    returned config names the source as `video`. Raises `ValueError` when there is no
+    source, no camera position, no field of view, or `two_pass` is asked of a live
+    camera, which cannot be read twice.
     """
-    if isinstance(config, Config):
-        cfg, folder = replace(config), Path()
+    if config is None:
+        cfg = Config()
+    elif isinstance(config, Config):
+        cfg = config.model_copy(deep=True)
     else:
-        cfg, folder = Config.load(config), Path(config).parent
-    if src is None:
-        src = cfg.src_fn
-        if src and not src.isdigit():
-            src = folder / src
-    src = str(src)
-    if not src:
-        raise ValueError("no source: set src_fn in the config or pass --src")
-    if cfg.c2a_source() is None:
-        raise ValueError(NO_C2A)
-    if cfg.vfov is None:
+        cfg = Config.load(config)
+    if src is not None:
+        cfg.video = int(src) if str(src).isdigit() else str(src)
+    if camera_position is not None:
+        cfg.camera.rotation = None
+        cfg.camera.position_deg = tuple(camera_position)
+    if cfg.video is None:
         raise ValueError(
-            "vfov is auto: fit it once with `spintrack calibrate CONFIG --auto`, "
-            "which writes it into the config"
+            "no source: set `video` in the config, or name the video: "
+            "spintrack run VIDEO --config CONFIG"
         )
+    if cfg.camera.to_animal() is None:
+        raise ValueError(NO_POSITION if config is not None else NO_CONFIG)
+    if cfg.camera.vfov_deg is None:
+        raise ValueError(
+            "no field of view: fit it once with `spintrack calibrate CONFIG --auto`, "
+            "which writes camera.vfov_deg into the config"
+            if config is not None
+            else NO_CONFIG
+        )
+    src = str(cfg.video)
     if two_pass and src.isdigit():
         raise ValueError(
             "--two-pass needs a recording it can read twice, not a live camera"
@@ -166,7 +186,9 @@ def run(
         from spintrack.debug_video import DebugCanvas, DebugVideoWriter
 
         canvas = DebugCanvas(tracker, axes=debug_axes)
-        writer = DebugVideoWriter(debug_video, canvas.size, source.fps, cfg.vid_codec)
+        writer = DebugVideoWriter(
+            debug_video, canvas.size, source.fps, cfg.output.debug_codec
+        )
         debug = (canvas, writer)
     try:
         stats, per_frame = _track(
@@ -177,7 +199,7 @@ def run(
             debug[1].close()
     if per_frame:
         frames, ts, ok, cost, iters, sources, w_cam = zip(*per_frame, strict=True)
-        fps = source.fps if source.fps and source.fps > 0 else cfg.src_fps
+        fps = source.fps if source.fps and source.fps > 0 else cfg.camera.fps
         stats.quality = summarize_run(
             frames,
             ts,
@@ -186,7 +208,7 @@ def run(
             iters,
             sources,
             np.asarray(w_cam),
-            fps if fps > 0 else None,
+            fps,
             map_coverage=tracker.engine.map_coverage(),
             illumination=tracker.engine.photometry.report(),
         )
@@ -288,18 +310,17 @@ def _checks(tracker: Tracker, first: Tracker | None) -> tuple[dict, dict]:
 
 @dataclass
 class Track:
-    """What `track` returns: the records, as the `.dat` file holds them, and quality."""
+    """What `track` returns: the records, as in `tracks.parquet`, and quality."""
 
     records: np.ndarray  # (n, 25), one row per tracked frame
     quality: RunQuality | None
     columns: tuple[str, ...] = COLUMNS
 
-    def to_pandas(self) -> pd.DataFrame:
-        """The records as a DataFrame with named columns (needs pandas)."""
-        import pandas as pd
+    def to_polars(self) -> pl.DataFrame:
+        """The records as a DataFrame with named columns."""
+        from spintrack.io.parquet import to_frame
 
-        table = pd.DataFrame(self.records, columns=list(self.columns))
-        return table.astype({"frame": "int64", "seq": "int64"})
+        return to_frame(self.records)
 
 
 class _Rows(list):
@@ -313,7 +334,7 @@ class _Rows(list):
 
 
 def track(
-    config: Config | str | Path,
+    config: Config | str | Path | None,
     *,
     src: str | int | None = None,
     two_pass: bool = False,
@@ -321,11 +342,12 @@ def track(
 ) -> Track:
     """Track the recording a config describes and return its records.
 
-    `config` is a config file or a `Config`; `src` overrides its `src_fn`. The run is
-    that of `spintrack run`, with the same refusals and ball detection, minus the files.
+    `config` is a config file, a `Config` or None (the defaults); `src` overrides its
+    `video`. The run is that of `spintrack run`, with the same refusals and ball
+    detection, minus the files.
     """
     cfg, spec = open_config(config, src, two_pass)
-    if not cfg.has_ball():
+    if not cfg.ball.rim:
         from spintrack.autofit import prepare_config
 
         prepare_config(cfg, spec)

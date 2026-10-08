@@ -42,7 +42,7 @@ class Agreement:
 def align(
     dat_a: np.ndarray, dat_b: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Rows of both `.dat` arrays for frames present in both (matched on column 0)."""
+    """Rows of both record arrays for frames present in both (matched on column 0)."""
     fa = dat_a[:, 0].astype(int)
     fb = dat_b[:, 0].astype(int)
     common = np.intersect1d(fa, fb)

@@ -11,9 +11,8 @@ import logging
 import numpy as np
 import pytest
 
+from helpers import ball_config
 from spintrack import debug_video
-from spintrack.calibrate.sliders import c2a_from_angles
-from spintrack.config import Config
 from spintrack.debug_video import DebugCanvas, DebugVideoWriter
 from spintrack.engine import StepResult, TrackParams
 from spintrack.geometry import rotvec_to_matrix
@@ -111,14 +110,10 @@ def frame_result(i, R_cam, tracker):
 
 def walking_canvas(n=90, step_deg=1.0):
     """A rendered canvas after `n` frames of a fly walking straight forward."""
-    cfg = Config(
-        src_fn="none",
-        vfov=60.0,
-        roi_c=[0.0, 0.0, 1.0],  # ball dead ahead, so the image is the ball's own frame
-        roi_r=BALL_HALF_ANGLE,
-        src_fps=100.0,
-    )
-    cfg.c2a_r = c2a_from_angles(0.0, 180.0)  # camera behind the animal, level with it
+    # The ball dead ahead, so the image is the ball's own frame.
+    cfg = ball_config((640, 480), [0.0, 0.0, 1.0], BALL_HALF_ANGLE, vfov=60.0)
+    cfg.camera.rotation = None
+    cfg.camera.position_deg = (0.0, 180.0, 0.0)  # behind the animal, level with it
     tracker = Tracker(cfg, 640, 480, TrackParams(center_watch=False))
     canvas = DebugCanvas(tracker)  # 480 rows in and out, so panel px are source px
     gray = np.zeros((480, 640), np.uint8)

@@ -9,9 +9,10 @@ degree while every reported speed was wrong.
 
 So this module imports nothing from `spintrack.camera`, `spintrack.sphere` or
 `spintrack.geometry`. The projection is the pinhole definition written out, the ball is
-an analytic sphere intersected with the rays, and the rotations are a Rodrigues formula
-written here. What it checks is scale rather than precision: whether one radian of ball
-rotation is reported as one radian, and what a wrong assumed radius does to that.
+an analytic sphere intersected with the rays, its rim points for the config are
+projected here, and the rotations are a Rodrigues formula written here. What it checks
+is scale rather than precision: whether one radian of ball rotation is reported as one
+radian, and what a wrong assumed radius does to that.
 """
 
 import numpy as np
@@ -97,17 +98,27 @@ def render(w_true, n=N_FRAMES, seed=0):
     return frames
 
 
-def track(frames, eps=0.0, c2a=(0.0, 0.0, 0.0), q_factor=8):
-    """The `.dat` rows for `frames`, with the assumed radius off by a fraction `eps`."""
-    cfg = Config(
-        src_fn="none",
-        vfov=VFOV,
-        q_factor=q_factor,
-        roi_c=list(CENTER),
-        roi_r=HALF * (1.0 + eps),
-        src_fps=100.0,
+def rim(half, n=16) -> np.ndarray:
+    """Image points on the outline of a ball of angular radius `half` at `CENTER`."""
+    e1 = np.cross(CENTER, [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(CENTER, e1)
+    phi = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    dirs = np.cos(half) * CENTER + np.sin(half) * (
+        np.outer(np.cos(phi), e1) + np.outer(np.sin(phi), e2)
     )
-    cfg.c2a_r = list(c2a)
+    x = W / 2 + FOCAL * dirs[:, 0] / dirs[:, 2]
+    y = H / 2 + FOCAL * dirs[:, 1] / dirs[:, 2]
+    return np.stack([x, y], 1)
+
+
+def track(frames, eps=0.0, rotation=(0.0, 0.0, 0.0), window_px=80):
+    """The records for `frames`, with the assumed radius off by a fraction `eps`."""
+    cfg = Config(
+        camera={"vfov_deg": VFOV, "rotation": rotation},
+        ball={"rim": rim(HALF * (1.0 + eps)).tolist()},
+        tracking={"window_px": window_px},
+    )
     tracker = Tracker(cfg, W, H, TrackParams(center_watch=False))
     rows = []
     for i, img in enumerate(frames):
@@ -144,8 +155,8 @@ def test_reported_rotation_has_the_right_absolute_scale(general_turn):
     rows = track(frames)
     assert len(rows) == len(frames)
     scale, tilt, n = scale_and_tilt(rows, w_true)
-    # Measured 1.0000 within 5e-4 over `q_factor` 4 to 16 and three ball positions in
-    # the frame; half a percent here leaves room for the texture seed while still
+    # Measured 1.0000 within 5e-4 over windows of 40 to 160 px and three ball positions
+    # in the frame; half a percent here leaves room for the texture seed while still
     # catching any real regression in the camera model or the depth mapping.
     assert abs(scale - 1.0) < 0.005, (scale, n)
     assert tilt < 0.3, tilt
@@ -177,7 +188,7 @@ def test_a_wrong_radius_rescales_the_in_plane_rotation_and_not_the_image_rotatio
 def test_lab_columns_apply_the_camera_to_animal_rotation_in_the_right_direction(
     general_turn,
 ):
-    """A transposed `c2a_r` would mix forward with side and flip turning.
+    """A transposed camera rotation would mix forward with side and flip turning.
 
     Nothing else in the suite would notice: the benchmark builds its ground truth with
     the same `camera_to_lab_from_angles` the tracker inverts, and the other end-to-end
@@ -185,7 +196,7 @@ def test_lab_columns_apply_the_camera_to_animal_rotation_in_the_right_direction(
     written out, and the expected animal-frame rotation follows from it by hand.
     """
     w_true, frames = general_turn
-    rows = track(frames, c2a=(0.0, 0.0, np.pi / 2))
+    rows = track(frames, rotation=(0.0, 0.0, np.pi / 2))
     quarter_turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     assert np.allclose(rows[:, 5:8], rows[:, 1:4] @ quarter_turn.T, atol=1e-12)
     # `v_lab = R v_cam` with that R: (a, b, c) in the camera becomes (-b, a, c).

@@ -22,6 +22,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The abi3 floor is 3.14, so maturin needs a 3.14 interpreter outside manylinux.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -56,15 +60,15 @@ jobs:
           path: dist
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       # The built wheel, outside the source tree, on the committed example clip.
       - run: pip install dist/*.whl
       - run: |
           cd "$RUNNER_TEMP"
           spintrack --version
-          spintrack run "$GITHUB_WORKSPACE/examples/sample/config.txt" \
+          spintrack run "$GITHUB_WORKSPACE/examples/sample/config.toml" \
             --max-frames 20 --out smoke
-          test -s smoke/sample.dat
+          test -s smoke/tracks.parquet
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')

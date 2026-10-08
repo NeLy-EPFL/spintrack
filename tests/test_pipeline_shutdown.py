@@ -11,16 +11,11 @@ import time
 
 import numpy as np
 
-from spintrack.config import Config
+from helpers import ball_config
 from spintrack.io.sources import Frame
 from spintrack.pipeline import run
 
-CONFIG = Config(
-    vfov=40.0,
-    q_factor=4,
-    roi_c=[0.0, 0.0, 1.0],
-    roi_r=0.25,
-)
+CONFIG = ball_config((160, 120), [0.0, 0.0, 1.0], 0.25, tracking={"window_px": 40})
 
 
 class SlowSource:

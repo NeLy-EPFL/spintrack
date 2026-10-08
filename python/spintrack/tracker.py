@@ -12,12 +12,11 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from spintrack.calibrate.square import camera_to_lab_from_square
 from spintrack.camera import source_camera
 from spintrack.config import Config
 from spintrack.engine import StepResult, TrackEngine, TrackParams
-from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
-from spintrack.io.dat import N_COLUMNS
+from spintrack.geometry import matrix_to_rotvec, normalize
+from spintrack.io.records import N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
 from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.path import PathIntegrator
@@ -33,7 +32,7 @@ from spintrack.sphere import (
 log = logging.getLogger("spintrack")
 
 # Below this ball radius the reported rotation shrinks, and nothing in the run says so:
-# the window is resampled to `q_factor` either way and the cost stays low. See
+# the window is resampled to `window_px` either way and the cost stays low. See
 # `docs/guide.md`, "Troubleshooting".
 MIN_BALL_RADIUS_PX = 15.0
 
@@ -92,16 +91,16 @@ class FrameResult:
 
 
 def params_from_config(cfg: Config, base: TrackParams | None = None) -> TrackParams:
-    """Derive solver parameters from FicTrac-style config keys."""
+    """Derive solver parameters from the config's `[tracking]` table."""
     p = replace(base) if base is not None else TrackParams()
-    p.norm_win_pc = float(cfg.thr_win_pc) if cfg.thr_win_pc > 0 else p.norm_win_pc
-    p.forget_outside_view = not cfg.accumulate_map
-    p.max_bad_frames = int(cfg.max_bad_frames)
-    if not cfg.illumination:
+    t = cfg.tracking
+    p.norm_win_pc = t.norm_window
+    p.forget_outside_view = t.forget_outside_view
+    p.max_bad_frames = -1 if t.max_bad_frames is None else t.max_bad_frames
+    if not t.illumination:
         p.illum_bias = False
-    p.global_search = bool(cfg.opt_do_global)
-    if cfg.opt_bound > 0:
-        p.max_step = float(cfg.opt_bound)
+    p.global_search = t.global_search
+    p.max_step = t.max_step_rad
     return p
 
 
@@ -109,19 +108,15 @@ class Tracker:
     def __init__(
         self, cfg: Config, width: int, height: int, params: TrackParams | None = None
     ):
-        if cfg.vfov is None or cfg.vfov <= 0:
-            raise ValueError("config needs a positive vfov (degrees)")
+        if cfg.camera.vfov_deg is None:
+            raise ValueError("config needs the field of view, camera.vfov_deg")
+        if not cfg.ball.rim:
+            raise ValueError("config needs the ball's rim points, ball.rim")
         self.cfg = cfg
         self.width, self.height = int(width), int(height)
-        self.camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
-        if cfg.roi_c is not None and cfg.roi_r is not None and len(cfg.roi_c) == 3:
-            self.center = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
-            self.half_angle = float(cfg.roi_r)
-        elif len(cfg.roi_circ) >= 6:
-            pts = np.asarray(cfg.roi_circ, dtype=np.float64).reshape(-1, 2)
-            self.center, self.half_angle = fit_ball(pts, self.camera)
-        else:
-            raise ValueError("config must define the ball via roi_c/roi_r or roi_circ")
+        camera = cfg.camera
+        self.camera = source_camera(width, height, camera.vfov_deg, camera.fisheye)
+        self.center, self.half_angle = fit_ball(cfg.ball.rim, self.camera)
         self.params = params_from_config(cfg, params)
         circle = pixel_circle(self.camera, self.center, self.half_angle)
         self.ball_radius_px = circle[2]
@@ -133,12 +128,12 @@ class Tracker:
                 "the animal). See docs/guide.md, Troubleshooting",
                 self.ball_radius_px,
             )
-        mask = source_mask(self.camera, self.center, self.half_angle, cfg.roi_ignr)
+        mask = source_mask(self.camera, self.center, self.half_angle, cfg.mask.ignore)
         self.geometry = window_geometry(
             self.camera,
             self.center,
             self.half_angle,
-            cfg.window_size(),
+            cfg.tracking.window_px,
             mask,
             prefilter=self.params.prefilter,
         )
@@ -146,17 +141,24 @@ class Tracker:
         # The reporting convention is fixed to the first window frame, so a later re-fit
         # moves the window without stepping the absolute-orientation columns.
         self.R_wc0 = self.R_wc
-        self.cam_to_lab = self._camera_to_lab(cfg)
-        if cfg.sphere_map_fn:
+        self.cam_to_lab = cfg.camera.to_animal()
+        if self.cam_to_lab is None:
+            # The camera-frame columns are valid without it, so this warns rather than
+            # raising; `spintrack run` refuses instead, because its lab-frame columns
+            # would be camera values in disguise.
+            log.warning("no camera position in the config; using the identity")
+            self.cam_to_lab = np.eye(3)
+        tracking = cfg.tracking
+        if tracking.initial_map:
             self.params.global_search = True  # needed to localize against the template
         self.engine = TrackEngine(self.geometry, self.params)
-        if cfg.sphere_map_fn:
-            mean, weight = load_map(cfg.sphere_map_fn, self.engine.map_shape)
-            self.engine.load_map(mean, weight, frozen=cfg.map_frozen)
+        if tracking.initial_map:
+            mean, weight = load_map(tracking.initial_map, self.engine.map_shape)
+            self.engine.load_map(mean, weight, frozen=tracking.freeze_map)
             # The illumination field describes the rig, so a saved one is a head start.
-            self._load_illumination(cfg.sphere_map_fn)
-        if cfg.illumination_fn:
-            self._load_illumination(cfg.illumination_fn, asked=True)
+            self._load_illumination(tracking.initial_map)
+        if tracking.initial_illumination:
+            self._load_illumination(tracking.initial_illumination, asked=True)
         self.path = PathIntegrator()
         self.frame = 0
         self.seq = 0
@@ -168,24 +170,6 @@ class Tracker:
             from spintrack.refit import CenterWatch
 
             self.watch = CenterWatch(circle[:2], circle[2])
-
-    def _camera_to_lab(self, cfg: Config) -> np.ndarray:
-        """The transform named by `cfg.c2a_source()`; identity (with a warning) if none.
-
-        Also records which key it came from in `self.c2a_source`. The camera-frame
-        columns of the output are valid without a transform, so this warns rather than
-        raising; `spintrack run` refuses instead, because its lab-frame columns would be
-        camera values in disguise.
-        """
-        self.c2a_source = cfg.c2a_source() or "identity"
-        if self.c2a_source == "c2a_r":
-            return rotvec_to_matrix(np.asarray(cfg.c2a_r, dtype=np.float64))
-        if self.c2a_source.startswith("c2a_cnrs_"):
-            corners = getattr(cfg, self.c2a_source)
-            pts = np.asarray(corners, dtype=np.float64).reshape(4, 2)
-            return camera_to_lab_from_square(pts, self.camera, self.c2a_source[-2:])
-        log.warning("no camera-to-lab transform in config (c2a_r); using identity")
-        return np.eye(3)
 
     def reset(self) -> None:
         self.engine.reset()
@@ -205,8 +189,9 @@ class Tracker:
         instead of following the ball for itself.
         """
         mean, weight = other.engine.export_map()
-        self.engine.load_map(mean, weight, frozen=self.cfg.map_frozen, localize=False)
-        # No accumulator weight on the field, unlike `illumination_fn`: this pass
+        frozen = self.cfg.tracking.freeze_map
+        self.engine.load_map(mean, weight, frozen=frozen, localize=False)
+        # No accumulator weight on the field, unlike `initial_illumination`: this pass
         # sees the same lighting and re-measures it within the warmup anyway.
         self.engine.load_illumination(
             other.engine.photometry.state(), other.center, other.half_angle
@@ -300,12 +285,12 @@ class Tracker:
         if circle_px is None:
             circle_px = pixel_circle(self.camera, center, self.half_angle)[:2]
         self._circle_px = circle_px
-        mask = source_mask(self.camera, center, self.half_angle, self.cfg.roi_ignr)
+        mask = source_mask(self.camera, center, self.half_angle, self.cfg.mask.ignore)
         geometry = window_geometry(
             self.camera,
             center,
             self.half_angle,
-            self.cfg.window_size(),
+            self.cfg.tracking.window_px,
             mask,
             prefilter=self.params.prefilter,
         )

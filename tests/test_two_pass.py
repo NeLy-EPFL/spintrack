@@ -10,13 +10,12 @@ pass's drift displaced it), so the second pass's own frames replace it at first 
 
 import cv2
 import numpy as np
+import polars as pl
 
-from helpers import make_texture
+from helpers import ball_config, make_texture
 from spintrack.cli import main
-from spintrack.config import Config
 from spintrack.engine import MAP_PRIOR_W_MAX, TrackParams
 from spintrack.geometry import rotvec_to_matrix
-from spintrack.io.dat import read_dat
 from spintrack.tracker import Tracker
 from test_cli import CENTER, HALF, H, W, render_frame
 from test_tracker_refit import SIZE, STEP, config, sequence, shifted
@@ -62,7 +61,7 @@ def test_prime_from_carries_the_map_exactly():
 
 def test_first_frame_against_a_handed_over_map_reports_no_rotation():
     """Where the first frame lands on the stale map is an initial orientation, not a
-    rotation: the .dat's frame 0 has no frame before it to have turned from."""
+    rotation: the record of frame 0 has no frame before it to have turned from."""
     images, _, _ = sequence(20)
     first, _, _ = track(images)
     second = Tracker(config(), *SIZE, PARAMS)
@@ -115,28 +114,22 @@ def test_cli_two_pass_runs_the_video_twice(tmp_path):
         writer.write(cv2.cvtColor(render_frame(texture, R, rng), cv2.COLOR_GRAY2BGR))
     writer.release()
 
-    cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
-    )
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    cfg.save(tmp_path / "config.txt")
-    out = tmp_path / "out.dat"
-    argv = ["run", str(tmp_path / "config.txt"), "--out", str(out), "--two-pass"]
+    cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
+    cfg.save(tmp_path / "config.toml")
+    out = tmp_path / "out"
+    argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--two-pass"]
     assert main([*argv, "--save-map"]) == 0
-    assert read_dat(out).shape[0] == n
-    assert (tmp_path / "out-map.npz").exists()  # --save-map with no path
-    summary = (tmp_path / "out-summary.json").read_text()
-    assert "two-pass" in summary
+    assert pl.read_parquet(out / "tracks.parquet").height == n
+    assert (out / "map.npz").exists()
+    assert "two-pass" in (out / "summary.json").read_text()
 
 
 def test_two_pass_needs_a_recording(tmp_path, caplog):
     """A live camera cannot be read twice, so the flag is refused rather than
     ignored.
     """
-    cfg = Config(vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    cfg.save(tmp_path / "config.txt")
-    argv = ["run", str(tmp_path / "config.txt"), "--src", "0", "--two-pass"]
+    ball_config((W, H), CENTER, HALF).save(tmp_path / "config.toml")
+    argv = ["run", "0", "--config", str(tmp_path / "config.toml"), "--two-pass"]
     assert main(argv) == 2
     assert "--two-pass" in caplog.text
 

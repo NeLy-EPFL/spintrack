@@ -97,7 +97,7 @@ class CalibrationApp:
 
     # ----- events -----
     def _click(self, event) -> None:
-        x, y = self._img_xy(event)
+        x, y = (round(v) for v in self._img_xy(event))
         s = self.session
         if self.mode == "circle":
             s.circle_points.append((x, y))
@@ -190,10 +190,12 @@ def calibrate(config_path: str | Path, src: str | None = None) -> int:
     config_path = Path(config_path)
     try:
         cfg = open_config(config_path, src)
-        spec = cfg.source(src)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    source = open_source(spec)
+    spec = src if src is not None else cfg.video
+    if spec is None:
+        raise SystemExit(f"{config_path} names no video; pass --src VIDEO")
+    source = open_source(str(spec))
     frame = source.read()
     source.close()
     if frame is None:

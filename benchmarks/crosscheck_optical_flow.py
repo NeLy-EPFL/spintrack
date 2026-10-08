@@ -1,18 +1,21 @@
-"""Independent check: the image shift phase correlation measures against the one a
-`.dat`'s rotation predicts.
+"""Independent check: the image shift phase correlation measures against the one a run's
+rotation predicts.
 
-The ball circle comes from the config's `roi_circ`. A 256 px patch on the upper ball is
+The ball circle comes from the config's `ball.rim`. A 256 px patch on the upper ball is
 tracked by phase correlation; the prediction is the mean of `(w x p) r` over the patch,
 with `p` on the near side of the sphere. A fixed patch reads a ball that moves in its
 holder as motion, so use it on recordings where the ball stays put.
 
-    uv run python benchmarks/crosscheck_optical_flow.py CONFIG DAT [FIRST] [COUNT]
+    uv run python benchmarks/crosscheck_optical_flow.py CONFIG TRACKS [FIRST] [COUNT]
+
+TRACKS is the run's `tracks.parquet`.
 """
 
 import sys
 
 import cv2
 import numpy as np
+import polars as pl
 
 from spintrack.config import Config
 
@@ -24,11 +27,11 @@ def circle_from_points(pts):
 
 
 cfg = Config.load(sys.argv[1])
-d = np.loadtxt(sys.argv[2], delimiter=",")
+d = pl.read_parquet(sys.argv[2]).to_numpy()
 n0 = int(sys.argv[3]) if len(sys.argv) > 3 else 100
 n = int(sys.argv[4]) if len(sys.argv) > 4 else 800
 n = min(n, len(d) - n0 - 1)
-cx, cy, r = circle_from_points(np.asarray(cfg.roi_circ, float).reshape(-1, 2))
+cx, cy, r = circle_from_points(np.asarray(cfg.ball.rim, float))
 
 s = 256
 x0, y0 = int(cx - s / 2), int(cy - 260)  # upper ball, clear of the cut-off bottom
@@ -37,7 +40,7 @@ px, py = (xx - cx) / r, (yy - cy) / r
 pz = -np.sqrt(np.clip(1 - px * px - py * py, 0, None))  # near side: toward the camera
 p = np.stack([px, py, pz], -1)
 
-cap = cv2.VideoCapture(cfg.src_fn)
+cap = cv2.VideoCapture(str(cfg.video))
 cap.set(cv2.CAP_PROP_POS_FRAMES, n0)
 win = cv2.createHanningWindow((s, s), cv2.CV_64F)
 prev, meas = None, []

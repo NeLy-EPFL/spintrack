@@ -140,8 +140,8 @@ def source_mask(
 ) -> np.ndarray:
     """uint8 mask of the source image: 255 on the ball (slightly shrunk), 0 elsewhere.
 
-    `ignore_polygons` are FicTrac `roi_ignr` polygons (flat `x1, y1, x2, y2, ...` lists)
-    covering the animal and other occluders; they are cut out of the mask.
+    `ignore_polygons` (the config's `mask.ignore`: lists of `(x, y)` pixels) cover the
+    animal and other occluders; they are cut out of the mask.
     """
     mask = np.zeros((camera.height, camera.width), np.uint8)
     outline = ball_outline(camera, center, half_angle, shrink=shrink)

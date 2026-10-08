@@ -16,16 +16,17 @@ First release: a FicTrac-compatible trackball tracker with a Rust core.
 
 ### Interfaces
 
-- `spintrack run`, `calibrate` and `map`. `calibrate --auto` detects the ball and fits `vfov` from a recording, and `--c2a-angles` writes `c2a_r` from the camera's position, both without a window.
-- Outputs: FicTrac's 25-column `.dat`, a Parquet copy with named columns and units, a JSON summary of the run's quality and inputs, and an optional annotated debug video. Existing outputs are never overwritten without `--overwrite`.
+- `spintrack run`, `calibrate` and `map`. `run` takes a config, or a video with `--config`, and `spintrack VIDEO` is short for `spintrack run VIDEO`. `calibrate --auto` detects the ball and fits the field of view from a recording, and `--camera-position` writes where the camera sits, both without a window; `run --camera-position` overrides the config's for one run.
+- A TOML config with readable names in tables (`camera`, `ball`, `mask`, `tracking`, `output`, `stream`), validated on load with pydantic: an unknown key is an error that names the key it most resembles. Paths are relative to the config. The camera-to-animal transform is the camera's position (`camera.position_deg`) or a rotation vector (`camera.rotation`), and the ball is its rim points (`ball.rim`).
+- Outputs: one folder per run, `NAME_spintrack` next to the video, holding the records as Parquet with named columns and units (`tracks.parquet`), a JSON summary of the run's quality and inputs, the run's log, the config as run (`config.toml`), and an optional annotated debug video. Existing outputs are never overwritten without `--overwrite`.
 - UDP, TCP and serial streaming in FicTrac's line format.
-- Python API: `spintrack.track` for a whole recording and `spintrack.Tracker` for one frame at a time.
+- Python API: `spintrack.track` for a whole recording (`to_polars()` for a DataFrame) and `spintrack.Tracker` for one frame at a time.
 
 ### Compatibility with FicTrac
 
-- Reads FicTrac configs (and YAML or TOML) and writes FicTrac's columns, with path integration ported line for line. `c2a_r` is required.
+- Streams FicTrac's 25-field records in FicTrac's line format, with path integration ported line for line. It reads no FicTrac `config.txt` and writes no `.dat` file; `docs/fictrac.md` translates both, key by key and column by column. A camera-to-animal transform is required.
 - Rotation columns are in the true camera and lab frames, which FicTrac's are not; column 5 is a photometric residual. See `docs/fictrac.md` and `docs/output.md`.
 
 ### Packaging
 
-- Built with maturin; Python 3.11 or newer. Installed from source until wheels are published with this release.
+- Built with maturin; Python 3.14 or newer. Installed from source until wheels are published with this release.

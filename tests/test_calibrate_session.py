@@ -13,9 +13,9 @@ HALF = 0.2
 
 
 def test_session_fits_ball_and_writes_config(tmp_path):
-    cfg = Config(vfov=45.0)
+    cfg = Config(camera={"vfov_deg": 45.0})
     session = CalibrationSession(
-        cfg, np.zeros((240, 320), np.uint8), tmp_path / "config.txt"
+        cfg, np.zeros((240, 320), np.uint8), tmp_path / "config.toml"
     )
     rim = ball_outline(CAM, CENTER, HALF, n_points=6)
     session.circle_points = [tuple(p) for p in rim]
@@ -35,27 +35,23 @@ def test_session_fits_ball_and_writes_config(tmp_path):
     assert rotation_angle(session.cam_to_lab @ R) < 1e-6  # cam_to_lab == R^T
     path = session.save()
     again = Config.load(path)
-    assert (
-        again.roi_r is not None
-        and len(again.roi_circ) == 12
-        and again.roi_ignr == [[10, 10, 30, 10, 30, 30]]
-    )
-    assert (
-        again.c2a_src == "c2a_cnrs_yz"
-        and len(again.c2a_cnrs_yz) == 8
-        and len(again.c2a_r) == 3
-    )
+    assert len(again.ball.rim) == 6
+    assert again.mask.ignore == [[(10, 10), (30, 10), (30, 30)]]
+    assert again.camera.position_deg is None
+    assert rotation_angle(rotvec_to_matrix(again.camera.rotation) @ R) < 1e-6
     overlay = session.overlay()
     assert overlay.shape == (240, 320, 3) and overlay.max() > 0
     assert abs(session.cursor_angle(x=1000.0, y=CAM.project(CENTER)[1])) < 1.0
 
 
-def test_session_angles_mode_writes_sliders_source(tmp_path):
-    cfg = Config(vfov=45.0, roi_c=list(CENTER), roi_r=HALF)
+def test_session_angles_mode_writes_the_camera_position(tmp_path):
+    rim = ball_outline(CAM, CENTER, HALF, n_points=6).tolist()
+    cfg = Config(camera={"vfov_deg": 45.0, "rotation": (0.1, 0, 0)}, ball={"rim": rim})
     session = CalibrationSession(
-        cfg, np.zeros((240, 320), np.uint8), tmp_path / "c.txt"
+        cfg, np.zeros((240, 320), np.uint8), tmp_path / "c.toml"
     )
+    assert np.arccos(np.clip(session.center @ CENTER, -1, 1)) < 1e-6
     session.set_angles(30.0, 10.0, 0.0)
     out = Config.load(session.save())
-    assert out.c2a_src == "sliders" and out.extra["c2a_angles"] == [30.0, 10.0, 0.0]
-    assert np.allclose(out.c2a_r, session.to_config().c2a_r)
+    assert out.camera.position_deg == (30.0, 10.0, 0.0) and out.camera.rotation is None
+    assert np.allclose(out.ball.rim, rim)

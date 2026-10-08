@@ -1,10 +1,19 @@
 # Output files
 
-`NAME.dat` and `NAME.parquet` hold the same records, one row per tracked frame; a dropped frame has no row. `NAME-summary.json` describes the run. The [guide](guide.md#run) says where they go.
+A run writes one folder, `NAME_spintrack` next to the video or `--out DIR` (the [guide](guide.md#run) has the details):
+
+| file | content |
+|---|---|
+| `tracks.parquet` | the records, one row per tracked frame; a dropped frame has no row |
+| `summary.json` | run quality and provenance |
+| `log.txt` | the lines the run printed, warnings included |
+| `config.toml` | the config as run, with the command line's changes and the ball if the run detected it; `spintrack run` on it, with `--out` another folder and the run's `--two-pass` and `--max-frames`, repeats the run |
+| `debug.mp4` | with `--debug-video`: the annotated video ([guide](guide.md#the-debug-video)) |
+| `map.npz` | with `--save-map`: the final surface map, for `--load-map` or `spintrack map` |
 
 ## Frames and units
 
-The camera frame has x to the right of the image, y down and z along the optical axis. The lab frame is the animal's: x forward, y to its right, z down. `c2a_r` takes one to the other.
+The camera frame has x to the right of the image, y down and z along the optical axis. The lab frame is the animal's: x forward, y to its right, z down. The config's camera position (`camera.position_deg` or `camera.rotation`) takes one to the other.
 
 Rotations are right-handed rotation vectors (axis times angle) in radians. Distances are in ball radii, which equal radians of ball rotation. Multiply by the ball's radius for a distance, and per-frame values by the frame rate for a rate:
 
@@ -16,7 +25,7 @@ The row after dropped frames spans the gap, so divide by its `delta_ts` (ms) rat
 
 ## The 25 columns
 
-The `.dat` has no header; fields are separated by `", "`, floats have 14 significant digits, and `frame` and `seq` are integers. Columns are numbered from 1, as in FicTrac's documentation; names are the Parquet ones (`spintrack.io.dat.COLUMNS`).
+In FicTrac's order, which is also that of the streamed line; columns are numbered from 1, as in FicTrac's documentation, and named as in `tracks.parquet` (`spintrack.io.records.COLUMNS`).
 
 | col | name | content | unit | frame, sign |
 |---|---|---|---|---|
@@ -25,7 +34,7 @@ The `.dat` has no header; fields are separated by `", "`, floats have 14 signifi
 | 5 | `err` | weighted mean squared photometric residual | | lower is better |
 | 6-8 | `dr_lab_x`, `_y`, `_z` | rotation since the last tracked frame | rad | lab: forward walking is +y, a step to the right is -x, a right turn is -z |
 | 9-11 | `r_cam_x`, `_y`, `_z` | absolute orientation | rad | camera, 0 at the first frame |
-| 12-14 | `r_lab_x`, `_y`, `_z` | absolute orientation, `C R_cam C^T` with `C` from `c2a_r` | rad | lab, 0 at the first frame |
+| 12-14 | `r_lab_x`, `_y`, `_z` | absolute orientation, `C R_cam C^T` with `C` the camera-to-lab rotation | rad | lab, 0 at the first frame |
 | 15-16 | `pos_x`, `pos_y` | integrated fictive position | ball radii | x along the initial heading, y to its right |
 | 17 | `heading` | integrated heading, [0, 2 pi) | rad | grows as the animal turns right |
 | 18 | `direction` | direction of motion relative to the heading, [0, 2 pi) | rad | 0 forward, pi/2 to the right |
@@ -36,19 +45,33 @@ The `.dat` has no header; fields are separated by `", "`, floats have 14 signifi
 | 24 | `delta_ts` | time since the last tracked frame, 0 on the first | ms | |
 | 25 | `wall_ms` | wall-clock time the frame was read | ms since midnight | |
 
-A tracking reset (after `max_bad_frames` losses, or when tracking starts) restarts `seq`, the heading and the position; `forward_total` and `side_total` carry on, as in FicTrac. A frame relocalized by the global search reports zero motion.
+A tracking reset (after `tracking.max_bad_frames` losses, or when tracking starts) restarts `seq`, the heading and the position; `forward_total` and `side_total` carry on, as in FicTrac. A frame relocalized by the global search reports zero motion.
 
 In Python, `FrameResult.forward`, `side` and `turn` are `dr_lab_y`, `-dr_lab_x` and `-dr_lab_z`.
 
 ## Parquet
 
-The same 25 columns under the names above, `frame` and `seq` as int64 and the rest as float64 at full precision. Each field's metadata holds its unit (`spintrack.io.parquet.UNITS`), and the file metadata holds the version (`spintrack`) and the run's provenance as JSON (`provenance`). Load it with `pandas.read_parquet`.
+`tracks.parquet` has the 25 columns under the names above, `frame` and `seq` as int64 and the rest as float64 at full precision. Its key-value metadata holds the version (`spintrack`), the columns' units as JSON (`units`) and the run's provenance as JSON (`provenance`):
+
+```python
+import json
+import polars as pl
+
+df = pl.read_parquet("sample_spintrack/tracks.parquet")
+units = json.loads(pl.read_parquet_metadata("sample_spintrack/tracks.parquet")["units"])
+```
+
+The file is written when the run ends, also when it ends in an error or is stopped by Ctrl-C, SIGTERM or SIGHUP; a run killed with SIGKILL leaves none.
+
+## The streamed line
+
+`--udp`, `--tcp`, `--serial` and `--print` send each record as FicTrac's 25-field line, described in [fictrac.md](fictrac.md#the-streamed-line).
 
 ## The summary
 
-`NAME-summary.json` holds the version (`spintrack`) and two sections:
+`summary.json` holds the version (`spintrack`) and two sections:
 
-- `provenance`: the config and source, where `vfov`, the ball and `c2a_r` came from, and `geometry`: the ball's image circle (`center_px`, `radius_px`), the window size, and the follower's record (`radius_measured_px`, the moves as `[start, end, px]` in `episodes`, `stopped_at`).
+- `provenance`: the config and source, where the field of view (`vfov`), the ball and the camera position came from, and `geometry`: the ball's image circle (`center_px`, `radius_px`), the window size, and the follower's record (`radius_measured_px`, the moves as `[start, end, px]` in `episodes`, `stopped_at`).
 - `quality`: `n_frames`, `n_tracked`, `n_dropped`; cost percentiles (`cost_median`, `cost_p90`, `cost_p99`) and solver iterations; `sources`, how many frames were solved against the map, the previous frame, by global search or by a reset; `map_coverage`, the fraction of the ball mapped; the hard-tracking `episodes`; and `checks`, the terminal summary's lines.
 
 ## Differences from FicTrac's output

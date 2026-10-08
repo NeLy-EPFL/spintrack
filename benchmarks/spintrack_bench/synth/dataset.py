@@ -1,6 +1,4 @@
-"""Scene specifications and dataset generation (video + ground truth + FicTrac
-config).
-"""
+"""Scene specifications and dataset generation (video, ground truth and configs)."""
 
 from __future__ import annotations
 
@@ -14,9 +12,9 @@ import numpy as np
 
 from spintrack.calibrate.sliders import camera_to_lab_from_angles
 from spintrack.camera import source_camera
-from spintrack.config import Config
 from spintrack.geometry import matrix_to_rotvec
 from spintrack.sphere import ball_outline
+from spintrack_bench.fictrac_config import to_spintrack, write_fictrac_config
 from spintrack_bench.synth.motion import (
     MotionSpec,
     lab_to_camera_increments,
@@ -173,27 +171,38 @@ def build_renderer(spec: SceneSpec, rng: np.random.Generator) -> Renderer:
     )
 
 
-def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> Config:
-    cfg = Config()
-    cfg.src_fn = video_name
-    cfg.vfov = float(spec.vfov_deg)
-    cfg.fisheye = bool(spec.fisheye)
-    cfg.src_fps = float(spec.fps)
-    cfg.q_factor = int(spec.q_factor)
-    cfg.thr_ratio = float(spec.thr_ratio)
-    cfg.thr_win_pc = float(spec.thr_win_pc)
-    cfg.do_display = False
+def fictrac_config(spec: SceneSpec, renderer: Renderer, video_name: str) -> dict:
+    """The scene's FicTrac `config.txt` keys, with the exact ball as `roi_c`/`roi_r`."""
     center = spec.ball_center()
     half = float(np.radians(spec.half_angle_deg))
-    cfg.roi_c = [float(v) for v in center]
-    cfg.roi_r = half
     rim = ball_outline(renderer.camera, center, half, n_points=8)
-    cfg.roi_circ = [round(v) for v in rim.ravel()]
     body = renderer.body_polygon()
-    cfg.roi_ignr = [body] if body else []
-    cfg.c2a_r = [float(v) for v in matrix_to_rotvec(spec.cam_to_lab())]
-    cfg.c2a_t = [0.0, 0.0, 1.0]
-    return cfg
+    return {
+        "src_fn": video_name,
+        "vfov": float(spec.vfov_deg),
+        "fisheye": bool(spec.fisheye),
+        "src_fps": float(spec.fps),
+        "q_factor": int(spec.q_factor),
+        "thr_ratio": float(spec.thr_ratio),
+        "thr_win_pc": float(spec.thr_win_pc),
+        "do_display": False,
+        "roi_c": [float(v) for v in center],
+        "roi_r": half,
+        "roi_circ": [round(v) for v in rim.ravel()],
+        "roi_ignr": [body] if body else [],
+        "c2a_r": [float(v) for v in matrix_to_rotvec(spec.cam_to_lab())],
+        "c2a_t": [0.0, 0.0, 1.0],
+    }
+
+
+def spintrack_config(dataset: Path) -> Path:
+    """The scene's `config.toml`, translated from its `config.txt` when missing."""
+    path = Path(dataset) / "config.toml"
+    if not path.exists():
+        spec = SceneSpec.from_json((Path(dataset) / "scene.json").read_text())
+        cfg = to_spintrack(Path(dataset) / "config.txt", (spec.width, spec.height))
+        cfg.save(path)
+    return path
 
 
 def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
@@ -239,8 +248,8 @@ def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
 
 
 def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
-    """Render the scene into `out_dir` (video.mp4, truth.npz, config.txt,
-    scene.json).
+    """Render the scene into `out_dir` (video.mp4, truth.npz, scene.json, and the
+    configs: FicTrac's config.txt and spintrack's config.toml).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -285,8 +294,11 @@ def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
         half_angle=np.radians(spec.half_angle_deg),
         fps=spec.fps,
     )
-    fictrac_config(spec, renderer, video.name).save(out_dir / "config.txt")
     (out_dir / "scene.json").write_text(spec.to_json())
+    config = write_fictrac_config(
+        out_dir / "config.txt", fictrac_config(spec, renderer, video.name)
+    )
+    to_spintrack(config, (spec.width, spec.height)).save(out_dir / "config.toml")
     return out_dir
 
 

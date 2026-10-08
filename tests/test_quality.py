@@ -75,14 +75,14 @@ def test_summary_and_sidecar(tmp_path):
         np.zeros((n, 3)),
         illumination={"illum_peak": 0.3},
     )
-    q.checks.update({"radius": "silhouette 100.0 px", "c2a_r": "from config"})
+    q.checks.update({"radius": "silhouette 100.0 px", "camera position": "from config"})
     assert (q.n_frames, q.n_tracked, q.n_dropped) == (200, 180, 20)
     assert [(e.start, e.end) for e in q.episodes] == [(50, 69)]
     block = format_summary(q)
     assert "frames 50-69, 0.5-0.7 s" in block and "radius: silhouette" in block
-    assert "c2a_r" not in block and len(block.splitlines()) <= 6
-    path = write_sidecar(tmp_path / "c-summary.json", q, {"config": "x.txt"})
+    assert len(block.splitlines()) <= 6
+    path = write_sidecar(tmp_path / "summary.json", q, {"config": "config.toml"})
     loaded = json.loads(path.read_text())
-    assert loaded["provenance"]["config"] == "x.txt"
-    assert loaded["quality"]["checks"]["c2a_r"] == "from config"
+    assert loaded["provenance"]["config"] == "config.toml"
+    assert loaded["quality"]["checks"]["camera position"] == "from config"
     assert loaded["quality"]["illumination"] == {"illum_peak": 0.3}

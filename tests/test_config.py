@@ -1,101 +1,58 @@
-import textwrap
+import tomllib
+from pathlib import Path
 
-from spintrack.config import Config
+import numpy as np
+import pytest
 
-SAMPLE = textwrap.dedent(
-    """
-    ## FicTrac v2.1.2 config file (build date Oct 25 2023)
-    c2a_cnrs_xy      : { 191, 171, 128, 272, 20, 212, 99, 132 }
-    c2a_r            : { 0.722445, -0.131314, -0.460878 }
-    c2a_src          : c2a_cnrs_xy
-    do_display       : y
-    opt_do_global    : n
-    q_factor         : 6
-    roi_circ         : { 63, 171, 81, 145, 106, 135, 150, 160 }
-    roi_ignr         : { { 96, 156, 113, 147, 106, 128 }, """
-    """{ 71, 213, 90, 219, 114, 218 } }
-    src_fn           : sample.mp4
-    thr_ratio        : 1.25
-    vfov             : 45
-    accumulate_map   : n
-    my_custom_key    : hello
-    # a comment kept for the user
-    """
-)
+from spintrack.config import Config, leading_comments
+
+SAMPLE = Path(__file__).parents[1] / "examples" / "sample" / "config.toml"
 
 
-def test_parse_fictrac_text():
-    cfg = Config.from_text(SAMPLE)
-    assert cfg.vfov == 45.0 and isinstance(cfg.vfov, float)
-    assert cfg.q_factor == 6 and cfg.do_display is True and cfg.opt_do_global is False
-    assert cfg.roi_circ == [63, 171, 81, 145, 106, 135, 150, 160]
-    assert cfg.roi_ignr == [[96, 156, 113, 147, 106, 128], [71, 213, 90, 219, 114, 218]]
-    assert cfg.c2a_r == [0.722445, -0.131314, -0.460878]
-    assert cfg.accumulate_map is False
-    assert cfg.extra == {"my_custom_key": "hello"}
-    assert cfg.comments == ["# a comment kept for the user"]
-    assert cfg.window_size() == 60 and cfg.has_ball()
+def test_the_example_loads_with_its_paths_relative_to_it():
+    cfg = Config.load(SAMPLE)
+    assert cfg.video == str(SAMPLE.parent / "sample.mp4")
+    assert cfg.camera.vfov_deg == 2.3893 and len(cfg.ball.rim) == 10
+    assert cfg.ball.rim[0] == (656.5, 411.0)  # half pixels, not rounded
+    assert cfg.tracking.window_px == 120 and cfg.tracking.max_bad_frames == 100
+    # The two ways of giving the camera-to-animal transform agree.
+    rotation = Config(camera={"rotation": [1.2091996] * 3}).camera.to_animal()
+    assert np.allclose(cfg.camera.to_animal(), rotation, atol=1e-6)
 
 
-def test_text_round_trip_preserves_values(tmp_path):
-    cfg = Config.from_text(SAMPLE)
-    path = tmp_path / "config.txt"
-    cfg.save(path)
-    again = Config.load(path)
-    assert again.to_mapping() == cfg.to_mapping()
-    assert "my_custom_key    : hello" in path.read_text()
-
-
-def test_yaml_round_trip(tmp_path):
-    cfg = Config.from_text(SAMPLE)
-    path = tmp_path / "config.yaml"
-    cfg.save(path)
-    again = Config.load(path)
-    assert again.roi_ignr == cfg.roi_ignr and again.vfov == 45.0
-    assert again.extra == {"my_custom_key": "hello"}
-
-
-def test_defaults_follow_fictrac():
-    cfg = Config()
-    assert cfg.vfov is None and cfg.q_factor == 6 and cfg.opt_bound == 0.35
-    assert cfg.thr_ratio == 1.25 and cfg.sock_port == -1 and cfg.accumulate_map is True
-    assert not cfg.has_ball()
-
-
-def test_real_lab_configs_parse(lab_configs):
-    for path in lab_configs:
-        cfg = Config.load(path)
-        assert cfg.vfov is not None and cfg.has_ball()
-        assert Config.from_text(cfg.to_text()).to_mapping() == cfg.to_mapping()
-
-
-def test_saving_edits_only_what_changed_and_keeps_the_layout(tmp_path, caplog):
-    """A calibration that sets two keys must not reorder the file or dump defaults."""
-    path = tmp_path / "config.txt"
+def test_mistakes_are_errors_that_say_what_was_meant(tmp_path):
+    path = tmp_path / "config.toml"
     path.write_text(
-        "## my rig\n"
-        "src_fn   : 003.mp4   # the 3rd trial\n"
-        "output_fn: 003\n"
-        "# vfov from the lens datasheet\n"
-        "vfov     : 2.39\n"
-        "q_factor : 0\n"
-        "my_key   : 7\n"
+        "vfov = 3\n"
+        "[camera]\nposition_deg = [0, 180, 0]\nrotation = [0, 0, 0]\n"
+        "[ball]\nrim = [[1, 2], [3, 4]]\n"
+        "[tracking]\nq_factor = 6\nwindow_px = 0\n"
     )
-    cfg = Config.load(path)
-    assert cfg.src_fn == "003.mp4" and cfg.output_fn == "003" and cfg.vfov == 2.39
-    assert cfg.q_factor == 6  # FicTrac's fallback for a non-positive value
-    assert "my_key" in caplog.text
-    assert cfg.source() == str(tmp_path / "003.mp4")
-    cfg.vfov = 2.5
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    cfg.save()
-    lines = path.read_text().splitlines()
-    assert lines[:4] == [
-        "## my rig",
-        "src_fn   : 003.mp4   # the 3rd trial",
-        "output_fn: 003",
-        "# vfov from the lens datasheet",
-    ]
-    assert lines[4].split(":")[1].strip() == "2.500000"
-    assert lines[5].startswith("q_factor") and lines[6].startswith("my_key")
-    assert lines[7].startswith("c2a_r") and len(lines) == 8
+    with pytest.raises(ValueError) as error:
+        Config.load(path)
+    lines = str(error.value).splitlines()[1:]
+    assert lines[0].startswith("  camera: position_deg and rotation are alternatives")
+    assert lines[1].startswith("  ball.rim: at least three rim points")
+    assert lines[2] == "  tracking.window_px: Input should be greater than 0"
+    assert lines[3].startswith("  tracking.q_factor: unknown key; [tracking] takes ")
+    assert lines[4] == "  vfov: unknown key; did you mean camera.vfov_deg?"
+    with pytest.raises(ValueError, match="TOML"):
+        Config.load(tmp_path / "config.txt")
+
+
+def test_save_writes_what_load_reads_relative_to_the_new_file(tmp_path):
+    cfg = Config.load(SAMPLE)
+    cfg.mask.ignore = [[(1, 2), (3, 4), (5, 7)]]
+    cfg.tracking.initial_map = str(tmp_path / "maps" / "rig.npz")
+    cfg.output.name = 'trial "3" \\ \u00e9\x7f'
+    (tmp_path / "run").mkdir()
+    path = cfg.save(tmp_path / "run" / "config.toml", ["# a note"], full=True)
+    text = path.read_text()
+    assert text.startswith("# a note\n\nvideo = ")
+    assert 'initial_map = "../maps/rig.npz"' in text
+    assert "    [656.5, 411.0],\n" in text  # one rim point per line
+    assert Config.load(path) == cfg
+    assert leading_comments(path) == ["# a note"]
+    # Without `full`, only what differs from the defaults.
+    sparse = tomllib.loads(Config(camera={"fisheye": True}).save(path).read_text())
+    assert sparse == {"camera": {"fisheye": True}}

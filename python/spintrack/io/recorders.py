@@ -1,7 +1,9 @@
-"""Result sinks: `.dat` file, UDP/TCP sockets, serial port, terminal.
+"""Record sinks: the `Recorder` protocol, and the live ones (UDP/TCP sockets, serial
+port, terminal); `spintrack.io.parquet.ParquetWriter` is the file one.
 
-Socket and serial sinks send the same 25-field line as the `.dat` file, prefixed with
-`FT, ` and terminated by a newline, which is what existing FicTrac clients parse.
+The live sinks send each record as FicTrac's 25-field line
+(`spintrack.io.records.format_row`). Socket and serial sinks prefix it with `FT, ` and
+end it with a newline, which is what existing FicTrac clients parse.
 """
 
 from __future__ import annotations
@@ -9,10 +11,9 @@ from __future__ import annotations
 import socket
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Protocol
 
-from spintrack.io.dat import DatWriter, format_row
+from spintrack.io.records import format_row
 
 STREAM_PREFIX = "FT, "
 
@@ -21,17 +22,6 @@ class Recorder(Protocol):
     def write(self, values: Sequence[float]) -> None: ...
 
     def close(self) -> None: ...
-
-
-class FileRecorder:
-    def __init__(self, path: str | Path):
-        self._writer = DatWriter(path)
-
-    def write(self, values: Sequence[float]) -> None:
-        self._writer.write(values)
-
-    def close(self) -> None:
-        self._writer.close()
 
 
 class TerminalRecorder:

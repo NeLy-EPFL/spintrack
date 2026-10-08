@@ -14,7 +14,7 @@ from spintrack.engine import TrackParams
 from spintrack.io.sources import VideoSource
 from spintrack.maps import map_directions
 from spintrack.tracker import Tracker
-from spintrack_bench.synth.dataset import SceneSpec, load_truth
+from spintrack_bench.synth.dataset import SceneSpec, load_truth, spintrack_config
 
 
 def map_fidelity(dataset: Path, tracker, truth: dict) -> float:
@@ -37,6 +37,20 @@ def map_fidelity(dataset: Path, tracker, truth: dict) -> float:
     return float(np.corrcoef(mean.ravel()[seen], gt.ravel()[seen])[0, 1])
 
 
+def apply_overrides(cfg: Config, params: TrackParams, overrides: dict) -> None:
+    """Set the `TrackParams` fields and the config keys (`table.key`) `overrides` names.
+
+    The other keys are FicTrac's: a run of several systems shares one dict.
+    """
+    names = {f.name for f in fields(TrackParams)}
+    for key, value in overrides.items():
+        table, _, name = key.rpartition(".")
+        if key in names:
+            setattr(params, key, value)
+        elif table in Config.model_fields:
+            setattr(getattr(cfg, table), name, value)
+
+
 def run_spintrack(
     dataset: Path, overrides: dict | None = None
 ) -> tuple[np.ndarray, dict]:
@@ -44,17 +58,12 @@ def run_spintrack(
     timing).
     """
     dataset = Path(dataset)
-    cfg = Config.load(dataset / "config.txt")
+    cfg = Config.load(spintrack_config(dataset))
     params = TrackParams()
-    param_names = {f.name for f in fields(TrackParams)}
-    for key, value in (overrides or {}).items():
-        if key in param_names:
-            setattr(params, key, value)
-        elif hasattr(cfg, key):
-            setattr(cfg, key, value)
+    apply_overrides(cfg, params, overrides or {})
     truth = load_truth(dataset)
     n = len(truth["w_cam"])
-    src = VideoSource(dataset / cfg.src_fn)
+    src = VideoSource(cfg.video)
     tracker = Tracker(cfg, src.width, src.height, params)
     est = np.full((n, 3), np.nan)
     t_track = 0.0

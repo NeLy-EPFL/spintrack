@@ -154,13 +154,13 @@ def cmd_run(args) -> int:
                 f"trk {timing.get('tracking_ms_per_frame')} ms"
             )
     if rows:
-        import pandas as pd
+        import polars as pl
 
         path = results_dir / "results.parquet"
-        df = pd.DataFrame(rows)
+        df = pl.DataFrame(rows, infer_schema_length=None)
         if path.exists():
-            df = pd.concat([pd.read_parquet(path), df], ignore_index=True)
-        df.to_parquet(path, index=False)
+            df = pl.concat([pl.read_parquet(path), df], how="diagonal_relaxed")
+        df.write_parquet(path)
         print(f"[run] appended {len(rows)} rows to {path}")
     return 0
 
@@ -169,9 +169,9 @@ def cmd_agree(args) -> int:
     """Run spintrack on real recordings and compare with the FicTrac `.dat` next to
     them.
     """
-    import pandas as pd
+    import polars as pl
 
-    from spintrack.io.dat import read_dat
+    from spintrack.io.records import read_dat
     from spintrack_bench.agreement import compare
     from spintrack_bench.runners.real_video import track_video
 
@@ -211,14 +211,28 @@ def cmd_agree(args) -> int:
                 f"{timing['fps_total']:.0f} fps incl. decode"
             )
     if rows and args.out:
-        pd.DataFrame(rows).to_csv(args.out, index=False)
+        pl.DataFrame(rows, infer_schema_length=None).write_csv(args.out)
         print(f"[agree] wrote {args.out}")
     return 0
 
 
+def _markdown(table, floatfmt: str = "g") -> str:
+    """`table` as a Markdown table; a missing value reads `nan`."""
+    from tabulate import tabulate
+
+    rows = [[np.nan if v is None else v for v in row] for row in table.rows()]
+    return tabulate(rows, table.columns, tablefmt="pipe", floatfmt=floatfmt)
+
+
+def _pivot(df, values: str):
+    """One row per dataset and one column per system, both sorted."""
+    table = df.pivot("system", index="dataset", values=values).sort("dataset")
+    return table.select("dataset", *sorted(table.columns[1:]))
+
+
 def _gain_section(df) -> list[str]:
     """Per-component scale in the animal frame, as `gain +- bootstrap error` strings."""
-    import pandas as pd
+    import polars as pl
 
     names = {"forward": "forward walking", "turn": "turning", "side": "sideslip"}
     if not all(f"gain_{n}" in df.columns for n in names):
@@ -236,15 +250,13 @@ def _gain_section(df) -> list[str]:
                 "dataset": row["dataset"],
                 "system": row["system"],
                 title: "-"
-                if not np.isfinite(row[f"gain_{name}"])
+                if row[f"gain_{name}"] is None or not np.isfinite(row[f"gain_{name}"])
                 else f"{row[f'gain_{name}']:.4f} +- {row[f'gain_se_{name}']:.4f}",
             }
-            for _, row in df.iterrows()
+            for row in df.iter_rows(named=True)
         ]
-        table = pd.DataFrame(rows).pivot(
-            index="dataset", columns="system", values=title
-        )
-        lines += [f"### {title}", "", table.to_markdown(), ""]
+        table = _pivot(pl.DataFrame(rows), title)
+        lines += [f"### {title}", "", _markdown(table), ""]
     return lines
 
 
@@ -260,20 +272,17 @@ def cmd_rescore(args) -> int:
     older ones are left alone rather than rescored against a stranger's numbers. That is
     also what `report` renders.
     """
-    import pandas as pd
+    import polars as pl
 
     results_dir = Path(args.results)
     path = results_dir / "results.parquet"
-    df = pd.read_parquet(path)
-    owns_npz = (
-        df.sort_values("timestamp")
-        .groupby(["dataset", "system", "config_hash"], as_index=False)
-        .tail(1)
-        .index
-    )
+    rows = pl.read_parquet(path).to_dicts()
+    owns_npz = {}
+    for row in sorted(rows, key=lambda row: row["timestamp"]):
+        owns_npz[row["dataset"], row["system"], row["config_hash"]] = row
     truths: dict[str, dict] = {}
     updated = 0
-    for i, row in df.loc[owns_npz].iterrows():
+    for row in owns_npz.values():
         npz = (
             results_dir / f"{row['dataset']}__{row['system']}__{row['config_hash']}.npz"
         )
@@ -286,30 +295,29 @@ def cmd_rescore(args) -> int:
         summary = summarize(
             est, truth["w_cam"], truth["cam_to_lab"], float(truth["fps"])
         )
-        for key, value in summary.as_dict().items():
-            df.loc[i, key] = value
+        row.update(summary.as_dict())
         updated += 1
     if not args.dry_run:
-        df.to_parquet(path, index=False)
+        pl.DataFrame(rows, infer_schema_length=None).write_parquet(path)
     print(
         f"[rescore] {updated} of {len(owns_npz)} current rows rescored "
-        f"({len(df)} in the table){' (dry run)' if args.dry_run else ''}"
+        f"({len(rows)} in the table){' (dry run)' if args.dry_run else ''}"
     )
     return 0
 
 
 def cmd_report(args) -> int:
-    import pandas as pd
+    import polars as pl
 
-    df = pd.read_parquet(Path(args.results) / "results.parquet")
+    df = pl.read_parquet(Path(args.results) / "results.parquet")
     # Keep the latest row per (dataset, system).
     df = (
-        df.sort_values("timestamp")
-        .groupby(["dataset", "system"], as_index=False)
+        df.sort("timestamp", maintain_order=True)
+        .group_by(["dataset", "system"], maintain_order=True)
         .last()
     )
     if args.systems != ["all"]:
-        df = df[df["system"].isin(args.systems)]
+        df = df.filter(pl.col("system").is_in(args.systems))
     cols = {
         "median_deg": "median err (deg)",
         "p95_deg": "p95 err (deg)",
@@ -321,14 +329,14 @@ def cmd_report(args) -> int:
     }
     lines = [MARKER, ""]
     for metric, title in cols.items():
-        table = df.pivot(index="dataset", columns="system", values=metric)
         floatfmt = ".5f" if metric == "scale" else ".3f"
-        lines += [f"## {title}", "", table.to_markdown(floatfmt=floatfmt), ""]
+        lines += [f"## {title}", "", _markdown(_pivot(df, metric), floatfmt), ""]
     lines += _gain_section(df)
     agreement = Path(args.results) / "agreement_lab_trials.csv"
     if agreement.exists():
-        ag = pd.read_csv(agreement)
-        ag["trial"] = ag["trial"].map(lambda t: Path(t).name)
+        ag = pl.read_csv(agreement).with_columns(
+            pl.col("trial").str.split("/").list.last()
+        )
         keep = {
             "trial": "trial",
             "frames": "frames",
@@ -349,9 +357,7 @@ def cmd_report(args) -> int:
         lines += [
             "## Agreement with FicTrac on real recordings",
             "",
-            ag[list(keep)]
-            .rename(columns=keep)
-            .to_markdown(index=False, floatfmt=".3f"),
+            _markdown(ag.select(list(keep)).rename(keep), ".3f"),
             "",
         ]
     text = "\n".join(lines)
@@ -400,7 +406,10 @@ def main(argv=None) -> int:
         "agree", help="compare spintrack with FicTrac outputs on real videos"
     )
     a.add_argument(
-        "--trials", nargs="+", required=True, help="dirs (searched for config.txt)"
+        "--trials",
+        nargs="+",
+        required=True,
+        help="dirs, searched for FicTrac config.txt files with a .dat beside them",
     )
     a.add_argument("--overrides", default=None)
     a.add_argument("--max-frames", type=int, default=None)

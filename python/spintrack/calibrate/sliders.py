@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
+from spintrack.geometry import normalize, rotvec_to_matrix
 
 
 def camera_to_lab_from_angles(
@@ -32,14 +32,3 @@ def camera_to_lab_from_angles(
     x_cam = np.cross(y_cam, z_cam)
     R = np.column_stack([x_cam, y_cam, z_cam])
     return R @ rotvec_to_matrix(np.array([0.0, 0.0, tw]))
-
-
-def c2a_from_angles(
-    elevation_deg: float, azimuth_deg: float, twist_deg=0.0
-) -> list[float]:
-    """FicTrac-style `c2a_r` (rotation vector of camera-to-lab) from the three
-    angles.
-    """
-    return matrix_to_rotvec(
-        camera_to_lab_from_angles(elevation_deg, azimuth_deg, twist_deg)
-    ).tolist()

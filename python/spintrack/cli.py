@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 import time
+from logging.handlers import MemoryHandler
 from pathlib import Path
 
 from spintrack import __version__
@@ -13,30 +15,53 @@ from spintrack import __version__
 log = logging.getLogger("spintrack")
 
 RUN_DESCRIPTION = """\
-Track the ball in the recording (or camera) a FicTrac config describes. Writes
-NAME.dat (FicTrac's 25 columns), NAME.parquet (the same records, with named columns)
-and NAME-summary.json (the run quality) next to the config, where NAME is the config's
-output_fn or the video's name.
+Track the ball in a video (or camera index), or in the one a config names in `video`.
+Writes tracks.parquet (the records), summary.json (the run quality), log.txt and
+config.toml (the config as run) into one folder: --out, or NAME_spintrack next to the
+video, where NAME is the config's output name or the video's name. `spintrack VIDEO
+...` is short for `spintrack run VIDEO ...`.
 """
+# The first lines of the config.toml a run writes.
+RUN_CONFIG_HEADER = (
+    "# The config this run used, with the command line's changes and any ball it",
+    "# detected. `spintrack run` on this file with `--out` another folder, and the",
+    "# run's --two-pass and --max-frames if any, tracks the same video the same way.",
+)
+
+
+def _add_camera_position(p, what: str) -> None:
+    p.add_argument(
+        "--camera-position",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("ELEV", "AZIM", "TWIST"),
+        help=f"{what} (degrees; a camera directly behind the animal, level with the "
+        f"ball, is 0 180 0)",
+    )
 
 
 def _add_run(sub, common) -> None:
     p = sub.add_parser(
         "run",
         parents=[common],
-        help="track a video or camera described by a FicTrac config",
+        help="track a video, or the recording or camera a config names",
         description=RUN_DESCRIPTION,
     )
-    p.add_argument("config", help="config.txt (FicTrac format), .yaml or .toml")
     p.add_argument(
-        "--src", default=None, help="override src_fn: video path or camera index"
+        "input",
+        metavar="VIDEO|CONFIG",
+        help="a video or camera index, or a config (.toml) that names one",
     )
+    p.add_argument(
+        "--config", default=None, help="the rig's config, for a VIDEO given directly"
+    )
+    _add_camera_position(p, "where the camera sits, instead of the config's")
     p.add_argument(
         "--out",
         default=None,
-        metavar="DIR|PATH",
-        help="a directory to write into, or a .dat or .parquet path that names "
-        "every output",
+        metavar="DIR",
+        help="the output folder (default: NAME_spintrack next to the video)",
     )
     p.add_argument(
         "--overwrite", action="store_true", help="replace outputs of an earlier run"
@@ -52,7 +77,7 @@ def _add_run(sub, common) -> None:
     p.add_argument(
         "--debug-video",
         action="store_true",
-        help="also write an annotated video, NAME-debug.mp4",
+        help="also write an annotated video, debug.mp4",
     )
     p.add_argument(
         "--debug-axes",
@@ -60,7 +85,7 @@ def _add_run(sub, common) -> None:
         help="draw the ball's axes in the debug video (implies --debug-video)",
     )
     p.add_argument(
-        "--save-map", action="store_true", help="also write the final map, NAME-map.npz"
+        "--save-map", action="store_true", help="also write the final map, map.npz"
     )
     p.add_argument(
         "--load-map",
@@ -152,24 +177,19 @@ def _add_calibrate(sub, common) -> None:
         help="interactive ball / animal-frame calibration",
     )
     p.add_argument(
-        "config", help="config.txt to update (created when missing, with --src)"
+        "config", help="the config.toml to update (created when missing, with --src)"
     )
     p.add_argument(
-        "--src", default=None, help="override src_fn: video path or camera index"
-    )
-    p.add_argument(
-        "--c2a-angles",
-        nargs=3,
-        type=float,
+        "--src",
         default=None,
-        metavar=("ELEV", "AZIM", "TWIST"),
-        help="write c2a_r from the camera position in degrees, without a window "
-        "(a camera directly behind the animal, level with the ball, is 0 180 0)",
+        help="the video (or camera index) to use instead of the config's",
     )
+    _add_camera_position(p, "write where the camera sits, without a window")
     p.add_argument(
         "--auto",
         action="store_true",
-        help="fit the ball from the recording and write it to the config, no window",
+        help="fit the ball, and the field of view if missing, from the recording; "
+        "no window",
     )
     p.add_argument(
         "--frames", type=int, default=100, help="frames to detect the ball from"
@@ -179,11 +199,11 @@ def _add_calibrate(sub, common) -> None:
 
 def cmd_calibrate(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    if args.c2a_angles is not None:
-        from spintrack.calibrate.headless import write_c2a_angles
+    if args.camera_position is not None:
+        from spintrack.calibrate.headless import write_camera_position
 
         try:
-            write_c2a_angles(args.config, *args.c2a_angles, src=args.src)
+            write_camera_position(args.config, *args.camera_position, src=args.src)
         except ValueError as exc:
             logging.getLogger("spintrack").error("%s", exc)
             return 2
@@ -203,27 +223,51 @@ def _host_port(spec: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
+def _inputs(args) -> tuple[str | None, str | None]:
+    """The config and the source `run` was given: its positional is either.
+
+    A `.txt` or YAML positional is taken for an old config, which `Config.load`
+    refuses with a pointer to the TOML format.
+    """
+    if Path(args.input).suffix.lower() not in (".toml", ".txt", ".yaml", ".yml"):
+        return args.config, args.input
+    if args.config:
+        raise ValueError(
+            f"{args.input} is a config; --config goes with a video: "
+            f"spintrack run VIDEO --config CONFIG"
+        )
+    return args.input, None
+
+
 def _outputs(args, cfg, src: str) -> dict[str, Path]:
-    """The files this run writes, by kind; refuses to replace any unless --overwrite."""
-    out = Path(args.out) if args.out else None
-    if out is not None and out.suffix.lower() in (".dat", ".parquet"):
-        base = out.with_suffix("")
+    """The files this run writes, by kind; refuses to replace any unless --overwrite.
+
+    They go into one folder: `--out`, or NAME_spintrack next to the video (in the
+    current directory for a camera), where NAME is `output.name` or the video's name.
+    """
+    if args.out:
+        folder = Path(args.out)
     else:
-        name = cfg.output_fn or ("camera" if src.isdigit() else Path(src).stem)
-        base = out / Path(name).name if out else Path(args.config).parent / name
+        camera = src.isdigit()
+        if cfg.output.name:
+            name = Path(cfg.output.name).name
+        else:
+            name = "camera" if camera else Path(src).stem
+        folder = (Path() if camera else Path(src).parent) / f"{name}_spintrack"
     paths = {
-        "dat": Path(f"{base}.dat"),
-        "parquet": Path(f"{base}.parquet"),
-        "summary": Path(f"{base}-summary.json"),
+        "tracks": folder / "tracks.parquet",
+        "summary": folder / "summary.json",
+        "log": folder / "log.txt",
+        "config": folder / "config.toml",
     }
-    if args.debug_video or args.debug_axes or cfg.save_debug:
-        paths["debug"] = Path(f"{base}-debug.mp4")
+    if cfg.output.debug_video:
+        paths["debug"] = folder / "debug.mp4"
     if args.save_map:
-        paths["map"] = Path(f"{base}-map.npz")
+        paths["map"] = folder / "map.npz"
     existing = [p.name for p in paths.values() if p.exists()]
     if existing and not args.overwrite:
         raise ValueError(
-            f"outputs of an earlier run in {base.parent}: {', '.join(existing)} "
+            f"outputs of an earlier run in {folder}: {', '.join(existing)} "
             f"(--overwrite replaces them)"
         )
     return paths
@@ -239,39 +283,34 @@ def _streams(args, cfg) -> list:
     )
 
     out = []
-    if args.udp or (cfg.sock_port > 0 and not args.tcp):
-        host, port = (
-            _host_port(args.udp) if args.udp else (cfg.sock_host, cfg.sock_port)
-        )
-        out.append(UdpRecorder(host, port))
+    stream = cfg.stream
+    if args.udp or (stream.udp and not args.tcp):
+        out.append(UdpRecorder(*_host_port(args.udp or stream.udp)))
     if args.tcp:
         out.append(TcpRecorder(*_host_port(args.tcp)))
-    if args.serial or cfg.com_port:
-        spec = args.serial or f"{cfg.com_port}:{cfg.com_baud}"
-        port, _, baud = spec.partition(":")
+    if args.serial or stream.serial:
+        port, _, baud = (args.serial or stream.serial).partition(":")
         out.append(SerialRecorder(port, int(baud) if baud else 115200))
     if args.print:
         out.append(TerminalRecorder())
     return out
 
 
-def _provenance(args, cfg, src: str, prepared) -> tuple[dict, dict]:
+def _provenance(args, config, cfg, src: str, prepared) -> tuple[dict, dict]:
     """What the sidecar records about the inputs, and the summary lines they add."""
-    c2a = cfg.c2a_source()
-    angles = cfg.extra.get("c2a_angles") if cfg.c2a_src == "sliders" else None
-    identity = c2a == "c2a_r" and not any(cfg.c2a_r)
+    camera = cfg.camera
+    identity = camera.rotation is not None and not any(camera.rotation)
     provenance = {
-        "config": str(args.config),
+        "config": config,
         "source": src,
-        "vfov": {"value": cfg.vfov, "source": "config"},
-        "ball": {"source": "config", "roi_c": cfg.roi_c, "roi_r": cfg.roi_r},
-        "c2a": {
-            "source": c2a,
+        "vfov": {"value": camera.vfov_deg, "source": "config"},
+        "ball": {"source": "config"},
+        "camera_position": {
+            "source": "command line" if args.camera_position else "config",
             "identity": identity,
-            "angles": list(angles) if angles else None,
         },
     }
-    checks = {"c2a_r": "identity (explicit)"} if identity else {}
+    checks = {"camera position": "identity (explicit)"} if identity else {}
     if prepared is not None:
         provenance["ball"] = prepared.report()
         checks["ball"] = prepared.line()
@@ -298,11 +337,41 @@ def _progress(stats) -> None:
     log.info("%s, %d dropped, %.0f fps", done, stats.dropped, stats.fps)
 
 
+class _RunLog:
+    """The run's log.txt: the lines the terminal shows at INFO, and warnings.
+
+    Attached for the whole command: lines logged before the output folder exists are
+    held back and written once `open` names the file (a run refused before that leaves
+    no files), and the error that ends a run is in it too.
+    """
+
+    def __init__(self):
+        # With no target it keeps every record; with one, it writes each through.
+        self._buffer = MemoryHandler(1, flushLevel=logging.NOTSET)
+        self._buffer.setLevel(logging.INFO)
+        self._loggers = (log, logging.getLogger("py.warnings"))
+        for logger in self._loggers:
+            logger.addHandler(self._buffer)
+
+    def open(self, path: Path) -> None:
+        target = logging.FileHandler(path, "w", encoding="utf-8")
+        target.setFormatter(logging.Formatter("%(message)s"))
+        self._buffer.setTarget(target)
+        self._buffer.flush()
+
+    def close(self) -> None:
+        for logger in self._loggers:
+            logger.removeHandler(self._buffer)
+        target = self._buffer.target
+        self._buffer.close()
+        if target is not None:
+            target.close()
+
+
 def cmd_run(args) -> int:
     import cv2
 
     from spintrack.io.parquet import ParquetWriter
-    from spintrack.io.recorders import FileRecorder
     from spintrack.io.sources import open_source
     from spintrack.pipeline import open_config, run
     from spintrack.quality import format_summary, write_sidecar
@@ -310,26 +379,28 @@ def cmd_run(args) -> int:
     # OpenCV spreads its remaps and filters over every core by default; two threads
     # track as fast and leave the rest of the machine to other runs.
     cv2.setNumThreads(2)
-    cfg, src = open_config(args.config, args.src, args.two_pass)
+    config, src = _inputs(args)
+    cfg, src = open_config(config, src, args.two_pass, args.camera_position)
     if args.load_map:
-        cfg.sphere_map_fn = args.load_map
+        cfg.tracking.initial_map = args.load_map
+    if args.debug_video or args.debug_axes:
+        cfg.output.debug_video = True
     outputs = _outputs(args, cfg, src)
     source = open_source(src)
     recorders = []
     try:
         prepared = None
-        if not cfg.has_ball():
+        if not cfg.ball.rim:
             from spintrack.autofit import prepare_config
 
             prepared = prepare_config(cfg, src)
-        provenance, checks = _provenance(args, cfg, src, prepared)
+        provenance, checks = _provenance(args, config, cfg, src, prepared)
         # Streams first: one that cannot connect then fails before any file exists.
         recorders = _streams(args, cfg)
-        outputs["dat"].parent.mkdir(parents=True, exist_ok=True)
-        recorders += [
-            FileRecorder(outputs["dat"]),
-            ParquetWriter(outputs["parquet"], provenance),
-        ]
+        outputs["tracks"].parent.mkdir(parents=True, exist_ok=True)
+        args.run_log.open(outputs["log"])
+        cfg.save(outputs["config"], RUN_CONFIG_HEADER, full=True)
+        recorders.append(ParquetWriter(outputs["tracks"], provenance))
         size = f"{source.width}x{source.height}, {source.fps:g} fps"
         n = getattr(source, "n_frames", None)
         log.info(
@@ -366,7 +437,7 @@ def cmd_run(args) -> int:
         sidecar = {**provenance, "geometry": stats.geometry}
         write_sidecar(outputs["summary"], stats.quality, sidecar)
     written = ", ".join(p.name for p in outputs.values())
-    log.info("wrote %s in %s", written, outputs["dat"].parent)
+    log.info("wrote %s in %s", written, outputs["tracks"].parent)
     return 0
 
 
@@ -376,8 +447,21 @@ def _message(exc: BaseException) -> str:
     return str(exc)
 
 
+def _is_input(arg: str) -> bool:
+    """Whether a first argument is a `run` input: a path, or a camera index.
+
+    A path counts even if missing, for `run` to report it, but a bare word must name a
+    file, so that a misspelled command still gets argparse's list of commands.
+    """
+    path = Path(arg)
+    return bool(path.suffix) or path.name != arg or arg.isdigit() or path.is_file()
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="spintrack")
+    parser = argparse.ArgumentParser(
+        prog="spintrack",
+        epilog="spintrack VIDEO ... is short for spintrack run VIDEO ...",
+    )
     parser.add_argument(
         "--version", action="version", version=f"spintrack {__version__}"
     )
@@ -392,14 +476,23 @@ def main(argv: list[str] | None = None) -> int:
     _add_run(sub, common)
     _add_map(sub, common)
     _add_calibrate(sub, common)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] not in sub.choices and _is_input(argv[0]):
+        argv.insert(0, "run")
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    log.setLevel(logging.DEBUG if args.verbose else logging.NOTSET)
+    logging.captureWarnings(True)
+    log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
     from spintrack.detect import DetectionError
 
+    args.run_log = _RunLog()
+    # A kill, or the hangup of a closed terminal, stops a run as Ctrl-C does, so the
+    # records so far are still written.
+    kills = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    handlers = {s: signal.signal(s, signal.default_int_handler) for s in kills}
     try:
         return args.func(args)
     except KeyboardInterrupt:
@@ -408,6 +501,10 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, DetectionError) as exc:
         log.error("error: %s", _message(exc), exc_info=args.verbose)
         return 2
+    finally:
+        args.run_log.close()
+        for s, handler in handlers.items():
+            signal.signal(s, handler)
 
 
 if __name__ == "__main__":

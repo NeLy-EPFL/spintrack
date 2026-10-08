@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-from spintrack.config import Config
 from spintrack.geometry import rotation_between
-from spintrack.io.dat import read_dat
+from spintrack.io.records import read_dat
+from spintrack_bench.fictrac_config import read_fictrac_config, write_fictrac_config
 
 # The C++ builds are local; point the environment at others.
 BINARIES = {
@@ -52,18 +52,16 @@ def run_fictrac(
     dataset_dir = Path(dataset_dir)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    cfg = Config.load(dataset_dir / "config.txt")
-    cfg.src_fn = str((dataset_dir / cfg.src_fn).resolve())
-    cfg.do_display = False
-    cfg.save_debug = False
-    cfg.save_raw = False
-    cfg.output_fn = str((workdir / "run").resolve())
-    for key, value in (overrides or {}).items():
-        if hasattr(cfg, key):
-            setattr(cfg, key, value)
-        else:
-            cfg.extra[key] = value
-    cfg.save(workdir / "config.txt")
+    cfg = read_fictrac_config(dataset_dir / "config.txt")
+    cfg.update(
+        src_fn=str((dataset_dir / cfg["src_fn"]).resolve()),
+        do_display=False,
+        save_debug=False,
+        save_raw=False,
+        output_fn=str((workdir / "run").resolve()),
+    )
+    cfg.update(overrides or {})
+    write_fictrac_config(workdir / "config.txt", cfg)
 
     before = set(workdir.glob("*.dat"))
     t0 = time.perf_counter()

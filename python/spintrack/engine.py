@@ -47,9 +47,9 @@ class TrackParams:
     """The tracking options a config key, a CLI flag or a caller sets."""
 
     norm_win_pc: float = 0.25  # normalization window, fraction of the window size
-    forget_outside_view: bool = False  # FicTrac fork's `accumulate_map: n`
+    forget_outside_view: bool = False  # forget map cells the window does not see
     illum_bias: bool = True  # separate the rig's static illumination (`photometry`)
-    global_search: bool = False  # relocalize when the local solves fail (opt_do_global)
+    global_search: bool = False  # relocalize when the local solves fail
     max_step: float = 0.5  # rad per frame; larger increments are rejected
     max_bad_frames: int = -1  # lost frames in a row before a reset (-1: never)
     # Solve on a spatial subsample of about this many window pixels (None = all); the

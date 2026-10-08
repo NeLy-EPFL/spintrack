@@ -249,7 +249,7 @@ def hull_circle(mask: np.ndarray, rng: np.random.Generator):
         try:
             sample = pts[rng.choice(len(pts), 3, replace=False)]
             cx, cy, r = fit_circle(sample)
-        except (DetectionError, np.linalg.LinAlgError):
+        except DetectionError, np.linalg.LinAlgError:
             continue
         d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
         inliers = d < max(HULL_TOL_PX, HULL_TOL * r)

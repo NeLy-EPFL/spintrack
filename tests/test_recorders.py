@@ -2,8 +2,8 @@ import socket
 
 import numpy as np
 
-from spintrack.io.dat import N_COLUMNS, parse_row
 from spintrack.io.recorders import STREAM_PREFIX, UdpRecorder
+from spintrack.io.records import N_COLUMNS, parse_row
 
 ROW = np.arange(N_COLUMNS, dtype=np.float64)
 

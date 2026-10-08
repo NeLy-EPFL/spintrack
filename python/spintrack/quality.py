@@ -242,7 +242,7 @@ def format_summary(q: RunQuality) -> str:
 
 
 def write_sidecar(path: str | Path, q: RunQuality, provenance: dict) -> Path:
-    """Write the JSON sidecar next to the `.dat`; returns the path written."""
+    """Write the run's JSON summary to `path`; returns the path written."""
     from spintrack import __version__
 
     path = Path(path)

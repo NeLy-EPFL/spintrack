@@ -1,8 +1,8 @@
 """Fill in the geometry a config leaves open, from the recording itself.
 
 `prepare_config` detects the ball when the config does not describe one (and compares
-the two when it does), and fits `vfov` when it is `auto`. It needs a source it can read
-before tracking begins, so a live camera is refused.
+the two when it does), and fits the field of view when the config has none. It needs a
+source it can read before tracking begins, so a live camera is refused.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import replace as _replace
 import numpy as np
 
 from spintrack.camera import source_camera
-from spintrack.config import Config
+from spintrack.config import BallConfig, Config
 from spintrack.detect import (
     BallDetection,
     DetectionError,
@@ -23,13 +23,13 @@ from spintrack.detect import (
     fit_circle,
     sample_frames,
 )
-from spintrack.sphere import fit_ball, pixel_circle
+from spintrack.sphere import fit_ball
 
 log = logging.getLogger("spintrack")
 
 CAMERA_SOURCE_MESSAGE = (
     "automatic geometry needs a seekable source: it looks at frames before tracking "
-    "starts. Record a short clip and run `spintrack calibrate CLIP.txt --auto`, then "
+    "starts. Record a short clip and run `spintrack calibrate CLIP.toml --auto`, then "
     "use the config it writes."
 )
 # A detected radius this far from the config's is worth saying out loud: a relative
@@ -134,31 +134,6 @@ class Prepared:
         )
 
 
-def config_circle(cfg: Config, width: int, height: int) -> tuple[float, float, float]:
-    """The ball's image circle as the config describes it; raises if it has none."""
-    if len(cfg.roi_circ) >= 6:
-        return fit_circle(cfg.roi_circ)
-    if cfg.roi_c is not None and cfg.roi_r is not None:
-        if cfg.vfov is None:
-            raise ValueError(
-                "roi_c/roi_r describe the ball in camera directions, which need a vfov "
-                "to become pixels; give a vfov or use roi_circ"
-            )
-        camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
-        return pixel_circle(camera, cfg.roi_c, float(cfg.roi_r))
-    raise ValueError("config defines no ball")
-
-
-def _set_ball_from_points(cfg: Config, width: int, height: int) -> float:
-    """Fill `roi_c`/`roi_r` from `roi_circ` at the config's current `vfov`."""
-    camera = source_camera(width, height, cfg.vfov, cfg.fisheye)
-    points = np.asarray(cfg.roi_circ, dtype=np.float64).reshape(-1, 2)
-    center, half_angle = fit_ball(points, camera)
-    cfg.roi_c = [float(v) for v in center]
-    cfg.roi_r = float(half_angle)
-    return half_angle
-
-
 def prepare_config(
     cfg: Config,
     src_spec,
@@ -168,12 +143,13 @@ def prepare_config(
     vfov_frames: int = VFOV_FRAMES,
     params=None,
 ) -> Prepared:
-    """Detect the ball, fit `vfov` if it is `auto`, and report what was found.
+    """Detect the ball, fit the field of view if unknown, and report what was found.
 
     The detection is used only when the config has no ball of its own; when it has one,
     the two are compared and the config's is kept, and a failed detection is only
-    reported. `vfov` is fitted with the pixel circle held fixed, since the two together
-    set the ball's angular radius and the cost cannot separate them. Mutates `cfg`.
+    reported. The field of view is fitted with the pixel circle held fixed, since the
+    two together set the ball's angular radius and the cost cannot separate them.
+    Mutates `cfg`.
     """
     if str(src_spec).isdigit():
         raise ValueError(CAMERA_SOURCE_MESSAGE)
@@ -183,17 +159,14 @@ def prepare_config(
     try:
         prepared.detection = detect_ball(frames, max_frames=n_frames)
     except DetectionError as exc:
-        if not cfg.has_ball():
+        if not cfg.ball.rim:
             raise
         log.warning("ball detection failed, keeping the config's ball: %s", exc)
     detection = prepared.detection
 
-    if cfg.has_ball():
-        try:
-            radius = config_circle(cfg, width, height)[2]
-        except ValueError:  # roi_c/roi_r with vfov auto: no pixel circle yet
-            radius = None
-        if radius is not None and detection is not None:
+    if cfg.ball.rim:
+        radius = fit_circle(cfg.ball.rim)[2]
+        if detection is not None:
             prepared.config_radius_px = radius
             prepared.radius_disagreement = detection.r / radius - 1.0
             if abs(prepared.radius_disagreement) > DISAGREEMENT_WARN:
@@ -207,46 +180,39 @@ def prepare_config(
                 prepared.notes.append(message)
     else:
         prepared.ball_source = "detected"
-        cfg.roi_circ = detection.rim_points(16)
-        if cfg.vfov is not None:
-            half_angle = _set_ball_from_points(cfg, width, height)
+        cfg.ball.rim = _circle_points(detection)
+        vfov, fisheye = cfg.camera.vfov_deg, cfg.camera.fisheye
+        if vfov is not None:
+            camera = source_camera(width, height, vfov, fisheye)
+            half_angle = fit_ball(cfg.ball.rim, camera)[1]
             prepared.notes.append(
                 f"ball fitted from the recording: half-angle "
                 f"{np.degrees(half_angle):.4f} deg at confidence "
                 f"{detection.confidence:.2f}"
             )
 
-    if cfg.vfov is None:
-        if cfg.roi_circ:
-            circle = fit_circle(cfg.roi_circ)
-        elif detection is not None:
-            circle = detection
-        else:
-            raise ValueError(
-                "vfov is auto and the ball has no pixel circle to fit it from: give "
-                "roi_circ, or a vfov for roi_c/roi_r"
-            )
+    if cfg.camera.vfov_deg is None:
+        circle = fit_circle(cfg.ball.rim)
         prepared.vfov = fit_vfov(
             src_spec, cfg, circle, n_frames=vfov_frames, params=params
         )
-        cfg.vfov = prepared.vfov.vfov
-        if not cfg.roi_circ:
-            cfg.roi_circ = _circle_points(circle)
-        _set_ball_from_points(cfg, width, height)
+        cfg.camera.vfov_deg = prepared.vfov.vfov
     return prepared
 
 
-def _circle_points(circle, n: int = 16) -> list[int]:
-    """`roi_circ` points from a `BallDetection` or a plain `(cx, cy, r)`."""
+def _circle_points(circle, n: int = 16) -> list[tuple[int, int]]:
+    """Rim points, as `ball.rim` holds them, of a `BallDetection` or a `(cx, cy, r)`."""
     if isinstance(circle, BallDetection):
-        return circle.rim_points(n)
-    return circle_points(*circle, n)
+        flat = circle.rim_points(n)
+    else:
+        flat = circle_points(*circle, n)
+    return list(zip(flat[::2], flat[1::2], strict=True))
 
 
 def _costs_at(
     src_spec, cfg: Config, points, vfovs, n_frames: int, params
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Median cost and turned angle (deg) of tracking the first frames at each `vfov`.
+    """Median cost and turned angle (deg) of tracking the first frames at each vfov.
 
     All candidates track in lockstep, so the video is decoded once. A candidate whose
     geometry is impossible (the rim points do not describe a ball there, or the ball
@@ -270,23 +236,28 @@ def _costs_at(
     trackers: list = []
     costs: list[list[float]] = [[] for _ in vfovs]
     turned = np.zeros(len(vfovs))
+    fisheye = cfg.camera.fisheye
     try:
         for vfov in vfovs:
-            trial = _replace(
-                cfg,
-                vfov=float(vfov),
-                roi_circ=[round(v) for v in pts.ravel()],
-                roi_c=None,
-                roi_r=None,
-                c2a_r=[0.0, 0.0, 0.0],
+            trial = cfg.model_copy(
+                update={
+                    "camera": cfg.camera.model_copy(
+                        update={
+                            "vfov_deg": float(vfov),
+                            "position_deg": None,
+                            "rotation": (0.0, 0.0, 0.0),
+                        }
+                    ),
+                    "ball": BallConfig(rim=[(round(x), round(y)) for x, y in pts]),
+                }
             )
             try:
-                camera = source_camera(source.width, source.height, vfov, cfg.fisheye)
+                camera = source_camera(source.width, source.height, vfov, fisheye)
                 _, half = fit_ball(pts, camera)
                 if not np.isfinite(half) or np.degrees(half) > MAX_HALF_ANGLE_DEG:
                     raise ValueError("impossible geometry")
                 trackers.append(Tracker(trial, source.width, source.height, params))
-            except (ValueError, np.linalg.LinAlgError):
+            except ValueError, np.linalg.LinAlgError:
                 trackers.append(None)
         for index in range(n_frames):
             frame = source.read()
@@ -297,7 +268,7 @@ def _costs_at(
                     continue
                 try:
                     result = tracker.process_frame(frame.image, frame.ts_ms)
-                except (ValueError, np.linalg.LinAlgError):
+                except ValueError, np.linalg.LinAlgError:
                     trackers[k], costs[k], turned[k] = None, [], 0.0
                     continue
                 if result is not None:
@@ -322,7 +293,7 @@ def fit_vfov(
     grid=None,
     params=None,
 ) -> VfovFit:
-    """Fit `vfov` from the photometric cost, holding the ball's pixel circle fixed.
+    """Fit the field of view from the cost, holding the ball's pixel circle fixed.
 
     Where the ball is small in the frame the curve is flat and any value in the flat
     region tracks identically; the fit says so rather than pretending to a number.
@@ -341,7 +312,7 @@ def fit_vfov(
     if turned_deg < MIN_TURN_DEG:
         raise ValueError(
             f"the ball turned only {turned_deg:.0f} deg over {n_frames} frames, too "
-            f"little to fit the field of view from; set `vfov` from the lens instead"
+            f"little to fit the field of view from; set camera.vfov_deg from the lens"
         )
     values, costs = values[usable], costs[usable]
     best = int(np.argmin(costs))
@@ -373,8 +344,8 @@ def fit_vfov(
     if float(near.max() / near.min()) > FLAT_TOL:
         raise ValueError(
             f"the photometric cost has no clear minimum between {lo:g} and {hi:g} deg "
-            f"(lowest at {values[best]:g} deg), so `vfov` cannot be fitted from this "
-            f"recording; set it from the lens"
+            f"(lowest at {values[best]:g} deg), so the field of view cannot be fitted "
+            f"from this recording; set camera.vfov_deg from the lens"
         )
     return VfovFit(
         float(np.sqrt(flat_range[0] * flat_range[1])),

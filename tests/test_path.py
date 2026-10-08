@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spintrack.io.dat import read_dat
+from spintrack.io.records import read_dat
 from spintrack.path import PathIntegrator
 from spintrack.tracker import FrameResult
 

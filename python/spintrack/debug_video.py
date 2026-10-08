@@ -7,8 +7,8 @@ an unfolded dice centered on the face the camera looks at and oriented like the 
 (`maps.NET_LABELS`), so at `R = I` its middle tile is the window. Two of the net's empty
 tiles hold the static lighting field and the frame's numbers.
 
-Enabled with `save_debug: y` in the config or `spintrack run --debug-video`. The
-config's `roi_ignr` regions are outlined in red.
+Enabled with `debug_video = true` in the config's `[output]` or `spintrack run
+--debug-video`. The config's `mask.ignore` regions are outlined in red.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ FOURCC = {
     "raw": "I420",
 }
 
-# `vid_codec` -> (PyAV encoder, encoder options) for the codecs OpenCV cannot write.
+# `debug_codec` -> (PyAV encoder, encoder options) for the codecs OpenCV cannot write.
 AV_CODEC = {
     "h264": ("libx264", {"preset": "veryfast", "crf": "20"}),
     "avc1": ("libx264", {"preset": "veryfast", "crf": "20"}),
@@ -105,8 +105,7 @@ class DebugCanvas:
         self.up_cam = -tracker.cam_to_lab[2]
         self.ignore = [
             np.round(np.reshape(poly, (-1, 2)) * self.scale).astype(np.int32)
-            for poly in tracker.cfg.roi_ignr
-            if len(poly) >= 6
+            for poly in tracker.cfg.mask.ignore
         ]
         self._geometry_version = -1
         self._update_outline()
@@ -322,7 +321,7 @@ class DebugCanvas:
 
 
 class DebugVideoWriter:
-    """Write debug canvases to a video file (codec from the config's `vid_codec`).
+    """Write debug canvases to a video file (codec from the config's `debug_codec`).
 
     H.264, HEVC and VP9 are encoded with PyAV. That is not a preference: the
     `opencv-python` wheels bundle an FFmpeg built without libx264, so `cv2.VideoWriter`

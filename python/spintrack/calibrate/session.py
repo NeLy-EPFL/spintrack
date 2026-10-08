@@ -1,8 +1,9 @@
 """Calibration state independent of any GUI toolkit: points, fits, overlays, config.
 
-The GUI collects clicks; this module turns them into the ball ROI (`roi_c`, `roi_r`,
-`roi_circ`), ignore polygons (`roi_ignr`) and the camera-to-lab transform (`c2a_r`),
-draws the overlay that lets the user verify them, and writes the config.
+The GUI collects clicks; this module turns them into the ball's rim (`ball.rim`), the
+ignore polygons (`mask.ignore`) and the camera position (`camera.position_deg`, or
+`camera.rotation` from a calibration square), draws the overlay that lets the user
+verify them, and writes the config.
 """
 
 from __future__ import annotations
@@ -13,11 +14,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from spintrack.calibrate.headless import save_config
 from spintrack.calibrate.sliders import camera_to_lab_from_angles
 from spintrack.calibrate.square import square_pose
 from spintrack.camera import Camera, source_camera
 from spintrack.config import Config
-from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
+from spintrack.geometry import matrix_to_rotvec, normalize
 from spintrack.sphere import ball_outline, fit_ball
 
 AXIS_COLORS = ((255, 80, 80), (80, 220, 80), (80, 140, 255))  # x, y, z in RGB
@@ -40,29 +42,17 @@ class CalibrationSession:
 
     def __post_init__(self) -> None:
         h, w = self.frame.shape[:2]
-        if self.config.vfov is None or self.config.vfov <= 0:
-            raise ValueError("config needs vfov (degrees) before calibration")
-        self.camera: Camera = source_camera(w, h, self.config.vfov, self.config.fisheye)
-        cfg = self.config
-        if cfg.roi_circ:
-            self.circle_points = [
-                (float(cfg.roi_circ[i]), float(cfg.roi_circ[i + 1]))
-                for i in range(0, len(cfg.roi_circ) - 1, 2)
-            ]
-        if cfg.roi_c is not None and cfg.roi_r is not None:
-            self.center = normalize(np.asarray(cfg.roi_c, dtype=np.float64))
-            self.half_angle = float(cfg.roi_r)
-        elif len(self.circle_points) >= 3:
-            self.fit_circle()
-        for poly in cfg.roi_ignr:
-            self.ignore_polygons.append(
-                [
-                    (float(poly[i]), float(poly[i + 1]))
-                    for i in range(0, len(poly) - 1, 2)
-                ]
-            )
-        if cfg.c2a_r is not None and len(cfg.c2a_r) == 3:
-            self.cam_to_lab = rotvec_to_matrix(np.asarray(cfg.c2a_r, dtype=np.float64))
+        camera = self.config.camera
+        if camera.vfov_deg is None:
+            raise ValueError("config needs camera.vfov_deg before calibration")
+        self.camera: Camera = source_camera(w, h, camera.vfov_deg, camera.fisheye)
+        self.circle_points = list(self.config.ball.rim)
+        self.fit_circle()
+        self.ignore_polygons = [list(poly) for poly in self.config.mask.ignore]
+        if camera.position_deg is not None:
+            self.set_angles(*camera.position_deg)
+        else:
+            self.cam_to_lab = camera.to_animal()
 
     # ----- ball -----
     def fit_circle(self) -> bool:
@@ -105,29 +95,22 @@ class CalibrationSession:
     # ----- output -----
     def to_config(self) -> Config:
         cfg = self.config
-        if self.circle_points:
-            cfg.roi_circ = [round(v) for pt in self.circle_points for v in pt]
-        if self.center is not None and self.half_angle is not None:
-            cfg.roi_c = [float(v) for v in self.center]
-            cfg.roi_r = float(self.half_angle)
-        cfg.roi_ignr = [
-            [round(v) for pt in poly for v in pt] for poly in self.ignore_polygons
+        if len(self.circle_points) >= 3:
+            cfg.ball.rim = self.circle_points
+        cfg.mask.ignore = [
+            [(round(x), round(y)) for x, y in poly] for poly in self.ignore_polygons
         ]
         if self.cam_to_lab is not None:
-            cfg.c2a_r = [float(v) for v in matrix_to_rotvec(self.cam_to_lab)]
+            camera = cfg.camera
+            camera.position_deg = camera.rotation = None
             if self.angles is not None:
-                cfg.c2a_src = "sliders"
-                cfg.extra["c2a_angles"] = [float(v) for v in self.angles]
-            elif len(self.square_points) == 4:
-                key = f"c2a_cnrs_{self.square_plane}"
-                setattr(cfg, key, [round(v) for pt in self.square_points for v in pt])
-                cfg.c2a_src = key
+                camera.position_deg = self.angles
+            else:
+                camera.rotation = tuple(matrix_to_rotvec(self.cam_to_lab))
         return cfg
 
     def save(self, path: Path | None = None) -> Path:
-        path = Path(path or self.config_path or "config.txt")
-        self.to_config().save(path)
-        return path
+        return save_config(self.to_config(), path or self.config_path or "config.toml")
 
     # ----- overlay -----
     def overlay(self) -> np.ndarray:

@@ -6,27 +6,26 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pyarrow.parquet as pq
+import polars as pl
 
 import spintrack
-from helpers import make_texture, render
-from spintrack.calibrate.sliders import c2a_from_angles
+from helpers import ball_config, make_texture, render
 from spintrack.cli import main
 from spintrack.config import Config
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
-from spintrack.io.dat import COLUMNS, N_COLUMNS, read_dat
+from spintrack.io.records import COLUMNS
 
 W, H = 160, 120
 CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 HALF = 0.28
-SAMPLE = Path(__file__).parents[1] / "examples" / "sample" / "config.txt"
+SAMPLE = Path(__file__).parents[1] / "examples" / "sample" / "config.toml"
 
 
 def render_frame(texture, R, rng):
     return render(texture, R, rng, (W, H), CENTER, HALF, occluders=False)
 
 
-def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
+def test_cli_run_measures_a_known_rotation(tmp_path):
     rng = np.random.default_rng(0)
     texture = make_texture(rng, n_blobs=80)
     writer = cv2.VideoWriter(
@@ -42,19 +41,13 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
         writer.write(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
     writer.release()
 
-    cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
-    )
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    cfg.save(tmp_path / "config.txt")
-    out = tmp_path / "out.dat"
-    assert main(["run", str(tmp_path / "config.txt"), "--out", str(out)]) == 0
-    dat = read_dat(out)
-    assert dat.shape == (n, N_COLUMNS)
+    cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
+    cfg.save(tmp_path / "config.toml")
+    out = tmp_path / "out"
+    assert main(["run", str(tmp_path / "config.toml"), "--out", str(out)]) == 0
+    dat = pl.read_parquet(out / "tracks.parquet").to_numpy()
+    assert dat.shape == (n, len(COLUMNS))
     assert list(dat[:, 0].astype(int)) == list(range(n))
-    # The Parquet copy holds the same records at full precision.
-    table = pq.read_table(out.with_suffix(".parquet"))
-    assert np.allclose(np.column_stack([c.to_numpy() for c in table.columns]), dat)
     # Camera-frame increments match the simulated rotation (frame 0 is the reference).
     err = [
         np.degrees(
@@ -73,26 +66,35 @@ def test_cli_run_writes_fictrac_compatible_dat(tmp_path):
     assert np.isclose(dat[-1, 16], (-dat[1:, 7].sum()) % (2 * np.pi), atol=1e-6)
 
 
-def test_cli_run_refuses_a_config_without_c2a(tmp_path):
-    """Without c2a_r the lab-frame columns would silently be camera-frame values."""
-    cfg = Config(
-        src_fn="ball.mp4", vfov=40.0, q_factor=6, roi_c=list(CENTER), roi_r=HALF
+def test_cli_run_refuses_a_config_or_video_without_camera_position(tmp_path, caplog):
+    """Without one, the lab-frame columns would silently be camera-frame values."""
+    cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
+    cfg.camera.rotation = None
+    cfg.save(tmp_path / "config.toml")
+    out = tmp_path / "out"
+    assert main(["run", str(tmp_path / "config.toml"), "--out", str(out)]) == 2
+    # A video alone has no config at all; the refusal says what to pass.
+    video = tmp_path / "ball.mp4"
+    video.symlink_to(SAMPLE.parent / "sample.mp4")
+    with caplog.at_level(logging.ERROR, logger="spintrack"):
+        assert main([str(video)]) == 2
+    assert "--config CONFIG" in caplog.records[-1].getMessage()
+    assert {p.name for p in tmp_path.iterdir()} == {"config.toml", "ball.mp4"}
+
+
+def test_cli_calibrate_camera_position_replaces_a_rotation(tmp_path):
+    """The position goes in place of the square's rotation, under the file's notes."""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '# rig 2\nvideo = "ball.mp4"\n\n[camera]\nvfov_deg = 40\nrotation = [0, 1, 0]\n'
     )
-    cfg.save(tmp_path / "config.txt")
-    out = tmp_path / "out.dat"
-    assert main(["run", str(tmp_path / "config.txt"), "--out", str(out)]) == 2
-    assert not out.exists()
-
-
-def test_cli_calibrate_c2a_angles_writes_the_transform(tmp_path):
-    cfg = Config(src_fn="ball.mp4", vfov=40.0)
-    cfg.save(tmp_path / "config.txt")
-    argv = ["calibrate", str(tmp_path / "config.txt"), "--c2a-angles", "0", "180", "0"]
+    argv = ["calibrate", str(path), "--camera-position", "0", "180", "0"]
     assert main(argv) == 0
-    written = Config.load(tmp_path / "config.txt")
-    assert np.allclose(written.c2a_r, c2a_from_angles(0, 180, 0))
-    assert written.c2a_src == "sliders"
-    assert written.extra["c2a_angles"] == [0.0, 180.0, 0.0]
+    written = Config.load(path)
+    assert written.camera.position_deg == (0.0, 180.0, 0.0)
+    assert written.camera.rotation is None
+    assert written.video == str(tmp_path / "ball.mp4")
+    assert path.read_text().startswith("# rig 2\n")
 
 
 def run_sample(out, *extra):
@@ -101,47 +103,66 @@ def run_sample(out, *extra):
 
 def test_run_names_its_outputs_and_keeps_them(tmp_path):
     assert run_sample(tmp_path, "--debug-video") == 0
-    names = {"sample.dat", "sample.parquet", "sample-summary.json", "sample-debug.mp4"}
+    names = {"tracks.parquet", "summary.json", "debug.mp4", "log.txt", "config.toml"}
     assert {p.name for p in tmp_path.iterdir()} == names
-    dat = read_dat(tmp_path / "sample.dat")
-    assert dat.shape == (40, N_COLUMNS)
-    table = pq.read_table(tmp_path / "sample.parquet")
-    assert table.column_names == list(COLUMNS)
-    cap = cv2.VideoCapture(str(tmp_path / "sample-debug.mp4"))
+    table = pl.read_parquet(tmp_path / "tracks.parquet")
+    assert table.columns == list(COLUMNS) and table.height == 40
+    cap = cv2.VideoCapture(str(tmp_path / "debug.mp4"))
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 40
     cap.release()
+    # The log holds what the terminal showed, down to the last line.
+    lines = (tmp_path / "log.txt").read_text().splitlines()
+    assert lines[0].startswith("spintrack ") and "run quality" in "\n".join(lines)
+    assert lines[-1].startswith("wrote tracks.parquet")
     # A second run refuses to replace them, unless asked to.
-    before = (tmp_path / "sample.dat").stat().st_mtime_ns
+    before = (tmp_path / "tracks.parquet").stat().st_mtime_ns
     assert run_sample(tmp_path) == 2
-    assert (tmp_path / "sample.dat").stat().st_mtime_ns == before
+    assert (tmp_path / "tracks.parquet").stat().st_mtime_ns == before
     assert run_sample(tmp_path, "--overwrite") == 0
 
 
-def test_run_writes_next_to_the_config_or_where_out_says(tmp_path):
-    video = SAMPLE.parent / "sample.mp4"
-    text = SAMPLE.read_text().replace("sample.mp4", str(video))
-    (tmp_path / "config.txt").write_text(text + "output_fn : trial\n")
-    argv = ["run", str(tmp_path / "config.txt"), "--max-frames", "20"]
-    assert main(argv) == 0
-    assert read_dat(tmp_path / "trial.dat").shape == (20, N_COLUMNS)
-    assert main([*argv, "--out", str(tmp_path / "sub" / "x.parquet")]) == 0
-    written = {p.name for p in (tmp_path / "sub").iterdir()}
-    assert written == {"x.dat", "x.parquet", "x-summary.json"}
+def test_run_writes_the_config_it_ran(tmp_path):
+    """config.toml holds the command line's changes, and running it repeats the run."""
+    assert run_sample(tmp_path / "a", "--camera-position", "30", "180", "0") == 0
+    written = Config.load(tmp_path / "a" / "config.toml")
+    assert written.camera.position_deg == (30.0, 180.0, 0.0)
+    assert written.video == str(SAMPLE.parent / "sample.mp4")
+    argv = ["--max-frames", "40", "--out", str(tmp_path / "b")]
+    assert main(["run", str(tmp_path / "a" / "config.toml"), *argv]) == 0
+    a, b = (pl.read_parquet(tmp_path / x / "tracks.parquet") for x in "ab")
+    assert a.drop("wall_ms").equals(b.drop("wall_ms"))
+
+
+def test_run_writes_a_folder_next_to_the_video(tmp_path):
+    (tmp_path / "config.toml").write_text(SAMPLE.read_text())
+    for name in ("sample.mp4", "clip.mp4"):
+        (tmp_path / name).symlink_to(SAMPLE.parent / "sample.mp4")
+    # `spintrack VIDEO` is `spintrack run VIDEO`, here with the rig's config.
+    argv = ["--config", str(tmp_path / "config.toml"), "--max-frames", "20"]
+    assert main([str(tmp_path / "clip.mp4"), *argv]) == 0
+    assert (tmp_path / "clip_spintrack" / "tracks.parquet").exists()
+    # The folder's config names the video it ran, relative to the folder.
+    written = (tmp_path / "clip_spintrack" / "config.toml").read_text()
+    assert 'video = "../clip.mp4"' in written
+    # A config names the video in `video`, and the folder after `output.name` if set.
+    with (tmp_path / "config.toml").open("a") as f:
+        f.write('\n[output]\nname = "trial"\n')
+    assert main(["run", str(tmp_path / "config.toml"), "--max-frames", "20"]) == 0
+    assert pl.read_parquet(tmp_path / "trial_spintrack" / "tracks.parquet").height == 20
 
 
 def test_track_returns_what_run_writes(tmp_path):
     assert run_sample(tmp_path) == 0
-    table = pq.read_table(tmp_path / "sample.parquet")
-    written = np.column_stack([c.to_numpy() for c in table.columns])
+    table = pl.read_parquet(tmp_path / "tracks.parquet")
     result = spintrack.track(SAMPLE, max_frames=40)
-    assert result.columns == tuple(table.column_names)
-    # All but the wall clock, to the last bit.
-    assert np.array_equal(result.records[:, :-1], written[:, :-1])
+    assert result.columns == tuple(table.columns)
+    # All but the wall clock, to the last bit and with the same types.
+    assert result.to_polars().drop("wall_ms").equals(table.drop("wall_ms"))
     assert result.quality.n_frames == 40
 
 
 def test_errors_are_one_line(tmp_path, caplog):
-    argv = ["run", str(SAMPLE), "--src", str(tmp_path / "missing.mp4")]
+    argv = ["run", str(tmp_path / "missing.mp4"), "--config", str(SAMPLE)]
     with caplog.at_level(logging.ERROR, logger="spintrack"):
         assert main([*argv, "--out", str(tmp_path)]) == 2
     (record,) = caplog.records

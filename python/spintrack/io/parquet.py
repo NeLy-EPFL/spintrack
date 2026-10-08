@@ -1,13 +1,13 @@
-"""The `.dat` records as a Parquet table.
+"""The tracking records as a Parquet table.
 
-Same 25 columns as `spintrack.io.dat`, under the names in `COLUMNS`; `frame` and `seq`
-are int64, the rest float64 at full precision. Each field carries its unit in its
-metadata (`unit`); the file metadata carries the spintrack version (`spintrack`) and
-the run's provenance as JSON (`provenance`).
+The 25 columns of `spintrack.io.records.COLUMNS`; `frame` and `seq` are int64, the rest
+float64 at full precision. The file's key-value metadata holds the spintrack version
+(`spintrack`), each column's unit as JSON (`units`) and the run's provenance as JSON
+(`provenance`); `polars.read_parquet_metadata` reads them.
 
-Rows are written in row groups to `<path>.partial`, which moves to `path` on close, so
-`path` only ever holds a finished file. A process killed before closing leaves the
-`.partial` file behind, without the footer a reader needs.
+The rows are held in memory and written on close, to `<path>.partial` first, which then
+moves to `path`, so `path` only ever holds a finished file. A process killed before
+closing leaves no records; the CLI handles SIGTERM and SIGHUP as Ctrl-C to close it.
 """
 
 from __future__ import annotations
@@ -19,10 +19,9 @@ from pathlib import Path
 from typing import Self
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
+import polars as pl
 
-from spintrack.io.dat import COLUMNS, INT_COLUMNS, N_COLUMNS
+from spintrack.io.records import COLUMNS, INT_COLUMNS, N_COLUMNS
 
 # Columns not listed are rotation vectors, in rad. Positions and the integrated
 # forward and side motion are in ball radii, which is radians of ball rotation (multiply
@@ -45,70 +44,50 @@ UNITS = {
 }
 
 
-def schema(provenance: dict | None = None) -> pa.Schema:
-    """The table schema, with the version and `provenance` in its metadata."""
+def to_frame(records: np.ndarray) -> pl.DataFrame:
+    """An (n, 25) array of records as a DataFrame with named, typed columns."""
+    records = np.asarray(records, dtype=np.float64).reshape(-1, N_COLUMNS)
+    return pl.DataFrame(
+        {
+            name: records[:, i].astype(np.int64) if i in INT_COLUMNS else records[:, i]
+            for i, name in enumerate(COLUMNS)
+        }
+    )
+
+
+def metadata(provenance: dict | None = None) -> dict[str, str]:
+    """The file's key-value metadata: the version, the units and `provenance`."""
     from spintrack import __version__
 
-    fields = [
-        pa.field(
-            name,
-            pa.int64() if i in INT_COLUMNS else pa.float64(),
-            metadata={"unit": UNITS.get(name, "rad")},
-        )
-        for i, name in enumerate(COLUMNS)
-    ]
-    metadata = {"spintrack": __version__}
+    units = {name: UNITS.get(name, "rad") for name in COLUMNS}
+    meta = {"spintrack": __version__, "units": json.dumps(units)}
     if provenance is not None:
-        metadata["provenance"] = json.dumps(provenance, default=float)
-    return pa.schema(fields, metadata=metadata)
+        meta["provenance"] = json.dumps(provenance, default=float)
+    return meta
 
 
 class ParquetWriter:
-    """Collect `.dat` rows into a Parquet file, one per call (see the module doc)."""
+    """Collect records into a Parquet file, one per call (see the module doc)."""
 
-    def __init__(
-        self,
-        path: str | Path,
-        provenance: dict | None = None,
-        row_group_size: int = 65536,
-    ):
+    def __init__(self, path: str | Path, provenance: dict | None = None):
         self.path = Path(path)
-        self._partial = self.path.with_name(self.path.name + ".partial")
-        self._schema = schema(provenance)
-        self._writer: pq.ParquetWriter | None = pq.ParquetWriter(
-            self._partial, self._schema
-        )
-        # Column-major, so each column of a row group is contiguous.
-        self._cols = np.empty((N_COLUMNS, row_group_size))
-        self._n = 0
+        self._metadata = metadata(provenance)
+        self._rows: list[np.ndarray] | None = []
 
     def write(self, values: Sequence[float]) -> None:
-        if self._writer is None:
+        if self._rows is None:
             raise ValueError("writer is closed")
         if len(values) != N_COLUMNS:
             raise ValueError(f"expected {N_COLUMNS} values, got {len(values)}")
-        self._cols[:, self._n] = values
-        self._n += 1
-        if self._n == self._cols.shape[1]:
-            self._flush()
-
-    def _flush(self) -> None:
-        if self._n == 0 or self._writer is None:
-            return
-        arrays = [
-            pa.array(col.astype(np.int64) if i in INT_COLUMNS else col)
-            for i, col in enumerate(self._cols[:, : self._n])
-        ]
-        self._writer.write_table(pa.Table.from_arrays(arrays, schema=self._schema))
-        self._n = 0
+        self._rows.append(np.array(values, dtype=np.float64))
 
     def close(self) -> None:
-        if self._writer is None:
+        if self._rows is None:
             return
-        self._flush()
-        self._writer.close()
-        self._writer = None
-        os.replace(self._partial, self.path)
+        partial = self.path.with_name(self.path.name + ".partial")
+        to_frame(np.array(self._rows)).write_parquet(partial, metadata=self._metadata)
+        self._rows = None
+        os.replace(partial, self.path)
 
     def __enter__(self) -> Self:
         return self

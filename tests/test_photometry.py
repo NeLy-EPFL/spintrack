@@ -5,10 +5,9 @@ map.
 import numpy as np
 import pytest
 
-from helpers import make_texture
+from helpers import ball_config, make_texture
 from spintrack import photometry
 from spintrack.camera import PinholeCamera
-from spintrack.config import Config
 from spintrack.engine import TrackEngine, TrackParams
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.maps import load_illumination, load_map, save_map
@@ -141,10 +140,10 @@ def test_map_file_carries_the_illumination_field(tmp_path):
     assert load_illumination(path, SIZE + 2)[0] == {}
 
 
-def test_illumination_fn_loads_the_fields_and_leaves_the_map_alone(tmp_path):
-    """The point of `illumination_fn`: the rig's lighting without a previous ball.
+def test_initial_illumination_loads_the_fields_and_leaves_the_map_alone(tmp_path):
+    """The point of `initial_illumination`: the rig's lighting without a previous ball.
 
-    `sphere_map_fn` carries the fields too, but only along with the surface map they
+    `initial_map` carries the fields too, but only along with the surface map they
     were saved beside, and localizing the first frame against it.
     """
     engine, _, _ = run(TrackParams(illum_bias=True), n=200)
@@ -154,9 +153,9 @@ def test_illumination_fn_loads_the_fields_and_leaves_the_map_alone(tmp_path):
         tmp_path / "m.npz", mean, weight, window_size=SIZE, center=CENTER,
         half_angle=HALF, illum_bias=state["bias"],
     )  # fmt: skip
-    cfg = Config(vfov=CAM.vfov_deg, q_factor=SIZE // 10, roi_c=list(CENTER), roi_r=HALF)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    cfg.illumination_fn = str(path)
+    cfg = ball_config((CAM.width, CAM.height), CENTER, HALF, CAM.vfov_deg)
+    cfg.tracking.window_px = SIZE
+    cfg.tracking.initial_illumination = str(path)
     tracker = Tracker(cfg, CAM.width, CAM.height, TrackParams(center_watch=False))
     photo = tracker.engine.photometry
     got, want = photo.bias[photo.mask], state["bias"][photo.mask]

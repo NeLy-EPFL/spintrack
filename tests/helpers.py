@@ -3,10 +3,21 @@
 import numpy as np
 
 from spintrack.camera import PinholeCamera
+from spintrack.config import Config
 from spintrack.geometry import normalize
-from spintrack.sphere import pixel_circle
+from spintrack.sphere import ball_outline, pixel_circle
 
 LIGHT = normalize(np.array([-0.3, -0.5, -0.8]))
+
+
+def ball_config(size, center, half, vfov=40.0, **tables) -> Config:
+    """A config whose rim lies on the outline of the ball at `center`, `half` (rad).
+
+    The camera frame is the animal frame (`rotation = [0, 0, 0]`).
+    """
+    rim = ball_outline(PinholeCamera(*size, vfov), center, half, n_points=16)
+    camera = {"vfov_deg": vfov, "rotation": (0.0, 0.0, 0.0)}
+    return Config(camera=camera, ball={"rim": rim.tolist()}, **tables)
 
 
 def make_texture(rng, n_blobs=120):

@@ -7,9 +7,9 @@ import pytest
 from helpers import make_texture, render
 from spintrack.autofit import CAMERA_SOURCE_MESSAGE, fit_vfov, prepare_config
 from spintrack.camera import PinholeCamera
-from spintrack.config import Config
+from spintrack.config import Config, leading_comments
 from spintrack.geometry import normalize, rotvec_to_matrix
-from spintrack.sphere import pixel_circle
+from spintrack.sphere import fit_ball, pixel_circle
 
 CENTER = normalize(np.array([0.0, 0.0, 1.0]))
 
@@ -33,22 +33,19 @@ def write_video(
     return path
 
 
-def base_config(**kwargs) -> Config:
-    cfg = Config(q_factor=6, **kwargs)
-    cfg.c2a_r = [0.0, 0.0, 0.0]
-    return cfg
+def base_config(vfov: float) -> Config:
+    return Config(camera={"vfov_deg": vfov, "rotation": (0.0, 0.0, 0.0)})
 
 
 def test_prepare_fills_a_config_that_has_no_ball(tmp_path):
     size, half = (320, 240), 0.15
     video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
     cfg = base_config(vfov=40.0)
-    assert not cfg.has_ball()
     prepared = prepare_config(cfg, str(video))
-    assert prepared.ball_source == "detected"
-    assert cfg.has_ball() and len(cfg.roi_circ) >= 24
-    assert abs(cfg.roi_r / half - 1) < 0.02, cfg.roi_r
-    assert np.allclose(cfg.roi_c, CENTER, atol=2e-3)
+    assert prepared.ball_source == "detected" and len(cfg.ball.rim) >= 12
+    center, fitted = fit_ball(cfg.ball.rim, PinholeCamera(size[0], size[1], 40.0))
+    assert abs(fitted / half - 1) < 0.02, fitted
+    assert np.allclose(center, CENTER, atol=2e-3)
 
 
 def test_prepare_reports_disagreement_but_keeps_the_config_ball(tmp_path):
@@ -59,14 +56,12 @@ def test_prepare_reports_disagreement_but_keeps_the_config_ball(tmp_path):
     angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
     wrong = 0.85 * r  # a hand-fitted circle 15% too small
     cfg = base_config(vfov=40.0)
-    cfg.roi_circ = [
-        round(v)
-        for a in angles
-        for v in (cx + wrong * np.cos(a), cy + wrong * np.sin(a))
+    cfg.ball.rim = [
+        (round(cx + wrong * np.cos(a)), round(cy + wrong * np.sin(a))) for a in angles
     ]
-    before = list(cfg.roi_circ)
+    before = list(cfg.ball.rim)
     prepared = prepare_config(cfg, str(video))
-    assert cfg.roi_circ == before, "a config that describes a ball must be left alone"
+    assert cfg.ball.rim == before, "a config that describes a ball must be left alone"
     assert prepared.ball_source == "config"
     assert 0.15 < prepared.radius_disagreement < 0.22, prepared.radius_disagreement
     assert prepared.notes, "a disagreement this large must be said out loud"
@@ -110,19 +105,21 @@ def test_vfov_is_not_identifiable_on_a_near_orthographic_view(tmp_path):
     assert fit.flat_range[1] / fit.flat_range[0] >= 4.0, fit.flat_range
 
 
-def test_calibrate_auto_creates_the_config_and_run_refuses_an_auto_vfov(tmp_path):
+def test_calibrate_auto_creates_the_config_and_run_refuses_an_unknown_vfov(tmp_path):
     """`calibrate --auto` writes a new config once per fit; `run` wants a fixed vfov."""
     from spintrack.cli import main
 
     size, half = (320, 240), 0.15
-    write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
-    path = tmp_path / "config.txt"
+    video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
+    path = tmp_path / "config.toml"
     for _ in range(2):
-        argv = ["calibrate", str(path), "--src", "ball.mp4", "--auto"]
-        assert main([*argv, "--c2a-angles", "0", "180", "0"]) == 0
+        argv = ["calibrate", str(path), "--src", str(video), "--auto"]
+        assert main([*argv, "--camera-position", "0", "180", "0"]) == 0
     cfg = Config.load(path)
-    assert cfg.src_fn == "ball.mp4" and cfg.has_ball() and cfg.c2a_r is not None
-    assert len(cfg.comments) == 1, cfg.comments  # one note, not one per run
-    cfg.vfov = None
-    cfg.save()
+    assert cfg.video == str(video) and cfg.ball.rim and cfg.camera.vfov_deg
+    assert cfg.camera.position_deg == (0.0, 180.0, 0.0)
+    assert 'video = "ball.mp4"' in path.read_text()  # relative to the config
+    assert len(leading_comments(path)) == 1  # one note, not one per run
+    cfg.camera.vfov_deg = None
+    cfg.save(path)
     assert main(["run", str(path), "--max-frames", "5"]) == 2
