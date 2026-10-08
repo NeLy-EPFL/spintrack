@@ -180,3 +180,12 @@ def test_refuses_a_mask_on_something_else():
         ball_from_masks(hi, [mask], [0.3])
     with pytest.raises(DetectionError):
         ball_from_masks(hi, [], [])
+
+
+def test_a_rim_search_off_the_image_is_refused_not_a_crash():
+    """The follower's coarse look can propose a circle with no ray inside the image."""
+    from spintrack.detect import refine_rim
+
+    image = np.full((120, 160), 128, np.uint8)
+    with pytest.raises(DetectionError, match="inside the image"):
+        refine_rim(image, 400.0, 400.0, 30.0, 1.0)

@@ -376,6 +376,8 @@ def refine_rim(image, cx, cy, r, polarity, min_strength=0.3, band=None) -> RimFi
     band = max(8.0, 0.05 * r) if band is None else band
     radii, cos, sin, dx, dy = _polar_offsets(r, band)
     keep = _rays_inside(cx, cy, radii, cos, sin, image.shape)
+    if keep.sum() < MIN_RIM_RAYS:
+        raise DetectionError("too little of the circle lies inside the image")
     profile = _sample(image, cx, cy, dx[keep], dy[keep])
     edge_r, strength, ok = _edges(profile, radii, polarity)
     cos, sin = cos[keep], sin[keep]
