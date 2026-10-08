@@ -4,22 +4,22 @@ spintrack measures the 3D rotation of a trackball (spherical treadmill) under a 
 
 ## Install
 
-spintrack is not on PyPI yet; wheels will come with the first release. Install from a clone, which builds the Rust extension and so needs a [Rust toolchain](https://rustup.rs) and Python 3.14 or newer:
+Install spintrack as a command-line tool with [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-git clone https://github.com/NeLy-EPFL/spintrack
-cd spintrack
-uv sync            # or, in an environment of your own: pip install .
+uv tool install --torch-backend auto git+https://github.com/NeLy-EPFL/spintrack
 ```
 
-Streaming over a serial port needs the `serial` extra (`uv sync --extra serial` or `pip install ".[serial]"`). Finding the ball with SAM 3, which finds it on far more rigs than the classical detector, needs the `sam` extra (`uv sync --extra sam` or `pip install ".[sam]"`); the model downloads on first use, no login needed. See [finding the ball](docs/guide.md#find-the-ball).
+`--torch-backend auto` picks the PyTorch build that matches the machine's GPU driver (CUDA or ROCm), or the CPU build when there is none. PyTorch runs SAM 3, which finds the ball; its checkpoint (3.4 GB) downloads on the first run that needs it, without a login (see [finding the ball](docs/guide.md#find-the-ball)). uv fetches Python 3.14 if needed. Until wheels come with the first release, the install builds the Rust extension, so it needs a [Rust toolchain](https://rustup.rs), and while the repository is private, GitHub access (for instance through `gh auth login`). To update, run the same command with `--reinstall`; `uv tool upgrade` would not keep the PyTorch build.
+
+Streaming over a serial port needs the `serial` extra: install `"spintrack[serial] @ git+https://github.com/NeLy-EPFL/spintrack"` instead. To work on spintrack itself, clone the repository and run `uv sync`.
 
 ## Quick start
 
-The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball. A second example, `examples/ball_drop/`, shows the tracking window following a ball that sinks in its holder and comes back up.
+The repository includes a 10.5 s example: frames 850-1899 of trial ANXXX049_251125_Fly1_003, a fly filmed by a camera behind it, at half resolution. The fly walks and turns enough in it to map the whole ball. A second example, `examples/ball_drop/`, shows the tracking window following a ball that sinks in its holder and comes back up. In a clone of the repository:
 
 ```console
-$ uv run spintrack run examples/sample/config.toml --debug-video
+$ spintrack run examples/sample/config.toml --debug-video
 spintrack 0.1.0: examples/sample/sample.mp4 (800x504, 100 fps, 1050 frames)
 done: 1050 frames, 0 dropped, 5.7 s (183 fps)
 run quality: 1050 frames, 1050 tracked, 0 dropped

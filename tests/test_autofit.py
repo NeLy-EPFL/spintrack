@@ -136,19 +136,21 @@ def test_find_ball_takes_the_model_masks_and_measures_the_rim(monkeypatch):
     cx, cy, r = pixel_circle(PinholeCamera(size[0], size[1], 40.0), CENTER, half)
     yy, xx = np.indices((size[1], size[0]))
     mask = (np.hypot(xx + 0.5 - cx, yy + 0.5 - cy) < 0.985 * r).astype(np.uint8)
-    monkeypatch.setattr(segment, "installed", lambda: True)
     monkeypatch.setattr(segment, "ball_masks", lambda image: (mask[None], [0.7]))
     found = autofit.find_ball(frames, 5)
     assert found.model_score == 0.7
     assert abs(found.r / r - 1) < 0.01
 
 
-def test_find_ball_without_the_model_suggests_it_when_it_fails(monkeypatch):
-    from spintrack import autofit, segment
-    from spintrack.detect import DetectionError
+def test_find_ball_falls_back_to_the_classical_detector(monkeypatch):
+    """Offline before the model's first download, the classical detector still runs."""
+    from spintrack import autofit
 
-    monkeypatch.setattr(segment, "installed", lambda: False)
-    rng = np.random.default_rng(3)
-    frames = [rng.integers(0, 60, (240, 320), dtype=np.uint8) for _ in range(5)]
-    with pytest.raises(DetectionError, match=r"spintrack\[sam\]"):
-        autofit.find_ball(frames, 5)
+    size, half = (480, 360), 0.21
+    rng = np.random.default_rng(0)
+    texture = make_texture(rng, n_blobs=120)
+    frames = [render(texture, np.eye(3), rng, size, CENTER, half) for _ in range(5)]
+    _, _, r = pixel_circle(PinholeCamera(size[0], size[1], 40.0), CENTER, half)
+    found = autofit.find_ball(frames, 5)  # conftest makes the model unavailable
+    assert found.model_score is None
+    assert abs(found.r / r - 1) < 0.01

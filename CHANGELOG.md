@@ -17,7 +17,7 @@ First release: a FicTrac-compatible trackball tracker with a Rust core.
 ### Interfaces
 
 - `spintrack run`, `calibrate` and `map`. `run` takes a config, or a video with `--config`, and `spintrack VIDEO` is short for `spintrack run VIDEO`. `calibrate --auto` detects the ball and fits the field of view from a recording, and `--camera-position` writes where the camera sits, both without a window; `run --camera-position` overrides the config's for one run.
-- Ball detection with SAM 3 (the `sam` extra): the model proposes the ball's silhouette and the rim is measured and checked on the image. It found all 225 balls of 266 recordings from six rigs and refused the 41 without a usable ball; the classical detector, used without the extra, found 108.
+- Ball detection with SAM 3: the model proposes the ball's silhouette and the rim is measured and checked on the image. It found all 225 balls of 266 recordings from six rigs and refused the 41 without a usable ball; the classical detector, used when the model cannot be loaded, found 108.
 - A TOML config with readable names in tables (`camera`, `ball`, `mask`, `tracking`, `output`, `stream`), validated on load with pydantic: an unknown key is an error that names the key it most resembles. Paths are relative to the config. The camera-to-animal transform is the camera's position (`camera.position_deg`) or a rotation vector (`camera.rotation`), and the ball is its rim points (`ball.rim`).
 - Outputs: one folder per run, `NAME_spintrack` next to the video, holding the records as Parquet with named columns and units (`tracks.parquet`), a JSON summary of the run's quality and inputs, the run's log, the config as run (`config.toml`), and an optional annotated debug video. Existing outputs are never overwritten without `--overwrite`.
 - UDP, TCP and serial streaming in FicTrac's line format.
@@ -30,4 +30,4 @@ First release: a FicTrac-compatible trackball tracker with a Rust core.
 
 ### Packaging
 
-- Built with maturin; Python 3.14 or newer. Installed from source until wheels are published with this release.
+- Built with maturin; Python 3.14 or newer. Installed from source until wheels are published with this release; `uv tool install --torch-backend auto` is the recommended way, picking the PyTorch build for the machine's GPU.

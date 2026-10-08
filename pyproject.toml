@@ -25,14 +25,17 @@ dependencies = [
     "av>=13",
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
+    # pillow, torch, torchvision and transformers run SAM 3 (spintrack.segment).
+    "pillow>=11",
     "polars>=2",
     "pydantic>=2",
+    "torch>=2.9",
+    "torchvision>=0.24",
+    "transformers>=5",
 ]
 
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]
-# SAM 3 proposes where the ball is (spintrack.segment).
-sam = ["pillow>=11", "torch>=2.9", "torchvision>=0.24", "transformers>=5"]
 
 [project.scripts]
 spintrack = "spintrack.cli:main"

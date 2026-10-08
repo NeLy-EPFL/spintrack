@@ -213,29 +213,21 @@ def prepare_config(
 def find_ball(frames, n_frames: int = 100, *, use_model: bool = True) -> BallDetection:
     """The ball in a run of frames; raises `DetectionError` when it cannot be trusted.
 
-    With the `sam` extra installed, SAM 3 proposes the ball's silhouette in the
-    frames' temporal quantile and `ball_from_masks` measures and checks the rim; its
-    refusal is final. Without the extra, or when the model cannot be loaded, the
-    classical detector runs instead, which finds far fewer balls but refuses rather
-    than guess.
+    SAM 3 proposes the ball's silhouette in the frames' temporal quantile and
+    `ball_from_masks` measures and checks the rim; its refusal is final. Without
+    `use_model`, or when the model cannot be loaded (offline before its first
+    download), the classical detector runs instead, which finds far fewer balls but
+    refuses rather than guess.
     """
-    if use_model and segment.installed():
+    if use_model:
         hi, _, n = temporal_stats(frames, n_frames)
         try:
             masks, scores = segment.ball_masks(np.clip(hi, 0, 255).astype(np.uint8))
         except segment.SegmenterUnavailable as exc:
-            log.warning("%s; using the classical detector", exc)
+            log.warning("%s; using the classical detector, which finds fewer", exc)
         else:
             return ball_from_masks(hi, masks, scores, n_frames=n)
-    try:
-        return detect_ball(frames, max_frames=n_frames)
-    except DetectionError as exc:
-        if not use_model or segment.installed():
-            raise
-        raise DetectionError(
-            f"{exc}. Model-based detection finds the ball far more often: "
-            "pip install 'spintrack[sam]'"
-        ) from exc
+    return detect_ball(frames, max_frames=n_frames)
 
 
 def _circle_points(circle, n: int = 16) -> list[tuple[int, int]]:

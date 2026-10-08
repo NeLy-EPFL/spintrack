@@ -1,14 +1,12 @@
 """Where the ball is, from a promptable segmentation model (SAM 3).
 
 The model only proposes the ball's silhouette; `spintrack.detect.ball_from_masks`
-measures the rim on the image itself. Optional: needs the `sam` extra (torch,
-transformers); the checkpoint downloads on first use.
+measures the rim on the image itself. The checkpoint (3.4 GB) downloads on first use.
 """
 
 from __future__ import annotations
 
 import functools
-import importlib.util
 import logging
 
 import numpy as np
@@ -31,25 +29,15 @@ MAX_MASKS = 5  # per prompt
 
 
 class SegmenterUnavailable(RuntimeError):
-    """Raised when the model cannot be loaded (extra not installed, no access)."""
-
-
-def installed() -> bool:
-    """Whether the `sam` extra is installed (the checkpoint may still be missing)."""
-    packages = ("PIL", "torch", "torchvision", "transformers")
-    return all(importlib.util.find_spec(name) is not None for name in packages)
+    """Raised when the checkpoint cannot be loaded (offline and not cached, ...)."""
 
 
 @functools.cache
 def _model():
-    try:
-        import torch
-        from transformers import Sam3Model, Sam3Processor
-        from transformers.utils import logging as hf_logging
-    except ImportError as exc:
-        raise SegmenterUnavailable(
-            "model-based detection needs the sam extra: pip install 'spintrack[sam]'"
-        ) from exc
+    import torch
+    from transformers import Sam3Model, Sam3Processor
+    from transformers.utils import logging as hf_logging
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     # Keep the checkpoint download's progress, not the loading and HTTP chatter.
@@ -64,8 +52,6 @@ def _model():
         try:
             processor = Sam3Processor.from_pretrained(repo, revision=revision)
             model = Sam3Model.from_pretrained(repo, revision=revision, dtype=dtype)
-        except ImportError as exc:  # a dependency of the processor is missing
-            raise SegmenterUnavailable(str(exc).strip().splitlines()[0]) from exc
         except OSError as exc:  # unreachable, no access, offline and not cached
             errors.append(f"{repo}: {str(exc).splitlines()[0]}")
             continue
