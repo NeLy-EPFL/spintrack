@@ -8,8 +8,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 /benchmarks/data/
-/benchmarks/results/*.npz
-/benchmarks/results/work/
+/benchmarks/results/
 fictrac-*.log
 # spintrack outputs next to the example videos
 /examples/**/*_spintrack/
