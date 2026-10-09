@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 TWO_PI = 2.0 * math.pi
-SUBSTEPS = 4  # FicTrac's; more does not help
+SUBSTEPS = 4  # as FicTrac; more does not help
 
 
 @dataclass
@@ -37,10 +37,12 @@ class PathStep:
 class PathIntegrator:
     """Accumulate lab-frame rotation vectors into heading and 2-D position.
 
-    A line-for-line port of FicTrac's `Trackball::updatePath` in this lab frame, so that
-    the path columns are FicTrac's mirrored, to print precision, given the same
-    rotations: each step is walked in four substeps along a direction turning with the
-    heading.
+    A frame's step is walked in `SUBSTEPS` equal parts, each along the heading at its
+    middle, while the heading turns uniformly from the last frame's value to this one's.
+    This is FicTrac's scheme, so the path agrees with FicTrac's columns, mirrored, to
+    rounding. The parts sum in closed form: a step `(forward, side)` with a turn `t`
+    moves the animal by that step rotated to the frame's middle heading and scaled by
+    the mean of `cos(p * t)` over the parts' offsets `p` from that middle.
     """
 
     def __init__(self) -> None:
@@ -51,50 +53,29 @@ class PathIntegrator:
     def reset(self) -> None:
         """Restart heading and position; `int_x` and `int_y` carry on, as in FicTrac."""
         self.heading = 0.0
-        self.prev_heading = 0.0
         self.pos_x = 0.0
         self.pos_y = 0.0
 
     def step(self, dr_lab) -> PathStep:
+        """Advance by one frame's lab-frame rotation vector."""
         forward = -float(dr_lab[1])
         side = float(dr_lab[0])
-        step_mag = math.sqrt(forward * forward + side * side)
-        step_dir = math.atan2(side, forward)
-        if step_dir < 0:
-            step_dir += TWO_PI
         self.int_x += forward
         self.int_y += side
-        heading = self.heading - float(dr_lab[2])
-        while heading < 0:
-            heading += TWO_PI
-        while heading >= TWO_PI:
-            heading -= TWO_PI
+        heading = _wrap(self.heading - float(dr_lab[2]))
+        turn = math.remainder(heading - self.heading, TWO_PI)
+        middle = self.heading + turn / 2.0
+        gain = math.fsum(math.cos(p * turn) for p in _OFFSETS) / SUBSTEPS
+        c, s = math.cos(middle), math.sin(middle)
+        self.pos_x += gain * (forward * c - side * s)
+        self.pos_y += gain * (forward * s + side * c)
         self.heading = heading
-        # Walk the step in four substeps, turning from the previous heading to this one.
-        step = step_mag / SUBSTEPS
-        turn = heading - self.prev_heading
-        while turn >= math.pi:
-            turn -= TWO_PI
-        while turn < -math.pi:
-            turn += TWO_PI
-        turn /= SUBSTEPS
-        dx, dy = forward, side
-        if step_mag != 0:
-            inv = 1.0 / step_mag
-            dx, dy = dx * inv, dy * inv
-        dx, dy = _rotate(dx, dy, self.prev_heading + turn / 2.0)
-        c, s = math.cos(turn), math.sin(turn)
-        for _ in range(SUBSTEPS):
-            self.pos_x += step * dx
-            self.pos_y += step * dy
-            dx, dy = dx * c - dy * s, dx * s + dy * c
-        self.prev_heading = heading
         return PathStep(
             forward,
             side,
-            step_mag,
-            step_dir,
-            self.heading,
+            math.hypot(forward, side),
+            _wrap(math.atan2(side, forward)),
+            heading,
             self.pos_x,
             self.pos_y,
             self.int_x,
@@ -102,9 +83,14 @@ class PathIntegrator:
         )
 
 
-def _rotate(x: float, y: float, angle: float) -> tuple[float, float]:
-    c, s = math.cos(angle), math.sin(angle)
-    return x * c - y * s, x * s + y * c
+# Each part's middle, as a fraction of the frame's turn, from the frame's middle.
+_OFFSETS = tuple((k + 0.5) / SUBSTEPS - 0.5 for k in range(SUBSTEPS))
+
+
+def _wrap(angle: float) -> float:
+    """`angle` in [0, 2 pi)."""
+    angle %= TWO_PI
+    return 0.0 if angle >= TWO_PI else angle
 
 
 def integrate_path(dr_lab: np.ndarray) -> np.ndarray:
