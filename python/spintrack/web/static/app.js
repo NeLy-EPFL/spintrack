@@ -166,19 +166,21 @@ function drawOverlay(s) {
   if ($("show-axes").checked) drawAxes(o);
 }
 
+// The ball's axes from its center, and the animal's from where it stands on the ball.
 function drawAxes(o) {
   const [cx, cy] = o.center;
+  const [ox, oy] = o.axes.contact;
   const colors = ["var(--x)", "var(--y)", "var(--z)"];
-  o.axes.lab.forEach(([x, y], i) => {
-    svg("line", { class: "axis", x1: cx, y1: cy, x2: x, y2: y, stroke: colors[i] }, runLayer);
-    const text = svg("text", { x: x + 4, y: y + 4, fill: colors[i] }, runLayer);
-    text.textContent = "xyz"[i];
-  });
   if (o.axes.ball) {
     o.axes.ball.forEach(([x, y], i) => {
       svg("line", { class: "axis ball", x1: cx, y1: cy, x2: x, y2: y, stroke: colors[i], "stroke-opacity": 0.55 }, runLayer);
     });
   }
+  o.axes.animal.forEach(([x, y], i) => {
+    svg("line", { class: "axis", x1: ox, y1: oy, x2: x, y2: y, stroke: colors[i] }, runLayer);
+    const text = svg("text", { x: x + 4, y: y + 4, fill: colors[i] }, runLayer);
+    text.textContent = "xyz"[i];
+  });
 }
 
 function drawFrame(s) {

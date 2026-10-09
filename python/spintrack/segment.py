@@ -120,9 +120,11 @@ def ball_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return _masks(image, PROMPTS)
 
 
-def animal_mask(image: np.ndarray) -> tuple[np.ndarray, float] | None:
-    """The animal on the ball in a 2-D uint8 image: its mask and score, or None."""
+def animal_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Candidate animal masks in a 2-D uint8 image, as `(masks, scores)`, best first.
+
+    `masks` is `(k, h, w)` bool. A patterned ball can be among them: on FicTrac's
+    sample, a cow-patterned ball is the best "insect" (0.80).
+    """
     masks, scores = _masks(image, ANIMAL_PROMPTS)
-    if not len(masks):
-        return None
-    return masks[0].astype(bool), float(scores[0])
+    return masks.astype(bool), scores

@@ -10,6 +10,7 @@ from helpers import make_texture, render
 from spintrack.autofit import CAMERA_SOURCE_MESSAGE, fit_vfov, prepare_config
 from spintrack.camera import PinholeCamera
 from spintrack.config import Config
+from spintrack.detect import fit_circle
 from spintrack.geometry import normalize, rotvec_to_matrix
 from spintrack.sphere import fit_ball, pixel_circle
 
@@ -133,7 +134,14 @@ def test_a_video_alone_needs_only_the_camera_azimuth(tmp_path, caplog):
 
 
 @pytest.mark.parametrize(
-    "position", [(0.0, 180.0, 0.0), (0.0, 180.0, -15.0), (35.0, 180.0, 10.0)]
+    "position",
+    [
+        (0.0, 180.0, 0.0),
+        (0.0, 180.0, -15.0),
+        (35.0, 180.0, 10.0),
+        (70.0, 90.0, -20.0),
+        (82.0, 180.0, 0.0),  # nearly overhead: no twist read, none assumed
+    ],
 )
 def test_the_camera_is_placed_where_the_animal_stands(monkeypatch, position):
     """An animal on the ball's top, seen from `position`: the fit reads it back."""
@@ -149,8 +157,21 @@ def test_the_camera_is_placed_where_the_animal_stands(monkeypatch, position):
     x, y, _ = camera.project(normalize(CENTER + np.sin(half) * up))
     mask = np.zeros(size[::-1], np.uint8)
     cv2.circle(mask, (round(float(x)), round(float(y))), 4, 1, -1)
-    monkeypatch.setattr(segment, "animal_mask", lambda image: (mask > 0, 0.9))
-    fit = place_camera(np.zeros(size[::-1], np.uint8), rim, position[1])
+    # A patterned ball can be the best "insect", and so can a spot of its texture,
+    # which moves from frame to frame: both are passed over.
+    ball = np.zeros_like(mask)
+    cx, cy, r = np.round(fit_circle(rim)).astype(int)
+    cv2.circle(ball, (cx, cy), r, 1, -1)
+    calls = iter(range(3))
+
+    def animal_masks(image):
+        spot = np.zeros_like(mask)
+        cv2.circle(spot, (cx - r // 2 + next(calls) * r // 3, cy + r // 4), 6, 1, -1)
+        return np.stack([ball, spot, mask]) > 0, np.array([0.95, 0.92, 0.9])
+
+    monkeypatch.setattr(segment, "animal_masks", animal_masks)
+    frames = [np.zeros(size[::-1], np.uint8)] * 3
+    fit = place_camera(frames, rim, position[1])
     # Orthographic: the top's nearness to the camera costs about a degree at 35.
     assert np.allclose(fit.position_deg, position, atol=1.5), fit
 
@@ -167,3 +188,46 @@ def test_walking_off_forward_suggests_the_azimuth():
     line = walking_check(w_lab, (0.0, 90.0, 0.0))
     assert "90 deg left of forward" in line and "azimuth near 180" in line
     assert "wrong" not in walking_check(forward, (0.0, 180.0, 0.0))
+
+
+def test_a_shallow_wide_minimum_is_taken_for_a_narrow_lens(tmp_path, monkeypatch):
+    """A cost that leans to a wide lens without a clear minimum is not evidence of
+    one (a lab rig's 2 deg lens leaned to 26 deg and read 18% low): the narrow end is
+    assumed, and the fit says how much smaller the rotations would read there."""
+    from spintrack import autofit
+
+    size, half = (160, 120), 0.2
+    video = write_video(tmp_path / "v.mp4", size, CENTER, half, 5, vfov=30.0)
+    circle = pixel_circle(PinholeCamera(size[0], size[1], 30.0), CENTER, half)
+    values = np.geomspace(1.0, 120.0, 9)
+    costs = np.array([1.30, 1.30, 1.25, 1.15, 1.08, 1.01, 1.00, 1.05, 1.20])
+
+    turned = 600.0  # plenty of rotation: a lean without a clear minimum is a mismatch
+
+    def costs_at(src, cfg, points, vfovs, n_frames, params, max_frames=None):
+        cost = np.interp(np.log(vfovs), np.log(values), costs)
+        return cost, turned * (1 - 0.1 * np.log10(vfovs))  # wider reads less
+
+    monkeypatch.setattr(autofit, "_costs_at", costs_at)
+    fit = fit_vfov(str(video), base_config(vfov=30.0), circle)
+    assert not fit.identifiable and fit.leaning == pytest.approx(values[6])
+    assert fit.flat_range == (1.0, values[2]) and fit.vfov < values[2]
+    assert fit.scale_spread > 0.05 and "leans to" in fit.line()
+    turned = 200.0  # too little rotation to tell: no guess
+    with pytest.raises(ValueError, match="too little to tell"):
+        fit_vfov(str(video), base_config(vfov=30.0), circle)
+
+
+def test_a_plain_ball_is_told_from_a_patterned_one():
+    """Plain polystyrene gives the tracker nothing to hold: the run says so."""
+    from spintrack.autofit import MIN_TEXTURE, ball_texture
+
+    rng = np.random.default_rng(0)
+    plain = np.full((240, 320), 40, np.uint8)
+    cv2.circle(plain, (160, 120), 100, 200, -1)
+    plain = np.clip(plain + rng.normal(0, 1.5, plain.shape), 0, 255).astype(np.uint8)
+    patterned = plain.copy()
+    for x, y in rng.uniform(80, 240, (40, 2)):
+        cv2.circle(patterned, (int(x), int(y) - 40), 8, 60, -1)
+    assert ball_texture(plain, (160, 120, 100)) < MIN_TEXTURE
+    assert ball_texture(patterned, (160, 120, 100)) > 3 * MIN_TEXTURE

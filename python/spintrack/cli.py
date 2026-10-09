@@ -423,6 +423,7 @@ def _track_job(args, config, src, overrides, view, run_log) -> None:
             debug_video=outputs.get("debug"),
             save_map=outputs.get("map"),
             view=view,
+            masks=prepared.masks() if prepared is not None else (),
         )
         elapsed = time.perf_counter() - t0
     finally:

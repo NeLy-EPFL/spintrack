@@ -148,7 +148,7 @@ class TrackingConfig(_Table):
 class OutputConfig(_Table):
     name: str | None = None  # the output folder is NAME_spintrack; default the video's
     debug_video: bool = False  # also write debug.mp4
-    debug_axes: bool = False  # draw the ball's axes in debug.mp4
+    debug_axes: bool = True  # draw the ball's and the animal's axes in debug.mp4
     debug_codec: str = "h264"
 
 

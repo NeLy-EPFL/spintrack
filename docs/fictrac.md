@@ -76,7 +76,7 @@ Three things are handled differently:
 
 ### The `.dat` columns
 
-`tracks.parquet` holds FicTrac's 25 columns in FicTrac's order, under these names ([output.md](output.md#the-25-columns) has their units, frames and signs):
+`tracks.parquet` holds FicTrac's 25 columns in FicTrac's order, under these names ([output.md](output.md#the-25-columns) has their units, frames and signs), then four FicTrac has no equivalent for: the ball's position in the image and the tracking window's offset from it ([output.md](output.md#the-balls-position)):
 
 | `.dat` column | `tracks.parquet` column |
 |---|---|
@@ -110,7 +110,7 @@ FicTrac estimates the rotation in its tracking-window frame, whose z axis points
 
 The rotation leaks sideslip into turning wherever the two are correlated (0.83-0.97 on the trials measured). On six 60 s trials of one rig, scored against an independent referee, FicTrac read turning about 2% high, mostly from this bug, and forward walking 0.6-1.4% high; spintrack was within about 1% on all three components.
 
-FicTrac's tracking window also stays where the config put it. When the ball moves in its holder, FicTrac reads the movement as rotation; spintrack's window follows the ball.
+FicTrac's tracking window also stays where the config put it. When the ball moves in its holder, FicTrac reads the movement as rotation; spintrack's window follows the ball, and `tracks.parquet` records where the ball was and how far the window was from it on every frame.
 
 **Re-track rather than pool.** FicTrac's error depends on the rig's off-axis angle and on how correlated sideslip and turning are in each recording, so no constant corrects it. Re-track old FicTrac recordings with spintrack, using their configs translated as above, instead of combining FicTrac and spintrack results in one analysis.
 

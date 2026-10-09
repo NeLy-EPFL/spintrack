@@ -60,24 +60,32 @@ class VideoSource:
     """Frames from a video file (or any URL FFmpeg can open)."""
 
     def __init__(self, path: str | Path):
+        self._path = str(path)
         try:
-            self._container = av.open(str(path))
+            self._container = av.open(self._path)
         except av.error.FFmpegError as exc:
             raise OSError(f"could not open video {path!s}") from exc
         stream = self._container.streams.video[0]
-        # Frame-threaded decoding: the decoder, not the tracker, bounds a batch run.
-        stream.thread_type = "AUTO"
         self.width = stream.codec_context.width
         self.height = stream.codec_context.height
         rate = stream.average_rate
         self.fps = float(rate) if rate else -1.0
         self.n_frames = stream.frames or None  # from the container; None if it says 0
-        self._stream = stream
         self._start = stream.start_time or 0
         self._tick = stream.time_base.numerator / stream.time_base.denominator
-        self._frames = self._container.decode(stream)
+        # AVI stores no presentation times: FFmpeg makes them up from the decode
+        # order, which B-frames scramble, and its seeks by them can land far off. Its
+        # frames are evenly spaced by design, so they are timed and found by count.
+        self._by_count = self._container.format.name == "avi" and self.fps > 0
+        self._keyframes: list[int] | None = None  # packet numbers, for `_seek_by_count`
+        self._use(stream, self._container.decode(stream))
         self._index = 0
         self._pending = None  # a frame `seek` decoded and `read` has not returned
+
+    def _use(self, stream, frames) -> None:
+        # Frame-threaded decoding: the decoder, not the tracker, bounds a batch run.
+        stream.thread_type = "AUTO"
+        self._stream, self._frames = stream, frames
 
     def seek(self, index: int) -> None:
         """Make frame `index` the next `read`: from the keyframe before, decoding on.
@@ -86,16 +94,48 @@ class VideoSource:
         """
         if self.fps <= 0:
             raise OSError("cannot seek in a video with no frame rate")
+        self._pending = None
+        self._index = index
+        if self._by_count:
+            self._seek_by_count(index)
+            return
         target = self._start + round(index / self.fps / self._tick)
         self._container.seek(target, stream=self._stream, backward=True)
         self._frames = self._container.decode(self._stream)
-        self._pending = None
         for frame in self._frames:
             at = round((frame.pts - self._start) * self._tick * self.fps)
+            if at > index and self._pending is None:  # landed past it: count instead
+                self._seek_by_count(index)
+                return
+            self._pending = frame
             if at >= index:
-                self._pending = frame
-                break
-        self._index = index
+                return
+        self._pending = None
+
+    def _seek_by_count(self, index: int) -> None:
+        """Decode from the last keyframe at or before frame `index`, found by counting
+        packets, which is frames: the decode order shows each keyframe at its place."""
+        if self._keyframes is None:
+            with av.open(self._path) as container:
+                stream = container.streams.video[0]
+                packets = (p for p in container.demux(stream) if p.size)
+                self._keyframes = [n for n, p in enumerate(packets) if p.is_keyframe]
+        start = max((n for n in self._keyframes if n <= index), default=0)
+        self._container.close()
+        self._container = av.open(self._path)
+        stream = self._container.streams.video[0]
+        self._use(stream, self._decode_from(stream, start))
+        for _ in range(index - start):
+            next(self._frames, None)
+
+    def _decode_from(self, stream, first: int):
+        """Frames decoded from packet `first` on (the packets before are skipped)."""
+        n = 0
+        for packet in self._container.demux(stream):
+            if packet.size and n < first:
+                n += 1
+                continue
+            yield from stream.codec_context.decode(packet)
 
     def read(self) -> Frame | None:
         frame, self._pending = self._pending, None
@@ -103,8 +143,12 @@ class VideoSource:
             frame = next(self._frames, None)
         if frame is None:
             return None
-        # Computed as OpenCV's `CAP_PROP_POS_MSEC` is, to the last bit.
-        ts = -1.0 if frame.pts is None else (frame.pts - self._start) * self._tick * 1e3
+        if self._by_count:
+            ts = self._index * 1e3 / self.fps
+        elif frame.pts is None:
+            ts = -1.0
+        else:  # computed as OpenCV's `CAP_PROP_POS_MSEC` is, to the last bit
+            ts = (frame.pts - self._start) * self._tick * 1e3
         image = frame.to_ndarray(format="gray")
         out = Frame(image, ts, ms_since_midnight(), self._index)
         self._index += 1

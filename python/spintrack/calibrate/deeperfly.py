@@ -9,17 +9,22 @@ view's videos. deeperfly's world is the rig's version of the animal frame here: 
 forward (its front camera sits at azimuth 0), y left, z up.
 
 The animal is never mounted exactly along the rig's x axis (on the lab's octacam, up to
-12 deg off), so when the project holds pose results (`results/*.h5`), the animal's
-thorax-coxa points, triangulated with the calibration, give its heading, and the camera
-is placed relative to the animal's body rather than to the rig.
+12 deg off), nor on the ball's top (there, 9-13 deg toward the hind camera), so when
+the project holds pose results (`results/*.h5`), the camera is placed relative to the
+animal rather than to the rig. Its z axis is the ball's normal where it stands: a ball
+is fitted to its leg tips, which rest on it in stance, and the normal runs through its
+thorax-coxa points (`on_ball`). Its x axis is the body's long axis, from front to hind
+thorax-coxa points, on the tangent plane there. Until the ball's image is known, the
+rig's up stands in for the normal and only the heading comes from the body.
 """
 
 from __future__ import annotations
 
 import functools
 import json
+import logging
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -28,13 +33,40 @@ import numpy as np
 from spintrack.calibrate.sliders import angles_from_camera_to_lab
 from spintrack.geometry import rotvec_to_matrix
 
+log = logging.getLogger("spintrack")
+
 MANIFEST = "deeperfly.toml"
 ASPECT_TOL = 0.01  # how far a video's aspect ratio may be from the calibration's
+LEGS = ("lf", "lm", "lh", "rf", "rm", "rh")
 # The thorax-coxa points whose front and hind midpoints give the body's long axis.
 FRONT = ("lf_thorax_coxa", "rf_thorax_coxa")
 HIND = ("lh_thorax_coxa", "rh_thorax_coxa")
+# Every leg's tip, which rests on the ball in stance, and its thorax-coxa point; the
+# centroid of those is where the body stands.
+TIPS = tuple(f"{leg}_pretarsus" for leg in LEGS)
+COXAE = tuple(f"{leg}_thorax_coxa" for leg in LEGS)
 MIN_CONFIDENCE = 0.5  # a detection weaker than this is not triangulated
 MAX_POSE_FRAMES = 400  # frames sampled for the heading; the animal is tethered
+# The ball is fitted in the opening frames, where its image circle was measured: a
+# ball can move in its holder later.
+CONTACT_FRAMES = 1000
+# A leg tip this near the ball's surface, in radii, rests on it. On the lab's octacam
+# the triangulated tips scatter about 2% of the radius about the surface, and 73-84%
+# of them rest on it in the opening frames.
+ON_SURFACE = 0.02
+MIN_ON_SURFACE = 0.3  # fewer tips on the fitted ball: not a ball
+MAX_HEIGHT = 0.5  # the thorax-coxa centroid above the surface, in radii (octacam: 0.13)
+
+
+@dataclass(frozen=True)
+class Contact:
+    """Where the animal stands on the ball, from a ball fitted to its leg tips."""
+
+    tilt_deg: float  # the ball's normal there, from the rig's up
+    toward_deg: float  # where it tilts to, counterclockwise from the rig's x
+    radius: float  # the ball's, in the calibration's units
+    on_surface: float  # the share of leg tips that rest on it
+    height: float  # the thorax-coxa centroid above the surface, in ball radii
 
 
 @dataclass(frozen=True)
@@ -51,6 +83,7 @@ class CalibratedView:
     # which `to_animal` accounts for, and the pose results that gave it.
     heading_deg: float | None = None
     results: Path | None = None
+    contact: Contact | None = None  # where the animal stands, once `on_ball` found it
 
     def vfov_deg(self, height: int) -> float:
         """The vertical field of view, for a video `height` pixels tall."""
@@ -69,6 +102,14 @@ class CalibratedView:
         )
         if self.heading_deg is None:
             return line + ", relative to the rig (no pose results to find the animal)"
+        if self.contact is not None:
+            c = self.contact
+            return line + (
+                f", relative to the animal, which stands {c.tilt_deg:.1f} deg from the "
+                f"ball's top (toward {c.toward_deg:.0f} deg in the rig) and points "
+                f"{self.heading_deg:+.2f} deg from the rig's x axis; ball fitted to "
+                f"{100 * c.on_surface:.0f}% of its leg tips in {self.results.name}"
+            )
         return line + (
             f", relative to the animal, whose body points {self.heading_deg:+.2f} deg "
             f"from the rig's x axis in {self.results.name}"
@@ -83,6 +124,8 @@ class CalibratedView:
         }
         if self.heading_deg is not None:
             out.update(heading_deg=self.heading_deg, results=str(self.results))
+        if self.contact is not None:
+            out["contact"] = asdict(self.contact)
         return out
 
 
@@ -134,22 +177,129 @@ def body_heading(project: Path, views: dict[str, dict]) -> tuple[float, Path] | 
     """The animal's heading in the rig, from the newest single-animal pose results of
     the deeperfly `project` folder: degrees counterclockwise from x, and the file.
 
-    The front and hind thorax-coxa midpoints, triangulated over up to
-    `MAX_POSE_FRAMES` frames with `views` and their median taken, give the body's long
-    axis; its horizontal part is the heading. None when there are no such results.
+    The median of the front and hind thorax-coxa midpoints' difference gives the body's
+    long axis; its horizontal part is the heading. None when there are no such results.
     """
     results = _pose_results(project)
     if results is None:
         return None
+    X = _triangulate(results, views, FRONT + HIND)
+    if X is None:
+        return None
+    axis = 0.5 * (X[:, 0] + X[:, 1]) - 0.5 * (X[:, 2] + X[:, 3])  # front - hind
+    axis = np.nanmedian(axis, axis=0)
+    if not np.isfinite(axis[:2]).all() or np.hypot(*axis[:2]) == 0:
+        return None
+    return float(np.degrees(np.arctan2(axis[1], axis[0]))), results
+
+
+def on_ball(view: CalibratedView, circle, frame_hw) -> CalibratedView:
+    """`view`, placed relative to where the animal stands on the ball.
+
+    The ball's center lies on the ray through the center of its image `circle`
+    (`(cx, cy, r)` in the continuous pixels of a video `frame_hw` tall and wide), and
+    its radius follows from the circle's angular size and the distance along that ray,
+    which is the one that rests the most leg tips on its surface. The animal's z axis
+    is the ball's normal through its thorax-coxa centroid, its x axis the body's long
+    axis on the tangent plane there. `view` comes back as it was without pose results
+    with leg tips, or when the fit is not believable: too few tips on the ball, or the
+    body not just above it.
+    """
+    if view.results is None:
+        return view
+    views = _views(view.file)
+    size = view.image_size or tuple(frame_hw)
+    K, dist, P = _camera(views[view.name], size)
+    R, t = P[:, :3], P[:, 3]
+    k = size[0] / frame_hw[0]  # the video's pixels to the calibration's
+    cx, cy, r = (k * float(v) for v in circle)
+    # Continuous pixel coordinates to OpenCV's, whose pixel centers are integers.
+    xy = cv2.undistortPoints(np.array([[[cx - 0.5, cy - 0.5]]]), K, dist).reshape(2)
+    origin, ray = -R.T @ t, R.T @ np.array([xy[0], xy[1], 1.0])
+    ray /= np.linalg.norm(ray)
+    sin_a = float(np.sin(np.arctan(r / K[1, 1])))
+    try:
+        X = _triangulate(view.results, views, TIPS + COXAE, stop=CONTACT_FRAMES)
+    except ValueError:  # the results have no leg tips
+        return view
+    if X is None:
+        return view
+    tips = X[:, : len(TIPS)].reshape(-1, 3)
+    tips = tips[np.isfinite(tips).all(axis=1)]
+    coxae = np.nanmedian(X[:, len(TIPS) :], axis=0)
+    body = coxae.mean(axis=0)
+    if len(tips) < 10 or not np.isfinite(body).all():
+        return view
+    depth, share = _ball_depth(tips, origin, ray, sin_a, float((body - origin) @ ray))
+    radius = depth * sin_a
+    z = body - (origin + depth * ray)
+    height = float(np.linalg.norm(z) / radius - 1.0)
+    if share < MIN_ON_SURFACE or not 0.0 < height < MAX_HEIGHT:
+        log.warning(
+            "not placing the camera where the animal stands on the ball: %.0f%% of its "
+            "leg tips rest on the ball fitted to them, and its body is %.2f radii "
+            "above it; the rig's up stands in for the ball's normal",
+            100 * share, height,
+        )  # fmt: skip
+        return view
+    z /= np.linalg.norm(z)
+    i = [COXAE.index(name) for name in FRONT + HIND]
+    axis = 0.5 * (coxae[i[0]] + coxae[i[1]]) - 0.5 * (coxae[i[2]] + coxae[i[3]])
+    x = axis - (axis @ z) * z
+    x /= np.linalg.norm(x)
+    world_to_animal = np.array([x, np.cross(z, x), z])
+    contact = Contact(
+        tilt_deg=float(np.degrees(np.arccos(np.clip(z[2], -1.0, 1.0)))),
+        toward_deg=float(np.degrees(np.arctan2(z[1], z[0]))),
+        radius=float(radius),
+        on_surface=share,
+        height=height,
+    )
+    return replace(
+        view,
+        to_animal=world_to_animal @ R.T,
+        heading_deg=float(np.degrees(np.arctan2(x[1], x[0]))),
+        contact=contact,
+    )
+
+
+def _ball_depth(tips, origin, ray, sin_a: float, start: float) -> tuple[float, float]:
+    """The ball center's distance along `ray` that rests the most `tips` on its
+    surface (the radius is `sin_a` times the distance), searched within two radii of
+    `start` and refined by least squares on those tips; and their share."""
+    depths = start + start * sin_a * np.linspace(-2.0, 2.0, 401)
+    centers = origin + depths[:, None] * ray
+    gap = np.linalg.norm(tips - centers[:, None], axis=-1) - sin_a * depths[:, None]
+    on = np.abs(gap) < ON_SURFACE * sin_a * depths[:, None]
+    depth = float(depths[np.argmax(on.sum(axis=1))])
+    for _ in range(5):  # Gauss-Newton on the distance, over the tips on the surface
+        offset = tips - (origin + depth * ray)
+        distance = np.linalg.norm(offset, axis=1)
+        gap = distance - sin_a * depth
+        on = np.abs(gap) < ON_SURFACE * sin_a * depth
+        if not on.any():
+            break
+        slope = -(offset[on] / distance[on, None]) @ ray - sin_a
+        depth -= float(slope @ gap[on] / (slope @ slope))
+    return depth, float(on.mean())
+
+
+def _triangulate(
+    results: Path, views: dict[str, dict], names, stop: int | None = None
+) -> np.ndarray | None:
+    """The keypoints `names` of `results`, triangulated with `views` in up to
+    `MAX_POSE_FRAMES` frames of the first `stop` (of all, without): `(frames, points,
+    3)`, NaN where fewer than two views saw a point. None with fewer than two views."""
     import h5py
 
     with h5py.File(results) as f:
-        names = json.loads(f.attrs["keypoints"])
+        keypoints = json.loads(f.attrs["keypoints"])
         result_views = json.loads(f.attrs["views"])
         frame_sizes = json.loads(f.attrs.get("frame_sizes", "{}"))
         n = f["pose2d/points"].shape[2]
+        n = n if stop is None else min(n, stop)
         frames = np.arange(0, n, max(1, n // MAX_POSE_FRAMES))
-        index = [names.index(k) for k in FRONT + HIND]
+        index = [keypoints.index(k) for k in names]
         points = f["pose2d/points"][0][:, frames][:, :, index].astype(np.float64)
         confidence = f["pose2d/conf"][0][:, frames][:, :, index].astype(np.float64)
     by_name = {name.lower(): spec for name, spec in views.items()}
@@ -160,7 +310,7 @@ def body_heading(project: Path, views: dict[str, dict]) -> tuple[float, Path] | 
     ]
     if len(used) < 2:
         return None
-    rows = []  # per view: (frames, 4 points, 2 rows, 4)
+    rows = []  # per view: (frames, points, 2 rows, 4)
     for i in used:
         spec = by_name[result_views[i].lower()]
         K, dist, P = _camera(spec, frame_sizes.get(result_views[i]))
@@ -170,16 +320,11 @@ def body_heading(project: Path, views: dict[str, dict]) -> tuple[float, Path] | 
         x, y = normalized[..., :1], normalized[..., 1:]
         view_rows = np.stack([x * P[2] - P[0], y * P[2] - P[1]], axis=-2)
         rows.append(np.where(ok[..., None, None], view_rows, 0.0))
-    A = np.concatenate(rows, axis=-2)  # (frames, 4, 2 * views, 4)
+    A = np.concatenate(rows, axis=-2)  # (frames, points, 2 * views, 4)
     seen = (np.abs(A).sum(axis=-1) > 0).sum(axis=-1) >= 4  # two views or more
     X = np.linalg.svd(A)[2][..., -1, :]
     with np.errstate(invalid="ignore", divide="ignore"):
-        X = np.where(seen[..., None], X[..., :3] / X[..., 3:], np.nan)
-    axis = 0.5 * (X[:, 0] + X[:, 1]) - 0.5 * (X[:, 2] + X[:, 3])  # front - hind
-    axis = np.nanmedian(axis, axis=0)
-    if not np.isfinite(axis[:2]).all() or np.hypot(*axis[:2]) == 0:
-        return None
-    return float(np.degrees(np.arctan2(axis[1], axis[0]))), results
+        return np.where(seen[..., None], X[..., :3] / X[..., 3:], np.nan)
 
 
 def _pose_results(project: Path) -> Path | None:

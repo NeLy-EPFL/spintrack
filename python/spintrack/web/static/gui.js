@@ -130,7 +130,7 @@ function buildCamera() {
       slider("twist", "twist", -180, 180, 2),
     ),
     el("p", { id: "camera-rotation", class: "note", hidden: true }),
-    el("p", { class: "hint" }, "Tick axes under the frame: x (red) points forward, y (green) to the fly's left, z (blue) up. The trail should start under the fly."),
+    el("p", { class: "hint" }, "Tick axes under the frame: x (red) points forward, y (green) to the fly's left, z (blue) up from the ball where the fly stands, which is where the trail starts: under the fly."),
     el("details", {},
       el("summary", {}, "from a calibration square"),
       el("p", { class: "hint" }, "Click the corners of a square aligned with the fly's axes, in FicTrac's order, which names them from the fly's point of view and so holds from any side: xy front-left, front-right, back-right, back-left; yz upper left, upper right, lower right, lower left; xz upper front, upper back, lower back, lower front. Another order can fit too, a half turn off: check the axes."),

@@ -8,6 +8,7 @@ returns a `FrameResult` (or `None` when the frame could not be tracked).
 from __future__ import annotations
 
 import logging
+from array import array
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -16,7 +17,7 @@ from spintrack.camera import source_camera
 from spintrack.config import Config
 from spintrack.engine import StepResult, TrackEngine, TrackParams
 from spintrack.geometry import matrix_to_rotvec, normalize
-from spintrack.io.records import N_COLUMNS
+from spintrack.io.records import BALL_COLUMNS, N_COLUMNS
 from spintrack.io.sources import ms_since_midnight
 from spintrack.maps import load_illumination, load_map, save_map
 from spintrack.path import PathIntegrator
@@ -166,6 +167,8 @@ class Tracker:
         self._prev_ts: float | None = None  # timestamp of the last tracked frame
         self.geometry_version = 0  # bumped by every window move
         self.center_initial = self.center.copy()
+        # The window's ball circle center on every frame, as flat `x, y`.
+        self._windows = array("d")
         self.watch = None
         if self.params.center_watch:
             from spintrack.refit import CenterWatch
@@ -251,6 +254,7 @@ class Tracker:
         # Move the window onto the ball before tracking this frame, so that the window
         # does not trail a moving ball by a frame.
         self._watch_center(gray)
+        self._windows.extend(self._circle_px)
         window = self.geometry.remap(gray)
         step = self.engine.step(window)
         frame = self.frame
@@ -273,6 +277,27 @@ class Tracker:
         return FrameResult(
             frame, int(values[22]), ts_ms, w_cam, w_lab, R_cam, R_lab, step, values
         )
+
+    def ball_columns(self) -> np.ndarray:
+        """`BALL_COLUMNS` for every frame so far, as an (n, 4) array indexed by frame.
+
+        The ball's path is the follower's (`CenterWatch.ball_path`), smoothed over all
+        of its looks, so it is only final once the run ends. The offset is the window
+        circle's distance from it in ball radii, which is about the rotation, in rad,
+        that the misplacement adds to the frame's orientation. All NaN, and the ball
+        never seen, without a follower.
+        """
+        n = self.frame
+        out = np.full((n, len(BALL_COLUMNS)), np.nan)
+        out[:, 2] = 0.0
+        if self.watch is None:
+            return out
+        path, seen = self.watch.ball_path(n)
+        window = np.frombuffer(self._windows, dtype=np.float64).reshape(-1, 2)[:n]
+        out[:, 0:2] = path
+        out[:, 2] = seen
+        out[:, 3] = np.hypot(*(path - window).T) / self.ball_radius_px
+        return out
 
     def refit_center(self, new_center, circle_px=None) -> np.ndarray:
         """Point the tracking window at a new ball center, keeping the surface map.

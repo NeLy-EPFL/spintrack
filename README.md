@@ -27,16 +27,16 @@ spintrack 0.1.0: examples/sample/sample.mp4 (800x504, 100 fps, 1050 frames)
 done: 1050 frames, 0 dropped, 1.9 s (559 fps)
 run quality: 1050 frames, 1050 tracked, 0 dropped
 ball: detected at (400.5, 371.5) r 260.8 px by SAM 3 (score 0.75), rim confirms 86% of its outline
-vfov: 3.31 deg (fitted; not identifiable, the cost is flat over 1-11 deg, and the rotation scale does not depend on it)
-camera position: azimuth 180 from camera.azimuth_deg; elevation 0, twist 0 deg from where the animal stands (it stands on the ball's outline, SAM 3 score 0.84)
-walking: net 4.0 ball radii, 7 deg right of forward
+vfov: 3.31 deg (fitted; not identifiable, the cost is flat over 1-11 deg, over which the rotation scale changes by 6%)
+camera position: azimuth 180 from camera.azimuth_deg; elevation 0, twist -0.6 deg from where the animal stands (it stands on the ball's outline, where the elevation does not show and level is assumed; SAM 3 score 0.87)
+walking: net 3.9 ball radii, 7 deg right of forward
 ball moved: no
 radius: silhouette 258.3 px, config 260.1 px (-0.7%)
 hard tracking: none
 wrote tracks.parquet, summary.json, log.txt, config.toml in examples/sample/sample_spintrack
 ```
 
-`spintrack VIDEO` is short for `spintrack run VIDEO`. A run finds the ball (with SAM 3), fits the field of view and takes the camera's elevation and twist from where the fly stands; the summary says what it found. What a video cannot tell is the fly's front from its back, so say where the camera sits around the fly, as FicTrac also requires: `camera.azimuth_deg=180` behind it, `0` in front, `90` at its right, `-90` at its left. A rig's config (`-c`) can hold it. A video that belongs to a [deeperfly](https://github.com/NeLy-EPFL/deeperfly) project takes its field of view and camera position from the project's calibration instead, relative to the fly's body when the project holds pose results. Then the azimuth is not needed. The link opens a live view of the run: the frame with the ball and the fly's trail over it, the tracking window, the surface map, the path and the speeds. It costs the run nothing until opened.
+`spintrack VIDEO` is short for `spintrack run VIDEO`. A run finds the ball (with SAM 3), fits the field of view and takes the camera's elevation and twist from where the fly stands; the summary says what it found. What a video cannot tell is the fly's front from its back, so say where the camera sits around the fly, as FicTrac also requires: `camera.azimuth_deg=180` behind it, `0` in front, `90` at its right, `-90` at its left. A rig's config (`-c`) can hold it. A video that belongs to a [deeperfly](https://github.com/NeLy-EPFL/deeperfly) project takes its field of view and camera position from the project's calibration instead, relative to where the fly stands on the ball when the project holds pose results. Then the azimuth is not needed. The link opens a live view of the run: the frame with the ball and the fly's trail over it, the tracking window, the surface map, the path and the speeds. It costs the run nothing until opened.
 
 When the run gets something wrong, fix it while watching the tracking:
 
@@ -57,7 +57,7 @@ The [user guide](docs/guide.md) explains each step.
 
 Each run writes one folder, `NAME_spintrack` next to the video (or `--out DIR`), where NAME is the video's name or the config's `output.name`:
 
-- `tracks.parquet`: one row per tracked frame, FicTrac's 25 columns by name, with units.
+- `tracks.parquet`: one row per tracked frame, FicTrac's 25 columns by name, then the ball's position in the image and how far the tracking window was from it, with units.
 - `summary.json`: run quality and the provenance of every geometric input.
 - `log.txt`: what the run printed.
 - `config.toml`: the config as run, with the command line's changes and what the run found in the recording; `spintrack run` on it, with `--out` another folder and the run's `--two-pass` and `--max-frames`, repeats the run.
@@ -104,7 +104,7 @@ The synthetic scenes have exact ground truth; the error ranges leave out `static
 ## FicTrac compatibility
 
 - The config is a TOML file with readable names in tables, checked on load: an unknown key is an error. [docs/fictrac.md](docs/fictrac.md) translates a FicTrac `config.txt` key by key.
-- The UDP, TCP and serial streams have FicTrac's 25 fields, line format and signs, so FicTrac's clients work unchanged. `tracks.parquet` has the same columns by name, in spintrack's lab frame: x forward, y left, z up, where FicTrac's is y right, z down, so the lab rotations' y and z and the path's y, heading and sideways motion have the opposite sign. The path is integrated exactly as FicTrac does, mirrored. There is no `.dat` file.
+- The UDP, TCP and serial streams have FicTrac's 25 fields, line format and signs, so FicTrac's clients work unchanged. `tracks.parquet` has the same columns by name, plus four for the ball's position, in spintrack's lab frame: x forward, y left, z up, where FicTrac's is y right, z down, so the lab rotations' y and z and the path's y, heading and sideways motion have the opposite sign. The path is integrated exactly as FicTrac does, mirrored. There is no `.dat` file.
 - The rotation columns are in the true camera and lab frames. FicTrac writes its tracking-window frame as the camera frame, which inflates its turning wherever sideslip and turning are correlated, so re-track old FicTrac data instead of pooling it with spintrack's. See [docs/fictrac.md](docs/fictrac.md).
 
 ## Develop

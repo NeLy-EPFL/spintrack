@@ -49,9 +49,36 @@ A tracking reset (after `tracking.max_bad_frames` losses, or when tracking start
 
 In Python, `FrameResult.forward`, `side` and `turn` are `dr_lab_y`, `-dr_lab_x` and `-dr_lab_z`.
 
+## The ball's position
+
+FicTrac assumes the ball's center never moves. Real balls sink, jerk and drift in their holders, so spintrack's ball follower measures the ball's outline on every frame and moves the tracking window with it ([algorithm.md](algorithm.md#ball-follower)). `tracks.parquet` saves that measurement after the 25 columns. The streams don't carry these columns, because they are only final once the run ends.
+
+| col | name | content | unit |
+|---|---|---|---|
+| 26-27 | `ball_x_px`, `ball_y_px` | center of the ball's outline in the image | px |
+| 28 | `ball_seen` | whether the outline was measured on this frame, rather than filled in | |
+| 29 | `window_offset` | distance from the tracking window to the ball: about the error it puts in the orientation | ball radii (= rad) |
+
+**`ball_x_px`, `ball_y_px`** are in the coordinates of `ball.rim`: x right, y down, with the top-left pixel's center at (0.5, 0.5), so subtract 0.5 to draw them with OpenCV. They are the best estimate over the whole run, not the raw per-frame fits. The fits are interpolated across frames without one, cleaned by a 5-frame median and smoothed by a Gaussian whose width shrinks through jerks. They are measured as displacements from where the ball sat over its first fits and added to the config's ball circle, so they start at the config's center. Keep in mind:
+
+- They are NaN before the first fit and after the last. The follower spends at least the first 30 frames measuring the ball's radius, so those are always NaN. Every row is NaN if the follower never locked onto the outline.
+- Legs crossing the outline pull the fit by a few pixels for tens of frames, and the smoothing keeps such slow pulls. A small excursion while the animal is moving is more likely its legs than the ball.
+- Only motion across the image is measured. Motion toward the camera would change only the ball's apparent size, which is not tracked.
+- For a distance, multiply by the ball's radius in mm over `summary.json`'s `geometry.radius_px`. This holds for motion across the image only.
+
+**`window_offset`** is a quality column for a failure that `err` cannot see. A window `d` pixels off the ball's center sees the ball's texture shifted by `d`. The fit explains the shift as a rotation of about `d / r`, and the rotated ball matches the image well, so `err` stays low. `window_offset` is `d / r` on every frame: about how many radians the orientation columns (9-14) are off on that frame. In a synthetic test the true error was 10-25% larger. The error goes away once the window is back on the ball, so the per-frame rotations (2-4, 6-8) carry it in while the offset grows and back out as it shrinks.
+
+How to read it:
+
+- At rest it is a few thousandths.
+- The follower leaves the window where it is until the ball is 10 px or 2% of the radius away, whichever is larger, because legs pull the outline fit by about that much. Below that size, which is 0.04 for a 259 px ball, the column may overstate the error: the ball may have moved, or the legs may have pulled the fit.
+- Every move the online follower confirms starts with a peak of about that size, since the window only leaves once the ball is that far. On `examples/ball_drop`, a 259 px ball that sinks 100 px in three jerks, it peaks at 0.05 at the first jerk.
+- `--two-pass` plans the window from the whole first pass and has no such lag. On `ball_drop` it stays under 0.007. Rerun with it, or drop the frames above the error you can accept (0.05 rad is about 3 deg).
+- It is NaN wherever the ball's position is.
+
 ## Parquet
 
-`tracks.parquet` has the 25 columns under the names above, `frame` and `seq` as int64 and the rest as float64 at full precision. Its key-value metadata holds the version (`spintrack`), the columns' units as JSON (`units`) and the run's provenance as JSON (`provenance`):
+`tracks.parquet` has the 25 columns under the names above, then the four for the ball's position. `frame` and `seq` are int64, `ball_seen` boolean and the rest float64 at full precision. Its key-value metadata holds the version (`spintrack`), the columns' units as JSON (`units`) and the run's provenance as JSON (`provenance`):
 
 ```python
 import json

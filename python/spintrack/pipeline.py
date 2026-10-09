@@ -19,7 +19,7 @@ import numpy as np
 
 from spintrack.config import Config, apply_overrides
 from spintrack.io.recorders import Recorder
-from spintrack.io.records import COLUMNS, N_COLUMNS
+from spintrack.io.records import TABLE_COLUMNS, with_ball
 from spintrack.io.sources import FrameSource, open_source
 from spintrack.quality import RunQuality, summarize_run, walking_check
 from spintrack.sphere import pixel_circle
@@ -129,14 +129,19 @@ def run(
     debug_video: str | Path | None = None,
     save_map: str | Path | None = None,
     view=None,
+    masks: Sequence[tuple[str, np.ndarray, float]] = (),
 ) -> RunStats:
     """Track `source` and write every record to each of `recorders`.
 
     Returns the run statistics, with the quality summary and the final ball geometry.
     `debug_video` writes an annotated video (with the ball's axes if the config's
-    `output.debug_axes`), `save_map` the final surface map. `progress` is called every
-    few seconds. `view` (a `spintrack.web.live.LiveView`) sees every frame, and its
-    `stop_requested` ends the run early, as Ctrl-C does.
+    `output.debug_axes`, and SAM 3's `masks` as `Prepared.masks` gives them),
+    `save_map` the final surface map. `progress` is called every few seconds. `view`
+    (a `spintrack.web.live.LiveView`) sees every frame, and its `stop_requested` ends
+    the run early, as Ctrl-C does.
+
+    Each recorder gets the ball's path (`Tracker.ball_columns`) when the run ends, also
+    when it ends in an error or Ctrl-C.
 
     `two_pass_source` opens the same recording a second time: the ball is mapped in a
     throwaway first pass and this run starts from that map, so the opening frames are
@@ -163,7 +168,7 @@ def run(
     if debug_video:
         from spintrack.debug_video import DebugCanvas, DebugVideoWriter
 
-        canvas = DebugCanvas(tracker, axes=cfg.output.debug_axes)
+        canvas = DebugCanvas(tracker, axes=cfg.output.debug_axes, masks=masks)
         writer = DebugVideoWriter(
             debug_video, canvas.size, source.fps, cfg.output.debug_codec
         )
@@ -175,6 +180,10 @@ def run(
     finally:
         if debug is not None:
             debug[1].close()
+        # Also when the run is interrupted, which is how a live run usually ends.
+        ball = tracker.ball_columns()
+        for rec in recorders:
+            rec.write_ball(ball)
     if per_frame:
         frames, ts, ok, cost, iters, sources, w_cam = zip(*per_frame, strict=True)
         fps = source.fps if source.fps and source.fps > 0 else cfg.camera.fps
@@ -300,12 +309,12 @@ def _checks(tracker: Tracker, first: Tracker | None) -> tuple[dict, dict]:
 class Track:
     """What `track` returns: the records, as in `tracks.parquet`, and quality."""
 
-    records: np.ndarray  # (n, 25), one row per tracked frame
+    records: np.ndarray  # (n, 29), one row per tracked frame; `ball_seen` as 0 or 1
     quality: RunQuality | None
-    columns: tuple[str, ...] = COLUMNS
+    columns: tuple[str, ...] = TABLE_COLUMNS
 
     def to_polars(self) -> pl.DataFrame:
-        """The records as a DataFrame with named columns."""
+        """The records as a DataFrame with named, typed columns."""
         from spintrack.io.parquet import to_frame
 
         return to_frame(self.records)
@@ -314,8 +323,13 @@ class Track:
 class _Rows(list):
     """A recorder that keeps the records in memory."""
 
+    ball: np.ndarray | None = None
+
     def write(self, values) -> None:
         self.append(values)
+
+    def write_ball(self, columns) -> None:
+        self.ball = columns
 
     def close(self) -> None:
         pass
@@ -350,4 +364,4 @@ def track(
         )
     finally:
         source.close()
-    return Track(np.array(rows).reshape(-1, N_COLUMNS), stats.quality)
+    return Track(with_ball(np.array(rows), rows.ball), stats.quality)

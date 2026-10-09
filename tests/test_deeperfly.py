@@ -7,7 +7,7 @@ from helpers import ball_config
 from spintrack.autofit import complete_config
 from spintrack.calibrate.deeperfly import check_size, read_view
 from spintrack.calibrate.sliders import camera_to_lab_from_angles
-from spintrack.geometry import matrix_to_rotvec
+from spintrack.geometry import matrix_to_rotvec, normalize
 from test_autofit import CENTER, write_video
 
 
@@ -140,3 +140,76 @@ def test_pose_results_place_the_camera_relative_to_the_fly(tmp_path):
     assert np.isclose(el, 5, atol=0.05) and np.isclose(tw, 0, atol=0.05)
     # Behind a fly that turned left, the camera is to its right: azimuth 180 + 10.
     assert np.isclose((az - 190 + 180) % 360 - 180, 0, atol=0.05)
+
+
+def test_a_ball_fitted_to_the_leg_tips_places_the_camera_where_the_fly_stands(
+    tmp_path,
+):
+    """A fly 12 deg behind the ball's top, as on the lab's octacam: the camera behind
+    the rig, level in it, sits 12 deg above the fly's horizon."""
+    import json
+
+    import cv2
+    import h5py
+
+    from spintrack.calibrate.deeperfly import COXAE, TIPS, on_ball
+
+    positions = {"h": (0, 180, 0), "rm": (0, 90, 0), "lm": (0, -90, 0)}
+    size, focal, radius = (512, 960), 2000.0, 5.0  # the ball at the rig's origin
+    calibration = project(
+        tmp_path,
+        {name: solved(p, focal, size) for name, p in positions.items()},
+        {"h": "../camera_H.mp4"},
+    )
+    tilt = np.radians(12.0)
+    up = np.array([-np.sin(tilt), 0.0, np.cos(tilt)])  # toward the hind camera
+    forward, left = np.array([np.cos(tilt), 0.0, np.sin(tilt)]), np.array([0, 1, 0])
+    rng = np.random.default_rng(0)
+    feet = [
+        (0.3, 0.2),
+        (0.0, 0.3),
+        (-0.3, 0.25),
+        (0.3, -0.2),
+        (0.0, -0.3),
+        (-0.3, -0.25),
+    ]
+    frames = []
+    for _ in range(40):
+        tips = [
+            radius
+            * normalize(up + (a + 0.05 * rng.standard_normal()) * forward + b * left)
+            for a, b in feet
+        ]
+        tips[rng.integers(6)] *= 1.15  # one leg in swing
+        bases = [(radius + 0.7) * up + 0.5 * (a * forward + b * left) for a, b in feet]
+        frames.append(np.array(tips + bases))
+    world = np.array(frames)  # (frames, 12, 3)
+    points = []
+    for p in positions.values():
+        R = camera_to_lab_from_angles(*p).T  # world to camera
+        K = np.array([[focal, 0, 479.5], [0, focal, 255.5], [0, 0, 1]])
+        px, _ = cv2.projectPoints(
+            world.reshape(-1, 3), cv2.Rodrigues(R)[0], np.array([0, 0, 100.0]), K, None
+        )
+        points.append(px.reshape(len(frames), -1, 2))
+    (tmp_path / "deeperfly" / "results").mkdir()
+    with h5py.File(tmp_path / "deeperfly" / "results" / "run.h5", "w") as f:
+        f["pose2d/points"] = np.array(points)[None].astype(np.float32)
+        f["pose2d/conf"] = np.ones((1, 3, len(frames), 12), np.float32)
+        f.attrs.update(
+            keypoints=json.dumps(list(TIPS + COXAE)),
+            views=json.dumps(list(positions)),
+            animals=1,
+            written=1,
+        )
+    # The ball's image in view h: centered, its radius from its angular size.
+    circle = (480.0, 256.0, focal * radius / np.sqrt(100.0**2 - radius**2))
+    view = on_ball(
+        read_view(calibration, video=tmp_path / "camera_H.mp4"), circle, size
+    )
+    assert view.contact is not None, "the fit was refused"
+    assert np.isclose(view.contact.tilt_deg, 12.0, atol=0.3)
+    assert np.isclose(view.contact.radius, radius, rtol=0.01)
+    el, az, tw = view.position_deg
+    assert np.isclose(el, 12.0, atol=0.3) and np.isclose(tw, 0.0, atol=0.3)
+    assert np.isclose((az - 180 + 180) % 360 - 180, 0.0, atol=0.3)

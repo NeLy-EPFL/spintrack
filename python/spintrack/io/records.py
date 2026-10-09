@@ -12,6 +12,9 @@ The line is what FicTrac writes to its `.dat` file and streams: fields separated
 streams it (`spintrack.io.recorders`), in FicTrac's frame (`to_fictrac`); `read_dat`
 loads a file FicTrac wrote.
 
+`tracks.parquet` has these 25 and then `BALL_COLUMNS`, which only the file carries
+(`TABLE_COLUMNS`, `with_ball`).
+
 spintrack's lab frame is x forward, y left, z up; FicTrac's is x forward, y right, z
 down. The lab rotations (5-7, 11-13) differ in the sign of y and z, and the path (15-17,
 20) is mirrored: y, the heading, the direction and the side motion change sign.
@@ -52,6 +55,10 @@ COLUMNS = (
     "wall_ms",
 )
 N_COLUMNS = len(COLUMNS)
+# What `tracks.parquet` adds after the 25 (`spintrack.io.parquet`); the streams do not
+# carry them, since they are only final once the run ends.
+BALL_COLUMNS = ("ball_x_px", "ball_y_px", "ball_seen", "window_offset")
+TABLE_COLUMNS = COLUMNS + BALL_COLUMNS
 INT_COLUMNS = frozenset({0, 22})
 DELIMITER = ", "
 
@@ -63,6 +70,22 @@ def to_fictrac(values: Sequence[float]) -> np.ndarray:
     angles = (-out[[16, 17]]) % (2.0 * np.pi) + 0.0  # + 0.0: no "-0"
     out[[16, 17]] = np.where(angles >= 2.0 * np.pi, 0.0, angles)
     return out
+
+
+def with_ball(records: np.ndarray, ball: np.ndarray | None) -> np.ndarray:
+    """(n, 25) records with `BALL_COLUMNS` appended from `ball`, which is by frame.
+
+    Frames past the end of `ball`, or all of them when it is None, get NaN and a ball
+    not seen.
+    """
+    records = np.asarray(records, dtype=np.float64).reshape(-1, N_COLUMNS)
+    out = np.full((len(records), len(BALL_COLUMNS)), np.nan)
+    out[:, BALL_COLUMNS.index("ball_seen")] = 0.0
+    if ball is not None:
+        frames = records[:, 0].astype(np.int64)
+        known = (frames >= 0) & (frames < len(ball))
+        out[known] = ball[frames[known]]
+    return np.hstack([records, out])
 
 
 def format_row(values: Sequence[float]) -> str:

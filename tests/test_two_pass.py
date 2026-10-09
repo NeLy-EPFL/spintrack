@@ -210,6 +210,13 @@ def test_second_pass_places_the_window_from_the_first_pass_looks():
         np.nanmedian(online[early]),
         np.nanmedian(planned[early]),
     )
+    # Both passes save the first pass's path; the planned window sits closer to it.
+    a, b = first.ball_columns(), second.ball_columns()
+    assert np.array_equal(a[:, :3], b[:, :3], equal_nan=True)
+    assert np.nanmedian(b[early, 3]) < np.nanmedian(a[early, 3]), (
+        np.nanmedian(a[early, 3]),
+        np.nanmedian(b[early, 3]),
+    )
 
 
 def test_planned_window_keeps_up_with_a_jerk():

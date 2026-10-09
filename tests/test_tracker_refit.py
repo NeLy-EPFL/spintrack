@@ -113,7 +113,18 @@ def test_watch_follows_a_moving_ball():
         if watch:
             assert tracker.watch.episodes, "the watch should have noticed the move"
             assert tracker.watch.episodes[-1][2] > 10.0
+            ball = tracker.ball_columns()
     assert errors[True] < 0.5 * errors[False], errors
+    # The saved path is where the ball's circle really was, frame by frame.
+    truth = [pixel_circle(CAMERA, drift(i), HALF)[:2] for i in range(len(ball))]
+    truth = np.array(truth)
+    seen = ball[:, 2] > 0.0
+    miss = np.hypot(*(ball[seen, :2] - truth[seen]).T)
+    assert seen.mean() > 0.8 and np.median(miss) < 0.5 and miss.max() < 2.0, (
+        seen.mean(),
+        np.median(miss),
+        miss.max(),
+    )
 
 
 def test_watch_keeps_up_with_a_jerk():

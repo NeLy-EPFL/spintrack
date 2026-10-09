@@ -57,13 +57,15 @@ A window left `d` pixels behind the ball reads the ball's movement as a rotation
 
 While the ball rests, the window stays put, because the animal at the rim pulls the look by a few pixels for tens of frames. A move is followed once three looks in a row lie beyond 10 px or 2% of the radius. The window then sits on the longest of a set of line fits over the last 2 to 64 looks that agrees with every shorter one (Lepski's rule), which averages steady motion and shrinks to the last few looks through a jerk. Following ends after 60 still frames. Positions are displacements from a reference taken over the first looks, so a fixed offset between the look and the config's circle never moves the window. Failed looks fall back to a seed-free detection. A window that would move more than one radius means the look has run away, so the follower stops and puts it back.
 
+When the run ends, all the looks are smoothed at once, as for the second pass below (`refit.smooth_looks`), and `tracks.parquet` saves the result as the ball's position, with the window's distance from it in ball radii (`Tracker.ball_columns`).
+
 A window move is a change of coordinates `Q` between window frames: the orientation becomes `Q R`, the velocity `Q v`, and the map is kept. The window is moved before the frame it was placed for is tracked.
 
 ## Two passes
 
 `--two-pass` tracks the recording once to map it and again to report it, the second tracker starting from the first one's map and illumination field (`Tracker.prime_from`). Both share the ball's body frame, so the second pass starts at `R = I` without a global search. Its map is capped like any loaded map, since it carries the first pass's drift; the first frame gets five times the usual iterations and reports zero motion, since snapping onto that map is not a rotation of the ball.
 
-The second pass replays a window trajectory planned from all of the first pass's looks (`refit.plan_window_trajectory`): gaps interpolated, a five-frame median, a zero-phase Gaussian whose width (up to 12 frames) shrinks through jerks by the same Lepski rule, held while the ball rests, and each move traced back to where it began. This removes the online confirmation delay, and the second pass, which measures nothing, runs faster than the first.
+The second pass replays a window trajectory planned from all of the first pass's looks (`refit.plan_window_trajectory`): gaps interpolated, a five-frame median and a zero-phase Gaussian whose width (up to 12 frames) shrinks through jerks by the same Lepski rule (`refit.smooth_looks`), then held while the ball rests, and each move traced back to where it began. This removes the online confirmation delay, and the second pass, which measures nothing, runs faster than the first.
 
 ## What is verified, and how
 

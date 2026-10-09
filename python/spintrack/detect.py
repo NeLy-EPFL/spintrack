@@ -15,7 +15,7 @@ reported about an axis in the image plane.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -104,6 +104,8 @@ class BallDetection:
     rim_radius: np.ndarray = None
     # The segmentation model's score when a model proposed the ball, else None.
     model_score: float | None = None
+    # The model's mask the ball was found from (bool, the image's shape), else None.
+    mask: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def arc_fraction(self) -> float:
@@ -542,11 +544,11 @@ def ball_from_masks(image, masks, scores, *, n_frames: int = 1, seed: int = 0):
             reasons.append(f"mask at score {score:.2f}: " + ", ".join(failed))
             continue
         if best is None or score > best[1]:
-            best = (fit, float(score), float(support), arc)
+            best = (fit, float(score), float(support), mask)
     if best is None:
         detail = "; ".join(reasons[:3]) if reasons else "no mask proposed"
         raise DetectionError(f"no ball found ({detail})")
-    fit, score, support, arc = best
+    fit, score, support, mask = best
     log.debug(
         "ball at (%.1f, %.1f) r %.1f px from a mask at score %.2f (rim confirms %.0f%% "
         "of its arc, residual %.2f px)",
@@ -564,6 +566,7 @@ def ball_from_masks(image, masks, scores, *, n_frames: int = 1, seed: int = 0):
         rim_theta=fit.theta,
         rim_radius=fit.radius,
         model_score=score,
+        mask=np.asarray(mask, dtype=bool),
     )
 
 

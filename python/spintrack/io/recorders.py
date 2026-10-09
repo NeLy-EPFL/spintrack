@@ -4,7 +4,8 @@ port, terminal); `spintrack.io.parquet.ParquetWriter` is the file one.
 The live sinks send each record as FicTrac's 25-field line in FicTrac's frame
 (`spintrack.io.records.to_fictrac`, `format_row`), so that existing FicTrac clients read
 the signs they expect. Socket and serial sinks prefix it with `FT, ` and end it with a
-newline, which is what those clients parse.
+newline, which is what those clients parse. They ignore the ball's path that the run
+hands every recorder when it ends (`write_ball`).
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import socket
 import sys
 from collections.abc import Sequence
 from typing import Protocol
+
+import numpy as np
 
 from spintrack.io.records import format_row, to_fictrac
 
@@ -26,10 +29,17 @@ def _line(values: Sequence[float]) -> str:
 class Recorder(Protocol):
     def write(self, values: Sequence[float]) -> None: ...
 
+    def write_ball(self, columns: np.ndarray) -> None: ...
+
     def close(self) -> None: ...
 
 
-class TerminalRecorder:
+class _Stream:
+    def write_ball(self, columns: np.ndarray) -> None:
+        """Nothing: the stream has sent its records already."""
+
+
+class TerminalRecorder(_Stream):
     def __init__(self, stream=None):
         self._stream = stream or sys.stdout
 
@@ -40,7 +50,7 @@ class TerminalRecorder:
         self._stream.flush()
 
 
-class UdpRecorder:
+class UdpRecorder(_Stream):
     """Send each record as one UDP datagram to `host:port`."""
 
     def __init__(self, host: str, port: int):
@@ -54,7 +64,7 @@ class UdpRecorder:
         self._sock.close()
 
 
-class TcpRecorder:
+class TcpRecorder(_Stream):
     """Stream records over a TCP connection to `host:port` (connects on creation)."""
 
     def __init__(self, host: str, port: int, timeout: float = 5.0):
@@ -68,7 +78,7 @@ class TcpRecorder:
         self._sock.close()
 
 
-class SerialRecorder:
+class SerialRecorder(_Stream):
     """Write records to a serial port (needs the `serial` extra: pyserial)."""
 
     def __init__(self, port: str, baud: int = 115200):

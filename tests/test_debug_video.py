@@ -115,7 +115,8 @@ def walking_canvas(n=90, step_deg=1.0):
     cfg.camera.rotation = None
     cfg.camera.position_deg = (0.0, 180.0, 0.0)  # behind the animal, level with it
     tracker = Tracker(cfg, 640, 480, TrackParams(center_watch=False))
-    canvas = DebugCanvas(tracker)  # 480 rows in and out, so panel px are source px
+    # 480 rows in and out, so panel px are source px
+    canvas = DebugCanvas(tracker, height=480)
     gray = np.zeros((480, 640), np.uint8)
     # Walking forward turns the ball about the lab's -y axis (`path.PathIntegrator`).
     w_cam = tracker.cam_to_lab.T @ (np.radians(step_deg) * np.array([0.0, -1.0, 0.0]))

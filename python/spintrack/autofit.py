@@ -17,6 +17,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as _replace
 
+import cv2
 import numpy as np
 
 from spintrack import segment
@@ -51,17 +52,29 @@ NO_POSITION = (
     "camera.position_deg=ELEV,AZIM,TWIST, or set it in spintrack gui)"
 )
 MIN_ANIMAL_SCORE = 0.3  # a weaker animal mask places no camera
+# The most of the ball's disk an animal covers: a fly 3-4%, a cockroach on a 10 cm ball
+# about 20%; a mask over more is the ball.
+MAX_ANIMAL_COVER = 0.5
 # Where the animal's silhouette sits, from the ball's center in ball radii: beyond
-# `ON_RIM` it stands on the outline (a level camera, the elevation's cosine is too flat
-# there to measure); within `ABOVE` it is seen from above, which the silhouette cannot
-# orient; beyond `OFF_BALL` it is not on the ball.
+# `ON_RIM` it stands on the outline, where the elevation does not show (its cosine is
+# flat there, and the animal's height above the ball outweighs it: on the lab's octacam
+# the silhouette sits 1.08-1.12 radii out from a camera 10.5-12 deg above the animal,
+# by deeperfly's leg tips, as it would from a level one); within `OVERHEAD` (a camera
+# over 75 deg up) its direction is too short to give the twist, as the body's offset
+# from where it stands is a sizable part of it; beyond `OFF_BALL` it is not on the
+# ball. On the rim the silhouette's direction gives the twist to within 0.5 deg.
 ON_RIM = 0.95
-ABOVE = 0.5
+OVERHEAD = 0.25
 OFF_BALL = 2.0
-# A twist this small is read as none: the silhouette's own asymmetry (posture, tether)
-# is about this large, and cameras are mostly mounted level. On the lab's five example
-# recordings the silhouette's twist is -1.2 to 1.2 deg.
-LEVEL_TWIST_DEG = 2.0
+# The animal is the mask found within `SAME_PLACE` ball radii in at least `MIN_VOTES`
+# of `ANIMAL_FRAMES` frames.
+ANIMAL_FRAMES = 3
+MIN_VOTES = 2
+SAME_PLACE = 0.15
+# Below this contrast (gray levels) the ball's surface shows too little texture to
+# track at the window's scale: the lab's patterned balls show 10-16, plain white
+# polystyrene (a cockroach rig) 2.
+MIN_TEXTURE = 4.0
 # A detected radius this far from the config's is worth saying out loud: a relative
 # radius error costs about twice as much of every in-plane rotation reported.
 DISAGREEMENT_WARN = 0.03
@@ -73,13 +86,30 @@ WARMUP_FRAMES = 20  # the map is still filling; those costs say nothing about th
 # The cost separates fields of view only once a new view is matched against surface
 # seen under a different rotation, so the map has to fill first.
 VFOV_FRAMES = 1000
-# A minimum is believed only when its nearer neighbor costs this much more; a curve
-# whose neighbors jump by more than that either way has noise, not a minimum.
-MIN_DEPTH = 1.02
+# A minimum is believed when its nearer neighbor costs `MIN_DEPTH` times more, or
+# `MIN_VALLEY_DEPTH` times on a curve that falls to it from both ends (within
+# `FLAT_TOL`). A wide lens gives one (1.2-2.6: FicTrac's webcam sample, a crab rig's
+# consumer camera; 1.06-1.08 in a clean valley: a webcam over a fiddler crab, a 40
+# frame synthetic clip). A shallower or ragged one is a model mismatch, such as lens
+# distortion, not a wide lens: a lab octacam (2 deg lens) leaned to 26 deg at 1.02
+# and read rotations 18% low; a Tuthill-lab pose camera (0.5 deg) dipped twice, to 11
+# and 37 deg.
+MIN_DEPTH = 1.15
+MIN_VALLEY_DEPTH = 1.05
+# Without a believable minimum the lens is assumed narrow, unless the narrow end costs
+# `NARROW_MAX_COST` times the lowest (the crab rig's narrowest candidates cost 4x,
+# the two lenses above 1.3x and 1.6x), or `LEAN_COST` times on less rotation than
+# `LEAN_MIN_TURN_DEG`, where a lean says too little either way (a crab clip whose lens
+# is wide leaned so after only 180 deg).
+NARROW_MAX_COST = 2.0
+LEAN_COST = 1.2
+LEAN_MIN_TURN_DEG = 500.0
 # Candidates within this factor of the minimum count as indistinguishable from it.
 FLAT_TOL = 1.05
 # Below this much accumulated rotation the recording says nothing about the geometry.
+# A still start is tracked further, up to `VFOV_MAX_FRAMES`, for the rotation to come.
 MIN_TURN_DEG = 90.0
+VFOV_MAX_FRAMES = 6000
 
 
 @dataclass
@@ -93,6 +123,11 @@ class VfovFit:
     turned_deg: float = 0.0  # rotation the ball showed while the curve was measured
     depth: float = 1.0  # cost at the minimum's nearer neighbor, over the minimum
     curve: list[tuple[float, float]] = field(default_factory=list)
+    # How much the rotation scale changes over `flat_range`, or, when a narrow lens is
+    # assumed against `leaning` (the vfov the cost leans to without a clear minimum),
+    # how much smaller the rotations would read there.
+    scale_spread: float = 0.0
+    leaning: float | None = None
 
     def report(self) -> dict:
         return {
@@ -103,6 +138,8 @@ class VfovFit:
             "flat_range": list(self.flat_range) if self.flat_range else None,
             "turned_deg": self.turned_deg,
             "depth": self.depth,
+            "scale_spread": self.scale_spread,
+            "leaning": self.leaning,
             "curve": [list(point) for point in self.curve],
         }
 
@@ -112,10 +149,21 @@ class VfovFit:
                 f"{self.vfov:.4g} deg (fitted; the cost minimum is {self.depth:.2g}x "
                 f"below its neighbors)"
             )
+        pct = (
+            f"{100 * self.scale_spread:.0f}%"
+            if np.isfinite(self.scale_spread)
+            else "an unknown amount"
+        )
+        if self.leaning is not None:
+            return (
+                f"{self.vfov:.4g} deg (assumed, a narrow lens: the cost leans to "
+                f"{self.leaning:.3g} deg without a clear minimum, which would read "
+                f"rotations {pct} smaller; set camera.vfov_deg from the lens)"
+            )
         lo, hi = self.flat_range or (float("nan"), float("nan"))
         return (
             f"{self.vfov:.4g} deg (fitted; not identifiable, the cost is flat over "
-            f"{lo:.3g}-{hi:.3g} deg, and the rotation scale does not depend on it)"
+            f"{lo:.3g}-{hi:.3g} deg, over which the rotation scale changes by {pct})"
         )
 
 
@@ -132,10 +180,13 @@ class Prepared:
     camera_position: str = "config"  # "config", "calibration", "estimated", "unknown"
     camera: CameraFit | CalibratedView | None = None
     notes: list[str] = field(default_factory=list)
+    texture: float | None = None  # `ball_texture` of a frame, gray levels
 
     def report(self) -> dict:
         """The `ball` entry of the sidecar's provenance."""
         out: dict = {"source": self.ball_source}
+        if self.texture is not None:
+            out["texture"] = self.texture
         if self.detection is not None:
             out.update(
                 center_px=[self.detection.cx, self.detection.cy],
@@ -152,8 +203,32 @@ class Prepared:
             out["radius_disagreement"] = self.radius_disagreement
         return out
 
+    def masks(self) -> list[tuple[str, np.ndarray, float]]:
+        """SAM 3's masks of the ball and the animal, where they were used, as
+        `(name, mask, score)`."""
+        out = []
+        if self.detection is not None and self.detection.mask is not None:
+            out.append(("ball", self.detection.mask, self.detection.model_score))
+        camera = self.camera
+        if isinstance(camera, CameraFit) and camera.mask is not None:
+            out.append(("animal", camera.mask, camera.score))
+        return out
+
     def line(self) -> str:
         """One line for the terminal block."""
+        found = self._found()
+        if self.texture is not None and self.texture < MIN_TEXTURE:
+            found += f"; {self.texture_warning()}"
+        return found
+
+    def texture_warning(self) -> str:
+        return (
+            f"its surface shows little texture to track ({self.texture:.1f} gray "
+            f"levels, patterned balls show 10 or more), so the rotation reported may "
+            f"be the animal's or noise"
+        )
+
+    def _found(self) -> str:
         if self.detection is None:
             return "from config (detection failed, not checked)"
         d = self.detection
@@ -228,13 +303,9 @@ def prepare_config(
     height, width = frames[0].shape
     prepared = Prepared()
     calibrated = _calibration(cfg, src_spec, width, height)
-    if calibrated is not None:
-        if cfg.camera.to_animal() is None:
-            cfg.camera.position_deg = calibrated.position_deg
-            prepared.camera_position, prepared.camera = "calibration", calibrated
-        if cfg.camera.vfov_deg is None:
-            cfg.camera.vfov_deg = calibrated.vfov_deg(height)
-            prepared.vfov_from = calibrated
+    if calibrated is not None and cfg.camera.vfov_deg is None:
+        cfg.camera.vfov_deg = calibrated.vfov_deg(height)
+        prepared.vfov_from = calibrated
     try:
         # The comparison with a configured ball is only a check, not worth a model.
         prepared.detection = find_ball(frames, n_frames, use_model=not cfg.ball.rim)
@@ -271,9 +342,20 @@ def prepare_config(
                 f"{detection.confidence:.2f}"
             )
 
-    if cfg.camera.to_animal() is None:
-        frame = frames[len(frames) // 2]
-        prepared.camera = place_camera(frame, cfg.ball.rim, cfg.camera.azimuth_deg)
+    prepared.texture = ball_texture(frames[len(frames) // 2], fit_circle(cfg.ball.rim))
+    if prepared.texture < MIN_TEXTURE:
+        log.warning("the ball: %s", prepared.texture_warning())
+    if cfg.camera.to_animal() is None and calibrated is not None:
+        # Relative to where the animal stands on the ball, now that its image is known.
+        circle = fit_circle(cfg.ball.rim)
+        calibrated = deeperfly.on_ball(calibrated, circle, (height, width))
+        cfg.camera.position_deg = calibrated.position_deg
+        prepared.camera_position, prepared.camera = "calibration", calibrated
+    elif cfg.camera.to_animal() is None:
+        picks = np.linspace(0, len(frames), ANIMAL_FRAMES + 2)[1:-1].astype(int)
+        prepared.camera = place_camera(
+            [frames[i] for i in picks], cfg.ball.rim, cfg.camera.azimuth_deg
+        )
         position = prepared.camera.position_deg
         prepared.camera_position = "unknown" if position is None else "estimated"
         cfg.camera.position_deg = position
@@ -299,6 +381,7 @@ class CameraFit:
     angle_deg: float | None = None  # the animal about the ball, clockwise from up
     distance: float | None = None  # from the ball's center, in ball radii
     score: float | None = None  # the animal mask's
+    mask: np.ndarray | None = field(default=None, repr=False)  # the animal's, bool
 
     @property
     def position_deg(self) -> tuple[float, float, float] | None:
@@ -308,7 +391,8 @@ class CameraFit:
 
     def report(self) -> dict:
         """The sidecar's account of it."""
-        return {k: v for k, v in asdict(self).items() if v is not None}
+        out = asdict(_replace(self, mask=None))
+        return {k: v for k, v in out.items() if v is not None}
 
     def line(self) -> str:
         """One line for the terminal block."""
@@ -350,45 +434,95 @@ def _calibration(cfg: Config, src_spec, width: int, height: int):
     return view
 
 
-def place_camera(image: np.ndarray, rim, azimuth: float | None = None) -> CameraFit:
-    """The camera at `azimuth`, its elevation and twist from where the animal stands on
-    the ball in `image`.
+def ball_texture(image: np.ndarray, circle) -> float:
+    """Contrast of the ball's surface at the tracking window's scale: the standard
+    deviation, in gray levels, of a band-pass of `image` inside 0.8 of its radius."""
+    cx, cy, r = circle
+    sigma = max(1.0, r / 60)  # the window spans about 60 px across the ball
+    image = np.asarray(image, np.float32)
+    band = cv2.GaussianBlur(image, (0, 0), sigma) - cv2.GaussianBlur(
+        image, (0, 0), 4 * sigma
+    )
+    rows, cols = np.ogrid[: image.shape[0], : image.shape[1]]
+    inside = (cols - cx) ** 2 + (rows - cy) ** 2 <= (0.8 * r) ** 2
+    return round(float(np.std(band[inside])), 2) if inside.any() else 0.0
 
-    The animal stands on the ball's top, so its silhouette's direction from the ball's
-    center gives the camera's twist, and its distance the elevation: on the outline for
-    a level camera, inside it, at the elevation's cosine, for a camera above. A twist
-    under `LEVEL_TWIST_DEG` is taken for none, and without a silhouette the camera is
-    taken for level. Which way the animal faces does not show in a silhouette, hence
-    `azimuth`. The geometry is orthographic, which the narrow fields of view of
-    trackball rigs allow.
+
+def place_camera(images, rim, azimuth: float | None = None) -> CameraFit:
+    """The camera at `azimuth`, its elevation and twist from where the animal stands on
+    the ball in `images`, a few frames spread over the recording.
+
+    The animal's frame has its z axis along the ball's normal where it stands, so its
+    silhouette's direction from the ball's center gives the camera's twist, and its
+    distance the elevation: inside the outline, at the elevation's cosine, for a camera
+    above. On the outline the elevation does not show and the camera is taken for
+    level, as it is without a silhouette; near the middle (a camera nearly overhead)
+    the direction is too short to read and no twist is assumed. Which way the animal
+    faces does not show in a silhouette, hence `azimuth`. The geometry is orthographic,
+    which the narrow fields of view of trackball rigs allow.
+
+    The animal is tethered, so it is the mask that stays put from frame to frame: a
+    spot of the ball's texture can be the best "insect" in one frame, but it moves.
     """
-    try:
-        found = segment.animal_mask(image)
-    except segment.SegmenterUnavailable as exc:
-        return CameraFit(azimuth, str(exc))
-    if found is None or found[1] < MIN_ANIMAL_SCORE:
-        return CameraFit(azimuth, "no animal found on the ball")
-    mask, score = found
+    if isinstance(images, np.ndarray) and images.ndim == 2:
+        images = [images]
     cx, cy, r = fit_circle(rim)
-    ys, xs = np.nonzero(mask)
-    dx, dy = xs.mean() - cx, ys.mean() - cy
+    rows, cols = np.ogrid[: images[0].shape[0], : images[0].shape[1]]
+    disk = (cols - cx) ** 2 + (rows - cy) ** 2 <= r * r
+    found = []  # (frame, mask, score, x, y) on the ball, best first per frame
+    for k, image in enumerate(images):
+        try:
+            masks, scores = segment.animal_masks(image)
+        except segment.SegmenterUnavailable as exc:
+            return CameraFit(azimuth, str(exc))
+        for mask, score in zip(masks, scores, strict=True):
+            # A mask over most of the ball is the ball (a patterned one reads as an
+            # animal); one far off it is something else.
+            if score < MIN_ANIMAL_SCORE or (mask & disk).sum() > MAX_ANIMAL_COVER * (
+                np.pi * r * r
+            ):
+                continue
+            ys, xs = np.nonzero(mask)
+            x, y = xs.mean(), ys.mean()
+            if np.hypot(x - cx, y - cy) <= OFF_BALL * r:
+                found.append((k, mask, float(score), x, y))
+    # The candidate seen at the same place (within `SAME_PLACE` radii) in the most
+    # frames, then with the most score there.
+    best, key = None, None
+    for _, _, _, x0, y0 in found:
+        near = [c for c in found if np.hypot(c[3] - x0, c[4] - y0) <= SAME_PLACE * r]
+        votes = (len({c[0] for c in near}), sum(c[2] for c in near))
+        if key is None or votes > key:
+            best, key = near, votes
+    if best is None or key[0] < min(len(images), MIN_VOTES):
+        return CameraFit(azimuth, "no animal found that stays on the ball")
+    _, mask, score, _, _ = max(best, key=lambda c: c[2])
+    dx = float(np.median([c[3] for c in best])) - cx
+    dy = float(np.median([c[4] for c in best])) - cy
     distance = float(np.hypot(dx, dy) / r)
     angle = float(np.degrees(np.arctan2(dx, -dy)))
-    fit = CameraFit(azimuth, "", angle_deg=round(angle, 1))
+    fit = CameraFit(azimuth, "", angle_deg=round(angle, 1), mask=mask)
     fit.distance, fit.score = round(distance, 3), round(score, 2)
-    if distance > OFF_BALL:
-        fit.reason = "the animal found is not on the ball"
-    elif distance < ABOVE:
-        fit.reason = "the animal is seen from above, which its silhouette cannot orient"
+    on_rim = distance >= ON_RIM
+    elevation = 0.0 if on_rim else float(np.degrees(np.arccos(distance)))
+    # A camera twisted clockwise sees the animal turned anticlockwise.
+    twist = 0.0 if distance < OVERHEAD else -angle
+    fit.elevation_deg, fit.twist_deg = round(elevation, 1), round(twist, 1) + 0.0
+    fit.measured = True
+    if on_rim:
+        where = (
+            "on the ball's outline, where the elevation does not show and level is "
+            "assumed"
+        )
+    elif distance < OVERHEAD:
+        where = (
+            "near the middle of the ball, seen from nearly straight above, where it "
+            "does not show the twist: none is assumed, and the azimuth says which way "
+            "it faces in the image (180 up, 90 right, 0 down, -90 left)"
+        )
     else:
-        on_rim = distance >= ON_RIM
-        elevation = 0.0 if on_rim else float(np.degrees(np.arccos(distance)))
-        # A camera twisted clockwise sees the animal turned anticlockwise.
-        twist = 0.0 if abs(angle) < LEVEL_TWIST_DEG else -angle
-        fit.elevation_deg, fit.twist_deg = round(elevation, 1), round(twist, 1) + 0.0
-        fit.measured = True
-        where = "on the ball's outline" if on_rim else "inside the ball's outline"
-        fit.reason = f"it stands {where}, SAM 3 score {score:.2f}"
+        where = "inside the ball's outline"
+    fit.reason = f"it stands {where}; SAM 3 score {score:.2f}"
     return fit
 
 
@@ -422,9 +556,10 @@ def _circle_points(circle, n: int = 16) -> list[tuple[int, int]]:
 
 
 def _costs_at(
-    src_spec, cfg: Config, points, vfovs, n_frames: int, params
+    src_spec, cfg: Config, points, vfovs, n_frames: int, params, max_frames=None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Median cost and turned angle (deg) of tracking the first frames at each vfov.
+    """Median cost and turned angle (deg) of tracking the first frames at each vfov:
+    `n_frames`, or more, up to `max_frames`, until the ball turned `MIN_TURN_DEG`.
 
     All candidates track in lockstep, so the video is decoded once. A candidate whose
     geometry is impossible (the rim points do not describe a ball there, or the ball
@@ -471,7 +606,11 @@ def _costs_at(
                 trackers.append(Tracker(trial, source.width, source.height, params))
             except ValueError, np.linalg.LinAlgError:
                 trackers.append(None)
-        for index in range(n_frames):
+        for index in range(max(n_frames, max_frames or 0)):
+            if index >= n_frames:
+                moved = turned[turned > 0]
+                if not len(moved) or np.degrees(np.median(moved)) >= MIN_TURN_DEG:
+                    break
             frame = source.read()
             if frame is None:
                 break
@@ -508,7 +647,9 @@ def fit_vfov(
     """Fit the field of view from the cost, holding the ball's pixel circle fixed.
 
     Where the ball is small in the frame the curve is flat and any value in the flat
-    region tracks identically; the fit says so rather than pretending to a number.
+    region tracks alike; the fit says so rather than pretending to a number. Without a
+    clear minimum the lens is taken for narrow, as on most trackball rigs, and the fit
+    says how much smaller the rotations would read at the vfov the cost leans to.
     """
     lo, hi, count = grid or VFOV_GRID
     log.info(
@@ -516,7 +657,9 @@ def fit_vfov(
     )
     points = _circle_points(circle)
     values = np.geomspace(lo, hi, count)
-    costs, turns = _costs_at(src_spec, cfg, points, values, n_frames, params)
+    costs, turns = _costs_at(
+        src_spec, cfg, points, values, n_frames, params, VFOV_MAX_FRAMES
+    )
     for value, cost in zip(values, costs, strict=True):
         log.debug("vfov %.3g deg: cost %.5g", value, cost)
     curve = [(float(v), float(c)) for v, c in zip(values, costs, strict=True)]
@@ -526,20 +669,26 @@ def fit_vfov(
     turned_deg = float(np.median(turns[turns > 0])) if (turns > 0).any() else 0.0
     if turned_deg < MIN_TURN_DEG:
         raise ValueError(
-            f"the ball turned only {turned_deg:.0f} deg over {n_frames} frames, too "
-            f"little to fit the field of view from; set camera.vfov_deg from the lens"
+            f"the ball turned only {turned_deg:.0f} deg in the frames tracked to fit "
+            f"the field of view (up to {VFOV_MAX_FRAMES}), too little to fit it from; "
+            f"set camera.vfov_deg from the lens"
         )
-    values, costs = values[usable], costs[usable]
+    values, costs, turns = values[usable], costs[usable], turns[usable]
     best = int(np.argmin(costs))
     spread = float(costs.max() / costs.min())
-    flat_range = _flat_run(values, costs, best)
+
+    def turned_at(vfov: float) -> float:  # the rotation read at `vfov`
+        return float(np.interp(np.log(vfov), np.log(values), turns))
 
     # An interior minimum clearly below both neighbors on a curve that is not flat end
     # to end. On a flat curve (the near-orthographic regime) which candidate comes out
     # lowest is noise.
+    depth = 1.0
     if spread > FLAT_TOL and 0 < best < len(costs) - 1:
         depth = float(min(costs[best - 1], costs[best + 1]) / costs[best])
-        if depth >= MIN_DEPTH:
+        if depth >= MIN_DEPTH or (
+            depth >= MIN_VALLEY_DEPTH and _one_valley(costs, best)
+        ):
             inner = np.geomspace(values[best - 1], values[best + 1], VFOV_REFINE + 2)
             inner = inner[1:-1]
             more, _ = _costs_at(src_spec, cfg, points, inner, n_frames, params)
@@ -549,28 +698,36 @@ def fit_vfov(
                 np.r_[values, inner], np.r_[costs, more], values[[best - 1, best + 1]]
             )
             extra = [(float(v), float(c)) for v, c in zip(inner, more, strict=True)]
+            flat_range = _flat_run(values, costs, best)
             return VfovFit(
                 vfov, True, spread, flat_range, turned_deg, depth, curve + extra
             )
 
-    # No believable interior minimum. Usable only where the cost is flat around the
-    # best candidate (the near-orthographic regime); anywhere else the search failed.
-    near = costs[max(best - 1, 0) : best + 2]
-    if float(near.max() / near.min()) > FLAT_TOL:
-        raise ValueError(
-            f"the photometric cost has no clear minimum between {lo:g} and {hi:g} deg "
-            f"(lowest at {values[best]:g} deg), so the field of view cannot be fitted "
-            f"from this recording; set camera.vfov_deg from the lens"
+    # No believable minimum: the narrow end of the curve, as far as it stays level,
+    # unless the curve rules a narrow lens out.
+    lean = float(costs[0] / costs[best])
+    if lean > NARROW_MAX_COST or (lean > LEAN_COST and turned_deg < LEAN_MIN_TURN_DEG):
+        why = (
+            "rules out a narrow lens"
+            if lean > NARROW_MAX_COST
+            else f"the ball turned only {turned_deg:.0f} deg, too little to tell"
         )
-    return VfovFit(
-        float(np.sqrt(flat_range[0] * flat_range[1])),
-        False,
-        spread,
-        flat_range,
-        turned_deg,
-        1.0,
-        curve,
-    )
+        raise ValueError(
+            f"the photometric cost leans to {values[best]:.3g} deg ({lean:.2g}x the "
+            f"cost at {values[0]:g} deg) without a clear minimum, and {why}, so the "
+            f"field of view cannot be fitted from this recording; set "
+            f"camera.vfov_deg from the lens"
+        )
+    narrow = _level_run(values, costs)
+    vfov = float(np.sqrt(narrow[0] * narrow[1]))
+    fit = VfovFit(vfov, False, spread, narrow, turned_deg, depth, curve)
+    if values[best] > narrow[1]:  # the cost leans wider, without a clear minimum
+        fit.leaning = float(values[best])
+        fit.scale_spread = 1.0 - turned_at(fit.leaning) / turned_at(vfov)
+        log.warning("field of view: %s", fit.line())
+    else:
+        fit.scale_spread = turned_at(narrow[0]) / turned_at(narrow[1]) - 1.0
+    return fit
 
 
 def _parabola_minimum(values, costs, bracket) -> float:
@@ -589,6 +746,26 @@ def _parabola_minimum(values, costs, bracket) -> float:
         return float(np.exp(x1))
     lo, hi = np.log(bracket)
     return float(np.exp(np.clip(-b / (2.0 * a), max(x0, lo), min(x2, hi))))
+
+
+def _one_valley(costs, best) -> bool:
+    """Whether the curve falls to `best` from both ends, up to `FLAT_TOL` of noise."""
+    left = all(costs[i] * FLAT_TOL >= costs[i + 1] for i in range(best))
+    right = all(
+        costs[i] * FLAT_TOL >= costs[i - 1] for i in range(best + 1, len(costs))
+    )
+    return left and right
+
+
+def _level_run(values, costs) -> tuple[float, float]:
+    """Fields of view from the narrowest on whose cost stays within `FLAT_TOL` of the
+    narrowest's, either way."""
+    hi = 0
+    while hi < len(costs) - 1 and abs(np.log(costs[hi + 1] / costs[0])) <= np.log(
+        FLAT_TOL
+    ):
+        hi += 1
+    return float(values[0]), float(values[hi])
 
 
 def _flat_run(values, costs, best) -> tuple[float, float]:

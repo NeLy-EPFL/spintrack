@@ -1,15 +1,14 @@
 """What a view of a run draws, kept up frame by frame.
 
 The debug video and the web page both show the ball's outline, the trail the animal has
-walked over the ball, the ball's and the lab's axes, and the fictive path. `Scene` keeps
-them in source pixels, so that each view only scales and draws.
+walked over the ball, the ball's axes, the animal's at where it stands, and the fictive
+path. `Scene` keeps them in source pixels, so that each view only scales and draws.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from spintrack.geometry import normalize
 from spintrack.sphere import ball_outline
 from spintrack.tracker import FrameResult, Tracker
 
@@ -19,6 +18,10 @@ TRAIL_FRAMES = 1024
 # Draw the trail only where the surface faces the camera by more than this cosine: near
 # the limb it is so foreshortened that any trail there hugs the outline.
 TRAIL_LIMB_COS = 0.1
+# The drawn axes, in ball radii: the ball's from its center, the animal's from where it
+# stands, which is near the frame's edge on most rigs.
+AXIS_LENGTH = 0.35
+ANIMAL_AXIS_LENGTH = 0.2
 
 
 class Scene:
@@ -27,8 +30,8 @@ class Scene:
     def __init__(self, tracker: Tracker):
         self.tracker = tracker
         self.sin_half = np.sin(tracker.half_angle)
-        # The animal rides on top of the ball, so the surface point it touches is the
-        # lab frame's up (+z) in camera coordinates.
+        # The lab frame's up (+z) is the ball's normal where the animal stands, so the
+        # surface point it touches is that axis in camera coordinates.
         self.up_cam = tracker.cam_to_lab[2].copy()
         self.geometry_version = -1
         self._update_outline()
@@ -98,18 +101,21 @@ class Scene:
         pts = np.stack([np.where(seen, x, 0.0), np.where(seen, y, 0.0)], axis=1)
         return pts, seen
 
-    def axis_tip(self, axis_cam: np.ndarray) -> tuple[float, float]:
-        """Where an axis from the ball's center, drawn 0.8 of its radius long, ends."""
-        tr = self.tracker
-        x, y, _ = tr.camera.project(
-            normalize(tr.center + 0.8 * self.sin_half * axis_cam)
-        )
-        return float(x), float(y)
-
-    def axes(self) -> dict[str, list[tuple[float, float]] | None]:
-        """The tips of the ball's axes (None before a tracked frame) and the lab's."""
-        tracker, R = self.tracker, self.R_cam
+    def axes(self) -> dict[str, list | tuple[float, float] | None]:
+        """The tips of the ball's axes from its center (None before a tracked frame),
+        where the animal stands, and the tips of its axes from there."""
+        tracker, R, up = self.tracker, self.R_cam, self.up_cam
+        lab = tracker.cam_to_lab
         return {
-            "ball": None if R is None else [self.axis_tip(R[:, i]) for i in range(3)],
-            "lab": [self.axis_tip(tracker.cam_to_lab[i]) for i in range(3)],
+            "ball": None
+            if R is None
+            else [self._image(AXIS_LENGTH * R[:, i]) for i in range(3)],
+            "contact": self._image(up),
+            "animal": [self._image(up + ANIMAL_AXIS_LENGTH * lab[i]) for i in range(3)],
         }
+
+    def _image(self, offset: np.ndarray) -> tuple[float, float]:
+        """Where the point `offset` from the ball's center, in ball radii, images."""
+        tr = self.tracker
+        x, y, _ = tr.camera.project(tr.center + self.sin_half * offset)
+        return float(x), float(y)

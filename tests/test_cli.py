@@ -12,7 +12,7 @@ from helpers import ball_config, make_texture, render
 from spintrack.cli import main
 from spintrack.config import Config
 from spintrack.geometry import matrix_to_rotvec, normalize, rotvec_to_matrix
-from spintrack.io.records import COLUMNS
+from spintrack.io.records import COLUMNS, TABLE_COLUMNS
 from spintrack.pipeline import open_config
 
 W, H = 160, 120
@@ -46,7 +46,7 @@ def test_cli_run_measures_a_known_rotation(tmp_path):
     out = tmp_path / "out"
     argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--no-preview"]
     assert main(argv) == 0
-    dat = pl.read_parquet(out / "tracks.parquet").to_numpy()
+    dat = pl.read_parquet(out / "tracks.parquet", columns=list(COLUMNS)).to_numpy()
     assert dat.shape == (n, len(COLUMNS))
     assert list(dat[:, 0].astype(int)) == list(range(n))
     # Camera-frame increments match the simulated rotation (frame 0 is the reference).
@@ -98,7 +98,7 @@ def test_run_names_its_outputs_and_keeps_them(tmp_path):
     names = {"tracks.parquet", "summary.json", "debug.mp4", "log.txt", "config.toml"}
     assert {p.name for p in tmp_path.iterdir()} == names
     table = pl.read_parquet(tmp_path / "tracks.parquet")
-    assert table.columns == list(COLUMNS) and table.height == 40
+    assert table.columns == list(TABLE_COLUMNS) and table.height == 40
     cap = cv2.VideoCapture(str(tmp_path / "debug.mp4"))
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 40
     cap.release()

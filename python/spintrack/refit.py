@@ -599,7 +599,28 @@ class CenterWatch:
         trajectory, rim, episodes = plan_window_trajectory(
             self.looks, n_frames, self.reference_px, self.radius_px, scatter
         )
-        return ScriptedWatch(self, trajectory, rim, episodes)
+        return ScriptedWatch(self, trajectory, rim, episodes, self.ball_path(n_frames))
+
+    def ball_path(self, n_frames: int) -> tuple[np.ndarray, np.ndarray]:
+        """Where the ball was on each frame, and whether a look saw it there.
+
+        The looks smoothed over the whole run (`smooth_looks`), in source pixels as
+        `update` places the window: the config's circle moved by the looks'
+        displacement from their reference. NaN before the first look and after the
+        last, and on every frame when the rim look never locked on.
+        """
+        n = int(n_frames)
+        path = np.full((n, 2), np.nan)
+        if self.reference_px is None:
+            return path, np.zeros(n, dtype=bool)
+        scatter = self.scatter() or T_MOVE_PX / T_MOVE_SCATTER
+        s, rim = smooth_looks(self.looks, n, self.radius_px, scatter)
+        seen = np.isfinite(rim)
+        if s is not None:
+            hit = np.flatnonzero(seen)
+            span = slice(hit[0], hit[-1] + 1)
+            path[span] = self.origin_px + (s[span] - self.reference_px)
+        return path, seen
 
 
 def span_estimates(t: np.ndarray, xy: np.ndarray) -> np.ndarray:
@@ -706,14 +727,41 @@ def _adaptive_filter(x: np.ndarray, bound: float) -> np.ndarray:
     return (1.0 - f) * stack[lo, idx] + f * stack[hi, idx]
 
 
+def smooth_looks(
+    looks, n_frames: int, radius_px: float, scatter: float
+) -> tuple[np.ndarray | None, np.ndarray]:
+    """The ball's center on every frame, from all the looks at once.
+
+    `looks` are rows of `frame, x, y, rim fraction` (`CenterWatch.looks`). They are
+    interpolated over the frames without one, held beyond the first and last,
+    median-cleaned and smoothed by `_adaptive_filter`. Returns the (n, 2) positions, in
+    the looks' coordinates, or None with fewer than two looks, and the rim fraction of
+    the look on each frame (NaN where there was none).
+    """
+    n = int(n_frames)
+    looks = np.asarray(looks, dtype=np.float64).reshape(-1, 4)
+    frames = looks[:, 0].astype(int)
+    inside = (frames >= 0) & (frames < n)
+    pos = np.full((n, 2), np.nan)
+    rim = np.full(n, np.nan)
+    pos[frames[inside]] = looks[inside, 1:3]
+    rim[frames[inside]] = looks[inside, 3]
+    valid = np.flatnonzero(np.isfinite(pos[:, 0]))
+    if valid.size < 2:
+        return None, rim
+    idx = np.arange(n)
+    s = np.stack([np.interp(idx, valid, pos[valid, k]) for k in range(2)], 1)
+    t_move = max(T_MOVE_PX, T_MOVE_RADII * radius_px, T_MOVE_SCATTER * scatter)
+    return _adaptive_filter(_median_filter(s, PLAN_MEDIAN), PLAN_BOUND * t_move), rim
+
+
 def plan_window_trajectory(
     looks, n_frames: int, reference_px, radius_px: float, scatter: float
 ) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, float]]]:
     """Where the window should have been on every frame, from all the looks at once.
 
-    `looks` are rows of `frame, x, y, rim fraction` (`CenterWatch.looks`). They are
-    interpolated over the frames without one, median-cleaned and smoothed by
-    `_adaptive_filter`. The window holds the ball's resting level - `reference_px` to
+    `looks` are rows of `frame, x, y, rim fraction` (`CenterWatch.looks`), smoothed by
+    `smooth_looks`. The window holds the ball's resting level - `reference_px` to
     begin with - until the smoothed looks leave it by more than `T_MOVE`; an excursion
     that never reaches `T_MOVE_FAST` and is shorter than `CONFIRM_SLOW_FRAMES` is the
     animal at the rim and is ignored, as online. A move is followed from the last frame
@@ -724,20 +772,10 @@ def plan_window_trajectory(
     """
     n = int(n_frames)
     reference = np.asarray(reference_px, dtype=np.float64)
-    looks = np.asarray(looks, dtype=np.float64).reshape(-1, 4)
-    frames = looks[:, 0].astype(int)
-    inside = (frames >= 0) & (frames < n)
-    pos = np.full((n, 2), np.nan)
-    rim = np.full(n, np.nan)
-    pos[frames[inside]] = looks[inside, 1:3]
-    rim[frames[inside]] = looks[inside, 3]
-    valid = np.flatnonzero(np.isfinite(pos[:, 0]))
-    if valid.size < 2:
+    s, rim = smooth_looks(looks, n, radius_px, scatter)
+    if s is None:
         return np.tile(reference, (n, 1)), rim, []
-    idx = np.arange(n)
-    s = np.stack([np.interp(idx, valid, pos[valid, k]) for k in range(2)], 1)
     t_move = max(T_MOVE_PX, T_MOVE_RADII * radius_px, T_MOVE_SCATTER * scatter)
-    s = _adaptive_filter(_median_filter(s, PLAN_MEDIAN), PLAN_BOUND * t_move)
     t_fast = max(T_MOVE_FAST_PX, T_MOVE_FAST_RADII * radius_px)
     near = max(1.0, scatter)
     # Where the window is meant to be: the level while the ball rests, the looks while
@@ -798,7 +836,7 @@ class ScriptedWatch:
     resting place.
     """
 
-    def __init__(self, watch: CenterWatch, trajectory, rim_fraction, episodes):
+    def __init__(self, watch: CenterWatch, trajectory, rim_fraction, episodes, path):
         self.origin_px = watch.origin_px
         self.reference_px = watch.reference_px
         self.radius_config = watch.radius_config
@@ -809,6 +847,7 @@ class ScriptedWatch:
         self._rim = np.asarray(rim_fraction, dtype=np.float64)
         self.episodes = list(episodes)
         self.rim_fraction = 0.0
+        self._path = path
 
     def update(self, frame: int, gray) -> np.ndarray | None:
         """Where to center the window on `frame`, as `CenterWatch.update` says it."""
@@ -821,6 +860,13 @@ class ScriptedWatch:
     def replay(self, n_frames: int) -> ScriptedWatch:
         """A plan replays as itself."""
         return self
+
+    def ball_path(self, n_frames: int) -> tuple[np.ndarray, np.ndarray]:
+        """The first pass's `CenterWatch.ball_path`, over `n_frames` frames."""
+        path, seen = self._path
+        pad = max(0, int(n_frames) - len(seen))
+        path = np.pad(path, ((0, pad), (0, 0)), constant_values=np.nan)
+        return path[:n_frames], np.pad(seen, (0, pad))[:n_frames]
 
 
 def watch_checks(watch) -> dict[str, str]:
