@@ -8,13 +8,13 @@ spintrack streams FicTrac's records in FicTrac's line format, so a closed-loop r
 |---|---|
 | `fictrac config.txt` | `spintrack run config.toml`, or `spintrack run VIDEO -c config.toml`, or `spintrack run VIDEO` alone |
 | `configGui config.txt` | `spintrack gui VIDEO` (a page in the browser, tracking while you set it up) |
-| | `--debug-video`, `--udp`, `--tcp`, `--serial`, `--two-pass`, `--save-map`, `--out`, `--overwrite`, and `KEY=VALUE` for any config key |
+| | `--debug-video`, `--udp`, `--tcp`, `--serial`, `--two-pass`, `--save-map`, `--out`, `--force`, and `--set KEY=VALUE` for any config key |
 
 `spintrack run --help` lists every option.
 
 ## Config keys
 
-spintrack does not read `config.txt`. Its config is a TOML file with the keys grouped in tables ([guide](guide.md#the-config)):
+spintrack does not read `config.txt`. Its config is a TOML file with the keys grouped in tables ([configuration](configuration.md)):
 
 | FicTrac | spintrack | |
 |---|---|---|
@@ -68,7 +68,7 @@ forget_outside_view = true
 
 Three things are handled differently:
 
-- Without a camera position, the camera is placed from where the animal stands on the ball, behind it unless told otherwise, and every run checks the azimuth against the animal's net walking ([guide](guide.md#the-camera-position)). `rotation = [0, 0, 0]` asks for the identity explicitly.
+- Without a camera position, the camera is placed from where the animal stands on the ball, behind it unless told otherwise, and every run checks the azimuth against the animal's net walking ([guide](configuration.md#the-camera-position)). `rotation = [0, 0, 0]` asks for the identity explicitly.
 - Without a field of view, the run fits it from the recording.
 - Without a ball, the run detects it in the recording.
 
@@ -76,7 +76,7 @@ Three things are handled differently:
 
 ### The `.dat` columns
 
-`tracks.parquet` holds FicTrac's 25 columns in FicTrac's order, under these names ([output.md](output.md#the-25-columns) has their units, frames and signs), then four FicTrac has no equivalent for: the ball's position in the image and the tracking window's offset from it ([output.md](output.md#the-balls-position)):
+spintrack writes no `.dat` file: `tracks.parquet` holds FicTrac's 25 columns in FicTrac's order, under these names ([output.md](output.md#the-25-columns) has their units, frames and signs), then four FicTrac has no equivalent for: the ball's position in the image and the tracking window's offset from it ([output.md](output.md#the-balls-position)):
 
 | `.dat` column | `tracks.parquet` column |
 |---|---|

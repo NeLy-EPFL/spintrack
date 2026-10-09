@@ -9,10 +9,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      # The ruff in uv.lock, run without building the extension or syncing torch.
+      - name: Ruff lint
+        run: uvx ruff@0.16.10 check
+      - name: Ruff format
+        run: uvx ruff@0.16.10 format --check
+      - name: uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+      # Code, comments and strings are ASCII; Markdown is not held to it.
+      - name: ASCII only in Python
+        run: "! grep -rnP '[^\\x00-\\x7F]' --include='*.py' python tests benchmarks"
+
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # pyo3 checks its abi3 floor (3.14) against the interpreter it builds with.
       - uses: actions/setup-python@v5
         with:
@@ -29,19 +45,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, python: "3.14" }
-          - { os: macos-14, python: "3.14" }
-          - { os: windows-latest, python: "3.14" }
+        os: [ubuntu-latest, macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: ${{ matrix.python }}
-      - run: uv sync --locked --group dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest -q
+          python-version: "3.14"
+      - run: uv sync --locked
+      # pyproject.toml names the venv's site-packages by its POSIX path.
+      - name: Type check
+        if: runner.os == 'Linux'
+        run: uv run --locked pyrefly check
+      - run: uv run --locked pytest

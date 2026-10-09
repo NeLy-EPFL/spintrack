@@ -110,14 +110,15 @@ class Tracker:
     def __init__(
         self, cfg: Config, width: int, height: int, params: TrackParams | None = None
     ):
-        if cfg.camera.vfov_deg is None:
+        vfov = cfg.camera.vfov_deg
+        if vfov is None:
             raise ValueError("config needs the field of view, camera.vfov_deg")
         if not cfg.ball.rim:
             raise ValueError("config needs the ball's rim points, ball.rim")
         self.cfg = cfg
         self.width, self.height = int(width), int(height)
         camera = cfg.camera
-        self.camera = source_camera(width, height, camera.vfov_deg, camera.fisheye)
+        self.camera = source_camera(width, height, vfov, camera.fisheye)
         self.center, self.half_angle = fit_ball(cfg.ball.rim, self.camera)
         self.params = params_from_config(cfg, params)
         circle = pixel_circle(self.camera, self.center, self.half_angle)
@@ -143,13 +144,14 @@ class Tracker:
         # The reporting convention is fixed to the first window frame, so a later re-fit
         # moves the window without stepping the absolute-orientation columns.
         self.R_wc0 = self.R_wc
-        self.cam_to_lab = cfg.camera.to_animal()
-        if self.cam_to_lab is None:
+        to_animal = cfg.camera.to_animal()
+        if to_animal is None:
             # The camera-frame columns are valid without it, so this warns rather than
             # raising; `spintrack run` refuses instead, because its lab-frame columns
             # would be camera values in disguise.
             log.warning("no camera position in the config; using the identity")
-            self.cam_to_lab = np.eye(3)
+            to_animal = np.eye(3)
+        self.cam_to_lab = to_animal
         tracking = cfg.tracking
         if tracking.initial_map:
             self.params.global_search = True  # needed to localize against the template
@@ -225,7 +227,7 @@ class Tracker:
         self.engine.load_illumination(
             fields,
             saved.get("center", self.center),
-            saved.get("half_angle", self.half_angle),
+            float(saved.get("half_angle", self.half_angle)),
             # The field describes the rig: it counts as much as this run's own memory
             # until the run's frames outweigh it.
             prior_frames=TAU,

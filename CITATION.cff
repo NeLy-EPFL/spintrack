@@ -1,23 +1,46 @@
 cff-version: 1.2.0
-title: spintrack
-message: If you use this software, please cite it using these metadata.
+message: "If you use spintrack, please cite it as below, and FicTrac, whose output it reproduces."
 type: software
+title: "spintrack: track the rotation of a spherical treadmill from video"
 authors:
-  - given-names: Thomas
-    family-names: Lam
+  - family-names: Lam
+    given-names: Thomas Ka Chung
     email: thomas.lam@epfl.ch
-    affiliation: "Neuroengineering Laboratory (Ramdya lab), EPFL"
+    affiliation: "EPFL, Neuroengineering Laboratory"
 repository-code: "https://github.com/NeLy-EPFL/spintrack"
+url: "https://nely-epfl.github.io/spintrack/"
 abstract: >-
   Track the 3D rotation of a spherical treadmill (trackball) from video and
-  reconstruct fictive paths. spintrack reads FicTrac configuration files and
-  writes FicTrac's output format, and estimates rotation photometrically against
-  an accumulated surface map of the ball.
+  reconstruct the animal's fictive path. spintrack streams FicTrac's records in
+  FicTrac's line format and writes them to Parquet, and estimates the rotation
+  photometrically against an accumulated surface map of the ball.
 keywords:
   - trackball
   - spherical treadmill
   - fictive path
-  - drosophila
+  - Drosophila
   - tracking
 license: Apache-2.0
 version: 0.1.0
+references:
+  - type: article
+    title: "FicTrac: a visual method for tracking spherical motion and generating fictive animal paths"
+    authors:
+      - family-names: Moore
+        given-names: Richard J. D.
+      - family-names: Taylor
+        given-names: Gavin J.
+      - family-names: Paulk
+        given-names: Angelique C.
+      - family-names: Pearson
+        given-names: Thomas
+      - family-names: van Swinderen
+        given-names: Bruno
+      - family-names: Srinivasan
+        given-names: Mandyam V.
+    journal: "Journal of Neuroscience Methods"
+    volume: 225
+    start: 106
+    end: 119
+    year: 2014
+    doi: 10.1016/j.jneumeth.2014.01.010

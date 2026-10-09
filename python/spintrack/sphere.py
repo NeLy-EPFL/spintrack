@@ -207,6 +207,8 @@ class WindowGeometry:
             small = cv2.pyrDown(small)
         if self.top_up_sigma > 0.0:
             small = cv2.GaussianBlur(small, (0, 0), self.top_up_sigma)
+        # Set by `window_geometry` along with `levels` and `top_up_sigma`.
+        assert self.map_x_small is not None and self.map_y_small is not None
         return cv2.remap(
             small,
             self.map_x_small,

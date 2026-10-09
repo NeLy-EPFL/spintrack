@@ -134,7 +134,7 @@ def run(
     debug_video: str | Path | None = None,
     save_map: str | Path | None = None,
     view=None,
-    masks: Sequence[tuple[str, np.ndarray, float]] = (),
+    masks: Sequence[tuple[str, np.ndarray, float | None]] = (),
 ) -> RunStats:
     """Track `source` and write every record to each of `recorders`.
 
@@ -296,7 +296,7 @@ def _checks(tracker: Tracker, first: Tracker | None) -> tuple[dict, dict]:
             )
         checks["two-pass"] = note
     cx, cy, r = pixel_circle(tracker.camera, tracker.center, tracker.half_angle)
-    geometry = {
+    geometry: dict[str, object] = {
         "center_px": [cx, cy],
         "radius_px": r,
         "half_angle_deg": float(np.degrees(tracker.half_angle)),

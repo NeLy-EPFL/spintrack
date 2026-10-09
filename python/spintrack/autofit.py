@@ -43,9 +43,10 @@ CAMERA_SOURCE_MESSAGE = (
 )
 NO_POSITION = (
     "where the camera sits around the animal is unknown, and a video cannot tell the "
-    "animal's front from its back. Say it: camera.azimuth_deg=180 for a camera behind "
-    "the animal, 0 in front, 90 at its right, -90 at its left (or "
-    "camera.position_deg=ELEV,AZIM,TWIST, or set it in spintrack gui)"
+    "animal's front from its back. Say it with camera.azimuth_deg: 180 for a camera "
+    "behind the animal, 0 in front, 90 at its right, -90 at its left (on the command "
+    "line, --set camera.azimuth_deg=180; or give camera.position_deg=ELEV,AZIM,TWIST, "
+    "or set it in spintrack gui)"
 )
 MIN_ANIMAL_SCORE = 0.3  # a weaker animal mask places no camera
 # The most of the ball's disk an animal covers: a fly 3-4%, a cockroach on a 10 cm ball
@@ -198,9 +199,11 @@ class Prepared:
             out["radius_disagreement"] = self.radius_disagreement
         return out
 
-    def masks(self) -> list[tuple[str, np.ndarray, float]]:
-        """SAM 3's masks of the ball and the animal, where they were used, as
-        `(name, mask, score)`."""
+    def masks(self) -> list[tuple[str, np.ndarray, float | None]]:
+        """SAM 3's masks of the ball and the animal, where they were used.
+
+        Each is `(name, mask, score)`.
+        """
         out = []
         if self.detection is not None and self.detection.mask is not None:
             out.append(("ball", self.detection.mask, self.detection.model_score))
@@ -316,6 +319,7 @@ def prepare_config(
                 log.warning("%s", message)
                 prepared.notes.append(message)
     else:
+        assert detection is not None  # without a rim, a failed detection raised
         prepared.ball_source = "detected"
         cfg.ball.rim = _circle_points(detection)
         vfov, fisheye = cfg.camera.vfov_deg, cfg.camera.fisheye
@@ -350,8 +354,11 @@ def prepare_config(
 
 @dataclass
 class CameraFit:
-    """The camera's elevation and twist from where the animal stands on the ball, and
-    the azimuth the config gave (`camera.azimuth_deg`)."""
+    """The camera's elevation, twist and azimuth.
+
+    The elevation and twist come from where the animal stands on the ball, the azimuth
+    from the config (`camera.azimuth_deg`).
+    """
 
     azimuth_deg: float | None  # None: unknown, and so the position
     reason: str  # what decided the elevation and the twist
@@ -389,8 +396,11 @@ class CameraFit:
 
 
 def ball_texture(image: np.ndarray, circle) -> float:
-    """Contrast of the ball's surface at the tracking window's scale: the standard
-    deviation, in gray levels, of a band-pass of `image` inside 0.8 of its radius."""
+    """Contrast of the ball's surface at the tracking window's scale.
+
+    The standard deviation, in gray levels, of a band-pass of `image` inside 0.8 of its
+    radius.
+    """
     cx, cy, r = circle
     sigma = max(1.0, r / 60)  # the window spans about 60 px across the ball
     image = np.asarray(image, np.float32)
@@ -403,8 +413,9 @@ def ball_texture(image: np.ndarray, circle) -> float:
 
 
 def place_camera(images, rim, azimuth: float | None = None) -> CameraFit:
-    """The camera at `azimuth`, its elevation and twist from where the animal stands on
-    the ball in `images`, a few frames spread over the recording.
+    """The camera at `azimuth`, its elevation and twist from where the animal stands.
+
+    `images` are a few frames spread over the recording.
 
     The animal's frame has its z axis along the ball's normal where it stands, so its
     silhouette's direction from the ball's center gives the camera's twist, and its
@@ -448,7 +459,7 @@ def place_camera(images, rim, azimuth: float | None = None) -> CameraFit:
         votes = (len({c[0] for c in near}), sum(c[2] for c in near))
         if key is None or votes > key:
             best, key = near, votes
-    if best is None or key[0] < min(len(images), MIN_VOTES):
+    if best is None or key is None or key[0] < min(len(images), MIN_VOTES):
         return CameraFit(azimuth, "no animal found that stays on the ball")
     _, mask, score, _, _ = max(best, key=lambda c: c[2])
     dx = float(np.median([c[3] for c in best])) - cx
@@ -500,20 +511,23 @@ def find_ball(frames, n_frames: int = 100, *, use_model: bool = True) -> BallDet
     return detect_ball(frames, max_frames=n_frames)
 
 
-def _circle_points(circle, n: int = 16) -> list[tuple[int, int]]:
+def _circle_points(circle, n: int = 16) -> list[tuple[float, float]]:
     """Rim points, as `ball.rim` holds them, of a `BallDetection` or a `(cx, cy, r)`."""
     if isinstance(circle, BallDetection):
         flat = circle.rim_points(n)
     else:
-        flat = circle_points(*circle, n)
-    return list(zip(flat[::2], flat[1::2], strict=True))
+        cx, cy, r = circle
+        flat = circle_points(cx, cy, r, n)
+    return [(x, y) for x, y in zip(flat[::2], flat[1::2], strict=True)]
 
 
 def _costs_at(
     src_spec, cfg: Config, points, vfovs, n_frames: int, params, max_frames=None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Median cost and turned angle (deg) of tracking the first frames at each vfov:
-    `n_frames`, or more, up to `max_frames`, until the ball turned `MIN_TURN_DEG`.
+    """Median cost and turned angle (deg) of tracking the first frames at each vfov.
+
+    The first `n_frames`, or more, up to `max_frames`, until the ball turned
+    `MIN_TURN_DEG`.
 
     All candidates track in lockstep, so the video is decoded once. A candidate whose
     geometry is impossible (the rim points do not describe a ball there, or the ball
@@ -712,8 +726,10 @@ def _one_valley(costs, best) -> bool:
 
 
 def _level_run(values, costs) -> tuple[float, float]:
-    """Fields of view from the narrowest on whose cost stays within `FLAT_TOL` of the
-    narrowest's, either way."""
+    """Fields of view from the narrowest on whose cost stays near the narrowest's.
+
+    Near: within `FLAT_TOL`, either way.
+    """
     hi = 0
     while hi < len(costs) - 1 and abs(np.log(costs[hi + 1] / costs[0])) <= np.log(
         FLAT_TOL

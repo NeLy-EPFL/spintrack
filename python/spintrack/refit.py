@@ -260,6 +260,8 @@ class CenterWatch:
         ball that has just stopped) and, at rest, where the last few looks were heading
         (a ball that has just started to fall).
         """
+        # Set by `_take_reference`.
+        assert self._last_look is not None and self.pos is not None
         self._doubtful = None
         last_frame, last = self._last_look
         dt = frame - last_frame
@@ -306,6 +308,7 @@ class CenterWatch:
         left behind on a ball that has dropped out of their band. What this look finds
         counts towards the move but seeds nothing either.
         """
+        assert self._last_look is not None  # set by `_take_reference`
         if len(self._recent) < 2:
             return
         (f0, p0, _), (f1, p1, _) = self._recent[0], self._recent[-1]
@@ -418,6 +421,7 @@ class CenterWatch:
 
     def _filter(self, frame: int, gray) -> None:
         """Measure, then update the resting filter or the track being followed."""
+        assert self.reference_px is not None  # set by `_take_reference`
         seen = self._measure(frame, gray)
         if seen is None and self._doubtful is not None and not self.following:
             # A look refused only for its residual seeds nothing, so a look that climbs
@@ -505,6 +509,7 @@ class CenterWatch:
 
     def _estimate(self, frame: int) -> np.ndarray:
         """Where the ball is on `frame`; where the window is when the looks ran out."""
+        assert self.pos is not None  # set by `_take_reference`
         if not self._track or frame - self._track[-1][0] > COAST_FRAMES:
             return self.pos.copy()
         t = np.array([f - frame for f, _ in self._track], dtype=np.float64)
@@ -514,6 +519,7 @@ class CenterWatch:
 
     def _target(self, frame: int) -> np.ndarray:
         """The window center for `frame`, in source pixels; stops a runaway follow."""
+        assert self.reference_px is not None and self.window_px is not None
         shift = float(np.hypot(*(self.window_px - self.reference_px)))
         episode = self.episodes[-1]
         episode[1] = frame
@@ -538,6 +544,7 @@ class CenterWatch:
         if self.reference_px is None:
             self._take_reference(frame, gray)
             return None
+        assert self.pos is not None and self.window_px is not None  # with the reference
         # The seed-free look's buffer is kept while following and while a resting
         # ball's look is failing; a resting ball seen again empties it.
         if self.following or self._failed > 0:

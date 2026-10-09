@@ -122,9 +122,7 @@ def lab_to_camera_increments(w_lab: np.ndarray, cam_to_lab: np.ndarray) -> np.nd
 
 
 def orientations(w_cam: np.ndarray) -> np.ndarray:
-    """Absolute ball orientations `R_t = exp(w_t) R_{t-1}` starting from identity,
-    (n,3,3).
-    """
+    """Absolute ball orientations `R_t = exp(w_t) R_{t-1}` from identity, (n, 3, 3)."""
     out = np.empty((len(w_cam), 3, 3))
     R = np.eye(3)
     for i, w in enumerate(w_cam):

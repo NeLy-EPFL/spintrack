@@ -1,8 +1,9 @@
 """The page's server: FastAPI on a thread of its own, on localhost, behind a token.
 
-`serve` binds the first free port from `FIRST_PORT` and returns the page's link, with
-its token. Reach it from another machine through `ssh -L`. uvicorn runs off the main
-thread, so Ctrl-C stays the run's.
+`serve` binds the port asked for (`FIRST_PORT` by default), or the next free one after
+it, and returns the page's link, with its token. On the default interface, reach it
+from another machine through `ssh -L`. uvicorn runs off the main thread, so Ctrl-C
+stays the run's.
 """
 
 from __future__ import annotations
@@ -69,7 +70,8 @@ def build_app(view: LiveView, controls=None, token: str | None = None) -> FastAP
 
 
 def _bind(host: str, port: int | None) -> socket.socket:
-    ports = [port] if port else range(FIRST_PORT, FIRST_PORT + PORTS)
+    first = port or FIRST_PORT
+    ports = range(first, min(first + PORTS, 65536))
     for p in ports:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         if os.name != "nt":  # as uvicorn binds: a port in TIME_WAIT is reusable
@@ -114,4 +116,6 @@ def serve(
         thread.join(timeout=5.0)
         sock.close()
 
-    return f"http://{host}:{sock.getsockname()[1]}/?token={token}", stop
+    # Bound to every interface, the page is reached by this machine's name.
+    shown = socket.gethostname() if host in ("", "0.0.0.0", "::") else host
+    return f"http://{shown}:{sock.getsockname()[1]}/?token={token}", stop

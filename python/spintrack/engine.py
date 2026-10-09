@@ -93,7 +93,7 @@ class TrackEngine:
         self._ksize = (k, k)
         self.photometry = Photometry(geometry.mask, self.params.illum_bias)
         # `_map_weight`'s view weight, and the geometry it was computed for.
-        self._view_weight = None
+        self._view_weight: np.ndarray | None = None
         self._view_weight_for = None
         # Where the illumination field was learned: the window's optical axis in the
         # camera frame, averaged with the field's own memory (see
@@ -215,8 +215,11 @@ class TrackEngine:
         )
 
     def _solve_local(self, obs: np.ndarray):
-        """`(result, source)` of the first acceptable local solve, `(None, "lost")` if
-        none is: the finest level, then the pyramid, then the previous frame's map."""
+        """`(result, source)` of the first acceptable local solve, or `(None, "lost")`.
+
+        The solves are tried on the finest level, then the pyramid, then the previous
+        frame's map.
+        """
         max_step = self.params.max_step
         first = self.frames_tracked == 0
         max_iter = FIRST_FRAME_ITERATIONS * MAX_ITER if first else MAX_ITER
@@ -243,18 +246,22 @@ class TrackEngine:
         return res if self._accept(res, np.inf) else None
 
     def _map_weight(self) -> np.ndarray:
-        """Each window pixel's weight in the map: the lighting gain's, times how
-        squarely the pixel sees the surface."""
+        """Each window pixel's weight in the map.
+
+        The lighting gain's, times how squarely the pixel sees the surface.
+        """
         g = self.geometry
-        if self._view_weight_for is not g:
+        view = self._view_weight
+        if view is None or self._view_weight_for is not g:
+            assert g.facing is not None  # `window_geometry` sets it
             w = np.zeros(g.size * g.size, np.float32)
             w[g.index] = np.clip(g.facing, 0.0, 1.0) ** VIEW_WEIGHT_POWER
-            self._view_weight = w.reshape(g.size, g.size)
+            view = self._view_weight = w.reshape(g.size, g.size)
             self._view_weight_for = g
         gain = self.photometry.weights()
         if gain is None:
-            return self._view_weight
-        return np.ascontiguousarray(gain * self._view_weight, dtype=np.float32)
+            return view
+        return np.ascontiguousarray(gain * view, dtype=np.float32)
 
     def _update_maps(self, obs: np.ndarray) -> None:
         # Measure the static field against the map the tracker just used, before this
@@ -375,13 +382,19 @@ class TrackEngine:
 
     # ----- inspection -----
     def map_coverage(self) -> float:
-        """Fraction of map cells seen, which is the fraction of the surface to within
-        the 1.41:1 spread of the cube's cell solid angles."""
+        """Fraction of map cells seen.
+
+        That is the fraction of the surface to within the 1.41:1 spread of the cube's
+        cell solid angles.
+        """
         return float(np.mean(self.core.map_weight() >= W_MIN))
 
     def illumination_image(self) -> np.ndarray | None:
-        """uint8 rendering of the lighting gain field: 170 where a pixel delivers the
-        window's full texture contrast, darker in a shadow."""
+        """A uint8 rendering of the lighting gain field.
+
+        170 where a pixel delivers the window's full texture contrast, darker in a
+        shadow.
+        """
         photo = self.photometry
         if not photo.enabled:
             return None

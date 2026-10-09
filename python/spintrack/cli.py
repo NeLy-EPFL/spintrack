@@ -1,8 +1,10 @@
-"""Command line entry point: `spintrack run` and `spintrack gui`."""
+"""The command line: `spintrack run`, `spintrack gui` and `spintrack doctor`.
 
-from __future__ import annotations
+Typer, and the modules a command needs, are imported here when it runs:
+`import spintrack` loads neither.
+"""
 
-import argparse
+import json
 import logging
 import signal
 import socket
@@ -10,26 +12,17 @@ import sys
 import time
 from logging.handlers import MemoryHandler
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Annotated
+
+import typer
+from typer.core import TyperGroup
 
 from spintrack import __version__
 from spintrack.config import is_override
 
 log = logging.getLogger("spintrack")
 
-RUN_DESCRIPTION = """\
-Track the ball in each VIDEO (a video file or a camera index), or in the video a config
-(.toml) names. The ball, the field of view and the camera position come from the config
-(-c) when it has them, and from the recording when not. KEY=VALUE arguments override
-the config's keys: tracking.window_px=80, camera.position_deg=0,180,0. Each video gets a
-folder, NAME_spintrack next to it (or --out), with tracks.parquet, summary.json, log.txt
-and config.toml, the config as run. `spintrack VIDEO ...` is short for `spintrack run
-VIDEO ...`.
-"""
-GUI_DESCRIPTION = """\
-Open a page that tracks VIDEO live while you fix the ball, the camera position and the
-tracking parameters, and save them as a config for `spintrack run -c CONFIG`. KEY=VALUE
-arguments override the config's keys, as for `spintrack run`.
-"""
 # The first lines of the config.toml a run writes.
 RUN_CONFIG_HEADER = (
     "# The config this run used, with the command line's changes and what it found",
@@ -38,127 +31,128 @@ RUN_CONFIG_HEADER = (
 )
 # What a positional argument ending so is taken for: a config, not a video.
 CONFIG_SUFFIXES = (".toml", ".txt", ".yaml", ".yml")
+STREAMING = "Streaming (FicTrac's line format)"
+# Interfaces a page served on is reached from this machine only, through `ssh -L`
+# from another.
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
-def _add_inputs(p, what: str) -> None:
-    p.add_argument(
-        "inputs",
-        nargs="*",
-        metavar="VIDEO|KEY=VALUE",
-        help=f"{what}, and config overrides such as tracking.window_px=80",
-    )
-    p.add_argument(
+class _Commands(TyperGroup):
+    """The commands, with a hint for a video given without `run`."""
+
+    def resolve_command(self, ctx, args):
+        if args and self.get_command(ctx, args[0]) is None and _is_input(args[0]):
+            ctx.fail(
+                f"{args[0]!r} is not a command; to track it: spintrack run {args[0]}"
+            )
+        return super().resolve_command(ctx, args)
+
+
+app = typer.Typer(
+    cls=_Commands,
+    help="Track the rotation of a trackball from video.",
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode="markdown",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+ConfigOption = Annotated[
+    str | None,
+    typer.Option(
         "-c",
         "--config",
-        default=None,
         metavar="CONFIG",
-        help="a config (.toml) to start from, for instance one `spintrack gui` saved",
-    )
-    p.add_argument("--port", type=int, default=None, help="the page's port")
-    p.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="debug messages, and a traceback on errors",
-    )
+        help="A config (`.toml`) to start from, such as one `spintrack gui` saved.",
+    ),
+]
+SetOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--set",
+        metavar="KEY=VALUE",
+        help="Set a config key, such as `tracking.window_px=80` or "
+        "`camera.position_deg=0,180,0`; `none` restores its default. Repeatable.",
+    ),
+]
+HostOption = Annotated[
+    str,
+    typer.Option(
+        "--host",
+        metavar="HOST",
+        help="The interface to serve the page on; by default, this machine.",
+    ),
+]
+PortOption = Annotated[
+    int | None,
+    typer.Option(
+        "--port",
+        min=1,
+        max=65535,
+        metavar="PORT",
+        show_default=False,
+        help="The page's port (default: 8300). A busy port is passed over for the "
+        "next free one.",
+    ),
+]
+VerboseOption = Annotated[
+    bool,
+    typer.Option("-v", "--verbose", help="Debug messages, and a traceback on errors."),
+]
 
 
-def _run_parser(sub) -> None:
-    p = sub.add_parser(
-        "run",
-        help="track videos (spintrack VIDEO is short for spintrack run VIDEO)",
-        description=RUN_DESCRIPTION,
-    )
-    _add_inputs(p, "videos or camera indices, or configs that name their video")
-    p.add_argument(
-        "-o",
-        "--out",
-        default=None,
-        metavar="DIR",
-        help="the output folder, for one video (default: NAME_spintrack next to it)",
-    )
-    p.add_argument(
-        "--overwrite", action="store_true", help="replace outputs of an earlier run"
-    )
-    p.add_argument(
-        "--no-preview",
-        action="store_true",
-        help="serve no preview page (by default its link is printed)",
-    )
-    p.add_argument(
-        "--two-pass",
-        action="store_true",
-        help="map the ball in a first pass, then re-track from that map",
-    )
-    p.add_argument(
-        "--max-frames", type=int, default=None, metavar="N", help="stop after N frames"
-    )
-    p.add_argument(
-        "--debug-video",
-        action="store_true",
-        help="also write an annotated video, debug.mp4 (output.debug_video=true)",
-    )
-    p.add_argument(
-        "--save-map", action="store_true", help="also write the final map, map.npz"
-    )
-    live = p.add_argument_group("streaming (FicTrac's line format)")
-    live.add_argument(
-        "--udp", default=None, metavar="HOST:PORT", help="stream records over UDP"
-    )
-    live.add_argument(
-        "--tcp", default=None, metavar="HOST:PORT", help="stream records over TCP"
-    )
-    live.add_argument(
-        "--serial", default=None, metavar="PORT[:BAUD]", help="stream over serial"
-    )
-    live.add_argument(
-        "--print", action="store_true", help="print records to the terminal"
-    )
-    p.set_defaults(func=cmd_run)
+def _version(value: bool) -> None:
+    if value:
+        typer.echo(f"spintrack {__version__}")
+        raise typer.Exit
 
 
-def _gui_parser(sub) -> None:
-    p = sub.add_parser(
-        "gui",
-        help="fix the ball and the parameters on a video while it tracks",
-        description=GUI_DESCRIPTION,
-    )
-    _add_inputs(p, "the video, or a config that names it")
-    p.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="print the page's link without opening a browser",
-    )
-    p.set_defaults(func=cmd_gui)
+@app.callback()
+def _root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = False,
+) -> None:
+    """Track the rotation of a trackball from video."""
 
 
-def _jobs(args) -> tuple[list[tuple[str | None, str | None]], list[str]]:
-    """What to track, as (config, source) pairs, and the overrides for all of them.
+def _jobs(args) -> list[tuple[str | None, str | None]]:
+    """What to track, as (config, source) pairs.
 
-    A positional argument is an override (`KEY=VALUE`), a config that names its video,
-    or a video (or camera index), which `--config` then describes.
+    A positional argument is a config that names its video, or a video (or camera
+    index), which `--config` then describes.
+
+    A misuse is a usage error, through `args.ctx`: status 2, with the usage line.
     """
-    overrides = [a for a in args.inputs if is_override(a)]
-    jobs = []
+    for item in args.overrides:
+        if not is_override(item):
+            args.ctx.fail(f"--set takes KEY=VALUE, not {item!r}")
+    jobs: list[tuple[str | None, str | None]] = []
     for item in args.inputs:
         if is_override(item):
-            continue
+            args.ctx.fail(f"{item!r} sets a config key: --set {item}")
         if Path(item).suffix.lower() in CONFIG_SUFFIXES:
             if args.config:
-                raise ValueError(
-                    f"{item} is a config; --config goes with videos: spintrack run "
-                    f"VIDEO... --config CONFIG"
+                args.ctx.fail(
+                    f"{item} is a config; --config goes with videos: spintrack "
+                    f"{args.command} VIDEO --config CONFIG"
                 )
             jobs.append((item, None))
         else:
             jobs.append((args.config, item))
     if not jobs:
         if not args.config:
-            raise ValueError("name a video: spintrack run VIDEO")
+            args.ctx.fail(f"name a video: spintrack {args.command} VIDEO")
         jobs.append((args.config, None))  # the config names its video
     if getattr(args, "out", None) and len(jobs) > 1:
-        raise ValueError("--out names one video's folder; leave it out for several")
-    return jobs, overrides
+        args.ctx.fail("--out names one video's folder; leave it out for several")
+    return jobs
 
 
 def _host_port(spec: str) -> tuple[str, int]:
@@ -167,7 +161,7 @@ def _host_port(spec: str) -> tuple[str, int]:
 
 
 def _outputs(args, cfg, src: str) -> dict[str, Path]:
-    """The files this run writes, by kind; refuses to replace any unless --overwrite.
+    """The files this run writes, by kind; refuses to replace any unless --force.
 
     They go into one folder: `--out`, or NAME_spintrack next to the video (in the
     current directory for a camera), where NAME is `output.name` or the video's name.
@@ -192,10 +186,10 @@ def _outputs(args, cfg, src: str) -> dict[str, Path]:
     if args.save_map:
         paths["map"] = folder / "map.npz"
     existing = [p.name for p in paths.values() if p.exists()]
-    if existing and not args.overwrite:
+    if existing and not args.force:
         raise ValueError(
             f"outputs of an earlier run in {folder}: {', '.join(existing)} "
-            f"(--overwrite replaces them)"
+            f"(--force replaces them)"
         )
     return paths
 
@@ -203,13 +197,14 @@ def _outputs(args, cfg, src: str) -> dict[str, Path]:
 def _streams(args, cfg) -> list:
     """The sockets, serial port and terminal the records are streamed to."""
     from spintrack.io.recorders import (
+        Recorder,
         SerialRecorder,
         TcpRecorder,
         TerminalRecorder,
         UdpRecorder,
     )
 
-    out = []
+    out: list[Recorder] = []
     stream = cfg.stream
     if args.udp or (stream.udp and not args.tcp):
         out.append(UdpRecorder(*_host_port(args.udp or stream.udp)))
@@ -313,30 +308,38 @@ def _start_page(args, mode: str, controls=None):
     from spintrack.web.live import LiveView
     from spintrack.web.server import serve
 
+    name = "live view" if mode == "run" else "gui"
     view = LiveView(mode)
     try:
-        view.url, view.stop_server = serve(view, controls, port=args.port)
+        view.url, view.stop_server = serve(
+            view, controls, port=args.port, host=args.host
+        )
     except OSError as exc:
-        log.warning("%s page: off (%s)", mode, exc)
+        log.warning("%s: off (%s)", name, exc)
         view.close()
         return None
-    port = view.url.split("/")[2].rsplit(":", 1)[1]
-    log.info(
-        "%s: %s (from another machine: ssh -L %s:localhost:%s %s)",
-        "preview" if mode == "run" else "gui",
-        view.url, port, port, socket.gethostname(),
-    )  # fmt: skip
+    port = int(view.url.split("/")[2].rsplit(":", 1)[1])
+    if args.port and port != args.port:
+        log.info("port %d is busy; serving on %d", args.port, port)
+    if args.host in LOOPBACK:
+        log.info(
+            "%s: %s (from another machine: ssh -L %d:localhost:%d %s)",
+            name, view.url, port, port, socket.gethostname(),
+        )  # fmt: skip
+    else:
+        log.info("%s: %s", name, view.url)
     return view
 
 
-def cmd_run(args) -> int:
+def _run(args) -> int:
     import cv2
 
     # OpenCV spreads its remaps and filters over every core by default; two threads
     # track as fast and leave the rest of the machine to other runs.
     cv2.setNumThreads(2)
-    jobs, overrides = _jobs(args)
-    view = None if args.no_preview else _start_page(args, "run")
+    jobs = _jobs(args)
+    overrides = args.overrides
+    view = None if args.no_live else _start_page(args, "run")
     failed = 0
     try:
         for i, (config, src) in enumerate(jobs):
@@ -352,7 +355,7 @@ def cmd_run(args) -> int:
             view.close()
     if failed and len(jobs) > 1:
         log.error("%d of %d videos failed", failed, len(jobs))
-    return 2 if failed else 0
+    return 1 if failed else 0
 
 
 def _run_job(args, config, src, overrides, view) -> bool:
@@ -445,24 +448,23 @@ def _track_job(args, config, src, overrides, view, run_log) -> None:
         view.finish("stopped" if view.stop_requested else "done", summary)
 
 
-def cmd_gui(args) -> int:
+def _gui(args) -> int:
     from spintrack.web.gui import GuiSession
 
-    jobs, overrides = _jobs(args)
-    if len(jobs) > 1:
-        raise ValueError("the gui opens one video")
-    config, src = jobs[0]
+    ((config, src),) = _jobs(args)
+    overrides = args.overrides
     # Where Save writes: the config the gui started from, or one next to the video.
     if config is not None:
         save_to = Path(config)
     else:
+        assert src is not None  # without a config, a job names its video
         save_to = (Path(src).parent if not src.isdigit() else Path()) / "spintrack.toml"
     session = GuiSession(config, src, overrides, save_to)
     view = _start_page(args, "gui", session)
     if view is None:
-        return 2
+        return 1
     try:
-        if not args.no_browser and _graphical():
+        if not args.no_browser and _graphical() and view.url:
             import webbrowser
 
             webbrowser.open(view.url)
@@ -491,8 +493,8 @@ def _message(exc: BaseException) -> str:
 def _is_input(arg: str) -> bool:
     """Whether a first argument is a `run` input: a path, a camera index or KEY=VALUE.
 
-    A path counts even if missing, for `run` to report it, but a bare word must name a
-    file, so that a misspelled command still gets argparse's list of commands.
+    A path counts even if missing, but a bare word must name a file, so that a
+    misspelled command still gets Click's suggestion of the command meant.
     """
     path = Path(arg)
     return (
@@ -504,27 +506,13 @@ def _is_input(arg: str) -> bool:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="spintrack",
-        description="Track the rotation of a trackball from video.",
-        epilog="spintrack VIDEO ... is short for spintrack run VIDEO ...",
-    )
-    parser.add_argument(
-        "--version", action="version", version=f"spintrack {__version__}"
-    )
-    sub = parser.add_subparsers(dest="command", title="commands")
-    _run_parser(sub)
-    _gui_parser(sub)
-    argv = sys.argv[1:] if argv is None else list(argv)
-    if argv and argv[0] not in sub.choices and _is_input(argv[0]):
-        argv.insert(0, "run")
-    if not argv or argv[0] not in sub.choices:
-        parser.parse_args(argv)  # --help, --version, or an unknown command
-        parser.print_help()
-        return 0
-    # Intermixed, so that options may come between the videos and the overrides.
-    args = sub.choices[argv[0]].parse_intermixed_args(argv[1:])
+def _invoke(command, args) -> None:
+    """Run a command's body with logging and signals set up, and exit with its status.
+
+    An error the user can act on (a missing file, a wrong config key) is one line, with
+    the traceback under `--verbose`; status 1. Ctrl-C, a kill or a hangup stops the
+    command as Ctrl-C does; status 130.
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.captureWarnings(True)
     log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
@@ -535,15 +523,260 @@ def main(argv: list[str] | None = None) -> int:
     kills = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
     handlers = {s: signal.signal(s, signal.default_int_handler) for s in kills}
     try:
-        return args.func(args)
+        status = command(args)
     except KeyboardInterrupt:
-        return 130
+        status = 130
     except (OSError, ValueError, DetectionError) as exc:
         log.error("error: %s", _message(exc), exc_info=args.verbose)
-        return 2
+        status = 1
     finally:
         for s, handler in handlers.items():
             signal.signal(s, handler)
+    if status:
+        raise typer.Exit(status)
+
+
+@app.command()
+def run(
+    ctx: typer.Context,
+    videos: Annotated[
+        list[str] | None,
+        typer.Argument(
+            show_default=False,
+            help="Videos or camera indices, or configs (`.toml`) that name their "
+            "video.",
+        ),
+    ] = None,
+    config: ConfigOption = None,
+    set_: SetOption = None,
+    out: Annotated[
+        str | None,
+        typer.Option(
+            "-o",
+            "--out",
+            metavar="DIR",
+            help="The output folder, for one video (default: `NAME_spintrack` next "
+            "to it).",
+        ),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace the outputs of an earlier run.")
+    ] = False,
+    two_pass: Annotated[
+        bool,
+        typer.Option(
+            "--two-pass",
+            help="Map the ball in a first pass, then re-track from that map.",
+        ),
+    ] = False,
+    max_frames: Annotated[
+        int | None, typer.Option(min=1, metavar="N", help="Stop after N frames.")
+    ] = None,
+    debug_video: Annotated[
+        bool,
+        typer.Option(
+            "--debug-video",
+            help="Also write an annotated video, `debug.mp4` "
+            "(`--set output.debug_video=true`).",
+        ),
+    ] = False,
+    save_map: Annotated[
+        bool, typer.Option("--save-map", help="Also write the final map, `map.npz`.")
+    ] = False,
+    no_live: Annotated[
+        bool,
+        typer.Option(
+            "--no-live", help="Serve no live view (by default its link is printed)."
+        ),
+    ] = False,
+    host: HostOption = "127.0.0.1",
+    port: PortOption = None,
+    udp: Annotated[
+        str | None,
+        typer.Option(
+            metavar="HOST:PORT",
+            help="Stream records over UDP.",
+            rich_help_panel=STREAMING,
+        ),
+    ] = None,
+    tcp: Annotated[
+        str | None,
+        typer.Option(
+            metavar="HOST:PORT",
+            help="Stream records over TCP.",
+            rich_help_panel=STREAMING,
+        ),
+    ] = None,
+    serial: Annotated[
+        str | None,
+        typer.Option(
+            metavar="PORT[:BAUD]",
+            help="Stream records over a serial port (the `serial` extra).",
+            rich_help_panel=STREAMING,
+        ),
+    ] = None,
+    print_: Annotated[
+        bool,
+        typer.Option(
+            "--print",
+            help="Print records to the terminal.",
+            rich_help_panel=STREAMING,
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Track the ball in each video.
+
+    The ball, the field of view and the camera position come from the config (`-c`)
+    when it has them, and from the recording when not. `--set` changes the config's
+    keys for this run.
+
+    Each video gets a folder, `NAME_spintrack` next to it (or `--out`), with
+    `tracks.parquet`, `summary.json`, `log.txt` and `config.toml`, the config as run.
+    The live view, whose link is printed first, shows the run as it goes.
+    """
+    args = SimpleNamespace(
+        ctx=ctx,
+        command="run",
+        inputs=videos or [],
+        config=config,
+        overrides=set_ or [],
+        out=out,
+        force=force,
+        two_pass=two_pass,
+        max_frames=max_frames,
+        debug_video=debug_video,
+        save_map=save_map,
+        no_live=no_live,
+        host=host,
+        port=port,
+        udp=udp,
+        tcp=tcp,
+        serial=serial,
+        print=print_,
+        verbose=verbose,
+    )
+    _invoke(_run, args)
+
+
+@app.command()
+def gui(
+    ctx: typer.Context,
+    video: Annotated[
+        str | None,
+        typer.Argument(
+            show_default=False,
+            help="The video or camera index, or a config (`.toml`) that names its "
+            "video.",
+        ),
+    ] = None,
+    config: ConfigOption = None,
+    set_: SetOption = None,
+    host: HostOption = "127.0.0.1",
+    port: PortOption = None,
+    no_browser: Annotated[
+        bool,
+        typer.Option(
+            "--no-browser", help="Print the page's link without opening a browser."
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Fix a video's config while it tracks.
+
+    Opens a page that tracks the video live while you fix the ball, the camera
+    position and the tracking parameters, and saves them as a config for
+    `spintrack run -c CONFIG`.
+    """
+    args = SimpleNamespace(
+        ctx=ctx,
+        command="gui",
+        inputs=[video] if video is not None else [],
+        config=config,
+        overrides=set_ or [],
+        host=host,
+        port=port,
+        no_browser=no_browser,
+        verbose=verbose,
+    )
+    _invoke(_gui, args)
+
+
+# Each status's marker and color, as `octacam doctor` shows them.
+MARKERS = {
+    "ok": ("\N{CHECK MARK}", "green"),
+    "warn": ("\N{WARNING SIGN}", "yellow"),
+    "error": ("\N{BALLOT X}", "red"),
+    "info": ("\N{BULLET}", "cyan"),
+}
+
+
+@app.command()
+def doctor(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json", help="Print the report as JSON, for scripts, instead of text."
+        ),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check", help="Exit with status 1 on warnings too, not only on errors."
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Report what this installation can do.
+
+    Checks Python, the compiled core, PyTorch and the device SAM 3 runs on, whether
+    SAM 3's checkpoint is cached, PyAV's FFmpeg and the serial extra. It downloads
+    nothing. Exits with status 1 on errors (and on warnings with `--check`).
+    """
+    args = SimpleNamespace(json=json_output, check=check, verbose=verbose)
+    _invoke(_doctor, args)
+
+
+def _doctor(args) -> int:
+    from spintrack.doctor import report
+
+    sections = report()
+    statuses = [status for s in sections for status, _ in s.findings]
+    errors, warnings = statuses.count("error"), statuses.count("warn")
+    if args.json:
+        payload = {
+            "spintrack_version": __version__,
+            "sections": [
+                {
+                    "title": s.title,
+                    "findings": [{"status": st, "text": t} for st, t in s.findings],
+                }
+                for s in sections
+            ],
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(f"spintrack doctor -- spintrack {__version__}")
+        for s in sections:
+            typer.echo(f"\n{s.title}")
+            for status, text in s.findings:
+                marker, color = MARKERS[status]
+                typer.echo("  " + typer.style(marker, fg=color) + f" {text}")
+        typer.echo()
+        if errors or warnings:
+            typer.echo(f"{errors} error(s), {warnings} warning(s).")
+        else:
+            typer.secho("All checks passed.", fg="green", bold=True)
+    return int(bool(errors or (args.check and warnings)))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the command line on `argv` (by default `sys.argv[1:]`); the exit status."""
+    try:
+        app(args=argv, prog_name="spintrack")
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else int(exc.code is not None)
+    return 0
 
 
 if __name__ == "__main__":

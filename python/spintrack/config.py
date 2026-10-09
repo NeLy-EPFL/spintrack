@@ -12,8 +12,8 @@
 Every key is optional: a run finds the ball, the field of view and the camera position
 in the recording when the config leaves them out. `docs/guide.md` lists the keys. Paths
 are relative to the file. An unknown key is an error, so that a typo cannot pass for a
-default. On the command line, `KEY=VALUE` arguments (`tracking.window_px=80`) override
-the config's keys.
+default. On the command line, `--set KEY=VALUE` (`--set tracking.window_px=80`)
+overrides a config key.
 """
 
 from __future__ import annotations
@@ -216,7 +216,7 @@ class Config(_Table):
 
 
 def is_override(arg: str) -> bool:
-    """Whether a command-line argument is a `KEY=VALUE` override rather than a path."""
+    """Whether a string is a `KEY=VALUE` override rather than a path."""
     return OVERRIDE.fullmatch(arg) is not None
 
 
@@ -297,14 +297,14 @@ def leading_comments(path: str | Path) -> list[str]:
 
 def _relative(path: str, folder: Path) -> str:
     """`path` relative to `folder`, or absolute when the two share only the root."""
-    path, folder = os.path.abspath(path), os.path.abspath(folder)
+    path, root = os.path.abspath(path), os.path.abspath(folder)
     try:
-        shared = os.path.commonpath([path, folder])
+        shared = os.path.commonpath([path, root])
     except ValueError:  # on another drive
         shared = ""
     if shared == os.path.dirname(shared):
         return Path(path).as_posix()
-    return Path(os.path.relpath(path, folder)).as_posix()
+    return Path(os.path.relpath(path, root)).as_posix()
 
 
 def _toml(data: dict) -> str:
@@ -358,7 +358,7 @@ def _explain(path: Path | str, exc: ValidationError) -> str:
         if close:
             hint = f"did you mean {known[close[0]]}?"
         elif table:
-            hint = f"[{table[0]}] takes {', '.join(tables[table[0]])}"
+            hint = f"[{table[0]}] takes {', '.join(tables[str(table[0])])}"
         else:
             hint = f"the top level takes {', '.join(Config.model_fields)}"
         lines.append(f"  {where}: unknown key; {hint}")

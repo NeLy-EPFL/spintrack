@@ -113,8 +113,11 @@ class VideoSource:
         self._pending = None
 
     def _seek_by_count(self, index: int) -> None:
-        """Decode from the last keyframe at or before frame `index`, found by counting
-        packets, which is frames: the decode order shows each keyframe at its place."""
+        """Decode from the last keyframe at or before frame `index`.
+
+        The keyframe is found by counting packets, which is frames: the decode order
+        shows each keyframe at its place.
+        """
         if self._keyframes is None:
             with av.open(self._path) as container:
                 stream = container.streams.video[0]

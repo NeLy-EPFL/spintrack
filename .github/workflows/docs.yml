@@ -1,0 +1,83 @@
+# Publish the MkDocs site to GitHub Pages, one version per branch, as the deeperfly
+# and octacam docs do.
+#
+# `main` publishes as the version in Cargo.toml (e.g. `0.1.0`) and takes the
+# `stable` alias, which the site's default redirect points at. `dev` publishes as
+# `dev`. Both live side by side under the site root, and Material's version
+# selector moves between them:
+#
+#     https://nely-epfl.github.io/spintrack/          -> redirects to stable
+#     https://nely-epfl.github.io/spintrack/stable/   -> the last release
+#     https://nely-epfl.github.io/spintrack/dev/      -> the dev branch
+#     https://nely-epfl.github.io/spintrack/0.1.0/    -> that release, pinned forever
+#
+# ONE-TIME SETUP, and the site will 404 until it is done: Settings -> Pages ->
+# "Build and deployment" -> Source must be **"Deploy from a branch"**, branch
+# `gh-pages`, folder `/ (root)`. mike works by COMMITTING built sites to the
+# gh-pages branch rather than by uploading an artifact, which is what lets
+# several versions coexist. The branch is created by the first successful run of
+# this workflow.
+name: docs
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "README.md"            # the citing page pastes its sections
+      - "python/**"            # mkdocstrings renders the API reference from it
+      - "Cargo.toml"           # the version
+      - "pyproject.toml"       # the `docs` dependency group
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# mike PUSHES to gh-pages, so this needs write access to the repo rather than the
+# pages/id-token pair an artifact deploy needs.
+permissions:
+  contents: write
+
+# gh-pages is a single branch two branches can race to push. Serialize, and never
+# cancel a run that may be mid-push.
+concurrency:
+  group: docs-gh-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # mike rewrites gh-pages history, so it needs the real history, not a
+          # depth-1 clone.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Configure git for mike's commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Only the docs group: mkdocstrings reads the sources without importing them,
+      # so neither the Rust extension nor PyTorch is installed. `mike deploy` builds
+      # without --strict, so the gate is run explicitly first.
+      - name: Build (strict) as the gate
+        run: uv run --locked --only-group docs mkdocs build --strict
+
+      - name: Publish dev
+        if: github.ref == 'refs/heads/dev'
+        run: uv run --locked --only-group docs mike deploy --push --update-aliases dev
+
+      # The release version comes from Cargo.toml, which maturin reads too, so a
+      # version bump publishes a new pinned version on its own.
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          version=$(python3 -c \
+            "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['package']['version'])")
+          echo "publishing $version (alias: stable)"
+          uv run --locked --only-group docs mike deploy --push --update-aliases "$version" stable
+          uv run --locked --only-group docs mike set-default --push stable

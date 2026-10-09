@@ -31,8 +31,9 @@ def poisson_disk_sphere(
 
 
 def dirs_to_lonlat(dirs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Longitude in (-pi, pi] about +y and latitude in [-pi/2, pi/2]; y is the pole
-    axis.
+    """Longitude in (-pi, pi] about +y and latitude in [-pi/2, pi/2].
+
+    The y axis is the pole.
     """
     lon = np.arctan2(dirs[..., 0], dirs[..., 2])
     lat = np.arcsin(np.clip(dirs[..., 1], -1.0, 1.0))
@@ -47,9 +48,7 @@ def lonlat_to_dirs(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
 
 @dataclass
 class Texture:
-    """Equirectangular albedo map in [0, 1] with bilinear, longitude-wrapping
-    sampling.
-    """
+    """An albedo map in [0, 1]: equirectangular, bilinear, wrapping in longitude."""
 
     data: np.ndarray  # (H, W) float32
 

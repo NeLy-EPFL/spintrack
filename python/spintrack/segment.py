@@ -48,7 +48,9 @@ def _model():
     # Keep the checkpoint download's progress, not the loading and HTTP chatter.
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # huggingface_hub 2 logs its requests through httpx2, earlier versions httpx.
+    for name in ("httpx", "httpx2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     # The Hub's notices (an anonymous download "should" log in); failures still raise.
     logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     log.info("loading SAM 3 on %s (the first use downloads 3.4 GB)", device)
@@ -84,8 +86,11 @@ def _vision(image: np.ndarray):
 
 
 def _masks(image: np.ndarray, prompts) -> tuple[np.ndarray, np.ndarray]:
-    """The masks the prompts find in `image`, pooled, best first: `(k, h, w)` uint8 and
-    their scores. The image is encoded once and every prompt decoded against it."""
+    """The masks the prompts find in `image`, pooled, best first, and their scores.
+
+    The masks are `(k, h, w)` uint8. The image is encoded once and every prompt decoded
+    against it.
+    """
     import torch
 
     model, processor, device, _ = _model()

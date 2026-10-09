@@ -144,7 +144,7 @@ def _seconds(frames, ts_ms, fps: float | None) -> np.ndarray:
         and np.any(ts > 0)
         and np.all(np.diff(ts) >= 0)
     )
-    if usable:
+    if usable and ts is not None:
         return ts / 1e3
     return frames / float(fps) if fps and fps > 0 else np.full(frames.shape, np.nan)
 
@@ -221,8 +221,9 @@ def summarize_run(
 
 
 def walking_check(w_lab, position_deg=None) -> str | None:
-    """Where the animal's net walking points, from the per-frame lab-frame rotations
-    of the tracked frames; None when it barely walked.
+    """Where the animal's net walking points; None when it barely walked.
+
+    From the per-frame lab-frame rotations of the tracked frames.
 
     Animals walk mostly forward, so a net direction far from it suggests a wrong
     camera azimuth: walking that points `a` deg to the left of forward reads as

@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -31,6 +32,9 @@ from PIL import Image, ImageDraw, ImageFont
 from spintrack.maps import NET_LABELS, NET_SHAPE
 from spintrack.scene import TRAIL_FRAMES, Scene
 from spintrack.tracker import FrameResult, Tracker
+
+if TYPE_CHECKING:
+    import av
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +75,7 @@ FOURCC = {
 }
 
 # `debug_codec` -> (PyAV encoder, encoder options) for the codecs OpenCV cannot write.
-AV_CODEC = {
+AV_CODEC: dict[str, tuple[str, dict[str, object]]] = {
     "h264": ("libx264", {"preset": "veryfast", "crf": "20"}),
     "avc1": ("libx264", {"preset": "veryfast", "crf": "20"}),
     "hevc": ("libx265", {"preset": "veryfast", "crf": "24"}),
@@ -90,15 +94,21 @@ def _import_av():
 @lru_cache(maxsize=32)
 def _font(px: int) -> ImageFont.FreeTypeFont:
     """Pillow's default font at `px` pixels to the em, kept because loading costs."""
-    return ImageFont.load_default(size=max(px, 1))
+    font = ImageFont.load_default(size=max(px, 1))
+    # Given a size, Pillow's default font is its bundled FreeType one.
+    assert isinstance(font, ImageFont.FreeTypeFont)
+    return font
 
 
 @lru_cache(maxsize=1024)
 def _char(ch: str, px: int) -> tuple[np.ndarray, int, int, float]:
-    """A character's FreeType coverage in `[0, 1]`, its top left from the pen on the
-    baseline, and the pen's advance."""
+    """A character's FreeType coverage in `[0, 1]`, its offset, and the pen's advance.
+
+    The offset is its top left from the pen on the baseline.
+    """
     font = _font(px)
     left, top, right, bottom = font.getbbox(ch, anchor="ls")
+    left, top, right, bottom = int(left), int(top), int(right), int(bottom)
     image = Image.new("L", (max(right - left, 0), max(bottom - top, 0)))
     ImageDraw.Draw(image).text((-left, -top), ch, 255, font, "ls")
     return np.asarray(image, np.float32) / 255, left, top, font.getlength(ch)
@@ -106,8 +116,10 @@ def _char(ch: str, px: int) -> tuple[np.ndarray, int, int, float]:
 
 @lru_cache(maxsize=1024)
 def _glyphs(text: str, px: int, border: int, anchor: str):
-    """`text`'s coverage in `[0, 1]`, under that of a `border`-pixel halo about it,
-    both `(H, W, 1)`, and their top left from the anchor point; None for blank text.
+    """`text`'s coverage in `[0, 1]` and that of a halo, or None for blank text.
+
+    The halo is `border` pixels about it; both are `(H, W, 1)`, returned with their top
+    left from the anchor point.
 
     `anchor` is two of Pillow's anchor letters, `l`, `m` or `r` across and `s` or `m`
     down, except that `m` centers the ink. The text is laid out from cached
@@ -138,8 +150,10 @@ def _glyphs(text: str, px: int, border: int, anchor: str):
 
 
 def _arrow(image: np.ndarray, start, end, color, width: int, head: float) -> None:
-    """An arrow with a filled head `head` pixels long (at most 40% of the arrow), edged
-    in dark so that it reads on any background."""
+    """An arrow with a filled head `head` pixels long, at most 40% of the arrow.
+
+    It is edged in dark so that it reads on any background.
+    """
     p0, p1 = np.asarray(start, np.float64), np.asarray(end, np.float64)
     length = float(np.hypot(*(p1 - p0)))
     if length < 1.0:
@@ -171,7 +185,7 @@ class DebugCanvas:
         tracker: Tracker,
         height: int = 960,
         axes: bool = False,
-        masks: Sequence[tuple[str, np.ndarray, float]] = (),
+        masks: Sequence[tuple[str, np.ndarray, float | None]] = (),
     ):
         """`masks` are SAM 3's, as `Prepared.masks` gives them."""
         self.tracker = tracker
@@ -245,9 +259,11 @@ class DebugCanvas:
     def _text(
         self, panel, text: str, org, size: float, color, anchor: str = "ls"
     ) -> None:
-        """`text` at pixel `org`, `size` pixels to the em as for a 480-row canvas and
-        placed as `anchor` says (`_glyphs`; by default, `org` is its baseline's left),
-        over a dark halo to read on any background."""
+        """`text` at pixel `org`, over a dark halo to read on any background.
+
+        `size` pixels to the em as for a 480-row canvas, placed as `anchor` says
+        (`_glyphs`; by default, `org` is its baseline's left).
+        """
         found = _glyphs(text, round(size * self.u), self.lw, anchor)
         if found is None:
             return
@@ -283,7 +299,7 @@ class DebugCanvas:
         crop = np.s_[y0:y1, x0:x1]
         image = cv2.resize(gray[crop], size, interpolation=cv2.INTER_AREA)
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        for (_, mask, _), color in zip(self.masks, MASK_BGR):
+        for (_, mask, _), color in zip(self.masks, MASK_BGR, strict=False):
             small = mask[crop].astype(np.float32)
             inside = cv2.resize(small, size, interpolation=cv2.INTER_AREA) >= 0.5
             fill = np.full_like(image, color)
@@ -301,18 +317,23 @@ class DebugCanvas:
         # The legend: a swatch of the mask's color, then its name and score.
         u, n = self.u, len(self.masks)
         side, step = round(7 * u), round(14 * u)
-        for i, ((name, _, score), color) in enumerate(zip(self.masks, MASK_BGR)):
+        for i, ((name, _, score), color) in enumerate(
+            zip(self.masks, MASK_BGR, strict=False)
+        ):
             y = t - round(5 * u) - step * (n - 1 - i)
             x = round(4 * u)
             cv2.rectangle(tile, (x, y - side), (x + side, y), color, -1)
             cv2.rectangle(tile, (x, y - side), (x + side, y), (0, 0, 0), 1)
             org = (x + side + round(4 * u), y)
-            self._text(tile, f"{name} {score:.2f}", org, 13, TEXT_BGR)
+            label = name if score is None else f"{name} {score:.2f}"
+            self._text(tile, label, org, 13, TEXT_BGR)
         return tile
 
     def _draw_axes(self, main: np.ndarray, result: FrameResult | None) -> None:
-        """The ball's axes from its center, turning with it, and the animal's, labeled,
-        from where it stands."""
+        """The ball's axes and the animal's, labeled.
+
+        The ball's turn with it from its center; the animal's start where it stands.
+        """
         axes, scale, u, lw = self.scene.axes(), self.scale, self.u, self.lw
         center = np.asarray(self.scene.center_px) * scale
         if result is not None and axes["ball"] is not None:
@@ -349,8 +370,10 @@ class DebugCanvas:
             self._text(main, "xyz"[i], org, 15, color, "lm")
 
     def _draw_trail(self, main: np.ndarray) -> None:
-        """Draw the trail the animal has walked over the ball, as FicTrac does: only
-        the near side, brighter with recency (`Scene.trail_points`)."""
+        """Draw the trail the animal has walked over the ball, as FicTrac does.
+
+        Only the near side, brighter with recency (`Scene.trail_points`).
+        """
         n = self.scene.n_trail
         if self.scene.R_cam is None or n < 2:
             return
@@ -363,7 +386,7 @@ class DebugCanvas:
             edges = np.flatnonzero(np.diff(np.r_[False, seen[lo:hi], False]))
             runs = [
                 pts[lo + i : lo + j]
-                for i, j in zip(edges[::2], edges[1::2])
+                for i, j in zip(edges[::2], edges[1::2], strict=True)
                 if j - i > 1
             ]
             cv2.polylines(main, runs, False, TRAIL_BGR[band], self.lw, cv2.LINE_AA)
@@ -409,8 +432,10 @@ class DebugCanvas:
         self._label(panel, "path")
 
     def _draw_net(self, panel: np.ndarray) -> None:
-        """The map as an unfolded dice filling `panel` (3 x 4 tiles); the six unused
-        tiles stay black."""
+        """The map as an unfolded dice filling `panel` (3 x 4 tiles).
+
+        The six unused tiles stay black.
+        """
         rows, cols = NET_SHAPE
         t = panel.shape[0] // rows
         net = self.tracker.engine.map_image("cube")
@@ -480,7 +505,9 @@ class DebugVideoWriter:
         self.size = (int(size[0]), int(size[1]))
         self.fps = float(fps) if fps and fps > 0 else 30.0
         self.codec = codec.lower()
-        self._container = self._stream = self._writer = None
+        self._container: av.container.OutputContainer | None = None
+        self._stream: av.VideoStream | None = None
+        self._writer: cv2.VideoWriter | None = None
         self._pad = (0, 0)
         self._pts = 0
         if self.codec in AV_CODEC:
@@ -514,6 +541,7 @@ class DebugVideoWriter:
             stream = container.add_stream(
                 encoder, rate=Fraction(self.fps).limit_denominator(65535)
             )
+            assert isinstance(stream, av.VideoStream)  # a video encoder's stream
             stream.width = w + self._pad[0]
             stream.height = h + self._pad[1]
             stream.pix_fmt = "yuv420p"
@@ -534,10 +562,10 @@ class DebugVideoWriter:
     # ----- OpenCV -----
     def _open_opencv(self) -> None:
         fourcc = FOURCC.get(self.codec, "mp4v")
-        self._writer = cv2.VideoWriter(
-            str(self.path), cv2.VideoWriter_fourcc(*fourcc), self.fps, self.size
+        writer = cv2.VideoWriter(
+            str(self.path), cv2.VideoWriter.fourcc(*fourcc), self.fps, self.size
         )
-        if not self._writer.isOpened() and fourcc != "mp4v":
+        if not writer.isOpened() and fourcc != "mp4v":
             log.warning(
                 "OpenCV cannot encode %s (its bundled FFmpeg has no such encoder); "
                 "writing %s as MPEG-4 Part 2, which browsers and most editors cannot "
@@ -545,15 +573,17 @@ class DebugVideoWriter:
                 self.codec,
                 self.path,
             )
-            self._writer = cv2.VideoWriter(
-                str(self.path), cv2.VideoWriter_fourcc(*"mp4v"), self.fps, self.size
+            writer = cv2.VideoWriter(
+                str(self.path), cv2.VideoWriter.fourcc(*"mp4v"), self.fps, self.size
             )
-        if not self._writer.isOpened():
+        if not writer.isOpened():
             raise OSError(f"could not open debug video writer for {self.path}")
+        self._writer = writer
 
     # ----- writing -----
     def write(self, canvas: np.ndarray) -> None:
-        if self._container is None:
+        if self._container is None or self._stream is None:
+            assert self._writer is not None  # opened by `_open_opencv`
             self._writer.write(canvas)
             return
         if canvas.shape[:2] != (self.size[1], self.size[0]):
@@ -571,8 +601,8 @@ class DebugVideoWriter:
         self._container.mux(self._stream.encode(frame))
 
     def close(self) -> None:
-        if self._container is not None:
-            container, stream = self._container, self._stream
+        container, stream = self._container, self._stream
+        if container is not None and stream is not None:
             self._container = self._stream = None
             try:
                 container.mux(stream.encode())  # flush the encoder's buffered frames

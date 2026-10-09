@@ -13,9 +13,7 @@ from spintrack.quality import (
 
 
 def make_trace(rng, n=1200, block=(400, 700), spike=(900, 905)):
-    """Lognormal cost noise around 0.06 with one long block and one short spike at
-    5x.
-    """
+    """Lognormal cost noise near 0.06, with one long block and one short spike at 5x."""
     cost = 0.06 * np.exp(rng.normal(0.0, 0.25, n))
     iters = rng.integers(3, 5, n).astype(float)
     for lo, hi in (block, spike):
@@ -57,8 +55,9 @@ def test_dropped_frames_are_an_episode():
 
 
 def test_summary_and_sidecar(tmp_path):
-    """Dropped frames are an episode with times; the sidecar keeps what the block
-    skips.
+    """Dropped frames are an episode with times.
+
+    The sidecar keeps what the block skips.
     """
     n = 200
     frames = np.arange(n)

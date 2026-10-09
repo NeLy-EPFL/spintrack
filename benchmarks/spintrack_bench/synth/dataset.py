@@ -90,8 +90,10 @@ class SceneSpec:
         return c / np.linalg.norm(c)
 
     def cam_to_lab(self) -> np.ndarray:
-        """Camera to lab in FicTrac's frame (x forward, y right, z down), as the
-        motion is generated and FicTrac's `c2a_r` written."""
+        """Camera to lab in FicTrac's frame (x forward, y right, z down).
+
+        The motion is generated, and FicTrac's `c2a_r` written, in this frame.
+        """
         return FICTRAC_TO_ANIMAL @ camera_to_lab_from_angles(
             self.c2a_elevation_deg, self.c2a_azimuth_deg, self.c2a_twist_deg
         )
@@ -208,8 +210,9 @@ def spintrack_config(dataset: Path) -> Path:
 
 
 def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
-    """Per-frame ball center direction (n_frames, 3); constant unless `ball_path` is
-    set.
+    """Per-frame ball center direction, (n_frames, 3).
+
+    Constant unless `ball_path` is set.
     """
     center = spec.ball_center()
     path = np.repeat(center[None, :], spec.n_frames, axis=0)
@@ -250,8 +253,10 @@ def center_path(spec: SceneSpec, renderer: Renderer) -> np.ndarray:
 
 
 def generate(spec: SceneSpec, out_dir: Path, progress=None) -> Path:
-    """Render the scene into `out_dir` (video.mp4, truth.npz, scene.json, and the
-    configs: FicTrac's config.txt and spintrack's config.toml).
+    """Render the scene into `out_dir`.
+
+    Writes video.mp4, truth.npz, scene.json, and the configs: FicTrac's config.txt and
+    spintrack's config.toml.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

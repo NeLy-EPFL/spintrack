@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter, HTTPException
@@ -25,6 +26,9 @@ from spintrack.detect import DetectionError, fit_circle
 from spintrack.io.sources import VideoSource
 from spintrack.pipeline import RunStats, open_config
 from spintrack.tracker import Tracker
+
+if TYPE_CHECKING:
+    from spintrack.web.live import LiveView
 
 log = logging.getLogger("spintrack")
 
@@ -97,7 +101,7 @@ class GuiSession:
         self.notes: dict[str, str] = {}  # what was found in the recording
         self.full_run: dict | None = None  # the last whole-video run
         self.hold = False  # after a whole-video run, until the page resumes
-        self.view = None
+        self.view: LiveView | None = None
         self._defaults = Config().model_dump(mode="json")
         self._task: tuple[str, dict] | None = None
         self._steps = 0
@@ -109,8 +113,14 @@ class GuiSession:
         self._changed = threading.Event()  # restart the clip
         self._quit = threading.Event()
 
+    @property
+    def _page(self) -> LiveView:
+        """The page's live view, which `serve` attaches."""
+        assert self.view is not None
+        return self.view
+
     # ----- the loop -----
-    def serve(self, view) -> None:
+    def serve(self, view: LiveView) -> None:
         """Track until the page quits (or Ctrl-C); `view` is the page's `LiveView`."""
         self.view = view
         view.video(self.src)
@@ -134,15 +144,18 @@ class GuiSession:
             self.view.request_stop()
 
     def _ready(self) -> bool:
-        """Whether the clip can be tracked: with the camera's position, or a
-        provisional one until the page says where the camera sits."""
+        """Whether the clip can be tracked.
+
+        With the camera's position, or a provisional one until the page says where the
+        camera sits.
+        """
         cfg = self.cfg
         placed = cfg.camera.to_animal() is not None or self._provisional is not None
         return bool(cfg.ball.rim and cfg.camera.vfov_deg is not None and placed)
 
     def _set_busy(self, message: str | None) -> None:
         self.busy = message
-        self.view.status(message or "")
+        self._page.status(message or "")
 
     def _complete(self) -> None:
         """Fill in what the config leaves open, once per version of it."""
@@ -197,7 +210,7 @@ class GuiSession:
         finally:
             source.close()
         if frame is not None:
-            self.view.still(frame.image)
+            self._page.still(frame.image)
 
     def _play(self) -> None:
         """Track the clip once, paced to `speed`, unless a change cuts it short."""
@@ -213,7 +226,7 @@ class GuiSession:
             self._changed.wait()
             return
         stats = RunStats(total=end - start)
-        self.view.attach(tracker, stats)
+        self._page.attach(tracker, stats)
         source = VideoSource(self.src)
         try:
             source.seek(start)
@@ -234,7 +247,7 @@ class GuiSession:
                 stats.frames += 1
                 stats.dropped += result is None
                 stats.tracked += result is not None
-                self.view.frame(frame, result)
+                self._page.frame(frame, result)
                 if self.speed > 0 and not self.paused:
                     due += 1.0 / (self.fps * self.speed)
                     wait = due - time.perf_counter()
@@ -272,7 +285,7 @@ class GuiSession:
         path = self._save(None)
         args = argparse.Namespace(
             out=None,
-            overwrite=overwrite,
+            force=overwrite,
             two_pass=False,
             max_frames=None,
             debug_video=False,
@@ -283,7 +296,7 @@ class GuiSession:
             print=False,
             verbose=False,
         )
-        view = self.view
+        view = self._page
         view.stop_requested = False
         self.full_run = {"state": "tracking", "folder": str(self._folder())}
         self._set_busy("tracking the whole video")
@@ -456,7 +469,9 @@ class GuiSession:
 
     def _schedule(self, kind: str, **payload) -> None:
         with self._lock:
-            if self.busy or self._task is not None:
-                raise HTTPException(409, f"busy: {self.busy or self._task[0]}")
+            if self.busy:
+                raise HTTPException(409, f"busy: {self.busy}")
+            if self._task is not None:
+                raise HTTPException(409, f"busy: {self._task[0]}")
             self._task = (kind, payload)
         self._changed.set()

@@ -27,9 +27,11 @@ def test_video_source_yields_gray_frames_with_timestamps(tmp_path):
 
 
 def test_an_avi_with_b_frames_is_timed_and_sought_by_frame_count(tmp_path):
-    """AVI keeps no presentation times, and FFmpeg's guesses scramble with B-frames
-    (a lab's camera writes such files): frames are evenly timed and seeks land on the
-    frame asked for, as decoding through to it does."""
+    """AVI frames are evenly timed and seeks land on the frame asked for.
+
+    AVI keeps no presentation times, and FFmpeg's guesses scramble with B-frames (a
+    lab's camera writes such files); seeking lands where decoding through to it does.
+    """
     import av
     import pytest
 

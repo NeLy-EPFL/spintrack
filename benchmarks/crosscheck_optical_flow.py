@@ -1,4 +1,6 @@
-"""Independent check: the image shift phase correlation measures against the one a run's
+"""Cross-check a run's rotation against phase correlation, independently.
+
+It compares the image shift that phase correlation measures with the one a run's
 rotation predicts.
 
 The ball circle comes from the config's `ball.rim`. A 256 px patch on the upper ball is

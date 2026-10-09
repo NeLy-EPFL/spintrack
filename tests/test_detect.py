@@ -1,5 +1,8 @@
-"""Ball detection on rendered frames: accuracy, occlusion, partial views, refusal,
-and the rim measured from a segmentation mask."""
+"""Ball detection on rendered frames.
+
+Accuracy, occlusion, partial views, refusal, and the rim measured from a segmentation
+mask.
+"""
 
 import numpy as np
 import pytest

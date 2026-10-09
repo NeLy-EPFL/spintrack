@@ -1,1 +1,1 @@
-"""The page `spintrack run` previews on and `spintrack gui` works in."""
+"""The page of `spintrack run` (its live view) and of `spintrack gui`."""

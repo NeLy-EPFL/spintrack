@@ -132,8 +132,10 @@ def window_to_camera_frame(dat: np.ndarray, center) -> np.ndarray:
 
 
 def fictrac_lab_frame(dat: np.ndarray, center, cam_to_lab) -> np.ndarray:
-    """FicTrac's records in spintrack's frame, its lab-frame increments (columns 5-7)
-    in the true lab frame; `cam_to_lab` is spintrack's.
+    """FicTrac's records in spintrack's frame.
+
+    Its lab-frame increments (columns 5-7) are put in the true lab frame; `cam_to_lab`
+    is spintrack's.
 
     FicTrac applies `c2a_r` to its window-frame vectors (see `window_to_camera_frame`),
     so its lab columns are rotated by the ball's off-axis angle: `C R C^T` undoes it.

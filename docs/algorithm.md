@@ -35,7 +35,7 @@ A window pixel spans several source pixels, and bilinear sampling at that decima
 
 **Relocalize.** The global search scores quasi-uniform orientations over SO(3) at the coarsest level, refines the best few through the pyramid, and keeps the cheapest that overlaps enough. The frame reports zero motion, as in FicTrac, since the jump corrects the estimate rather than measuring the ball. A map loaded with `tracking.initial_map` is localized this way on the first frame.
 
-**Report.** The increment goes to camera coordinates through the window's orientation, to lab coordinates through the camera-to-animal rotation, and into the path through a port of FicTrac's `Trackball::updatePath`. The absolute orientation stays referred to the first window, so a window move does not make it step.
+**Report.** The increment goes to camera coordinates through the window's orientation, to lab coordinates through the camera-to-animal rotation, and into the path, integrated with FicTrac's scheme (`spintrack.path`). The absolute orientation stays referred to the first window, so a window move does not make it step.
 
 ## The map
 

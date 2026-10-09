@@ -56,7 +56,7 @@ BOOL_COLUMNS = frozenset({TABLE_COLUMNS.index("ball_seen")})
 def to_frame(table: np.ndarray) -> pl.DataFrame:
     """An (n, 29) array of `TABLE_COLUMNS` as a DataFrame with named, typed columns."""
     table = np.asarray(table, dtype=np.float64).reshape(-1, len(TABLE_COLUMNS))
-    columns = {}
+    columns: dict[str, np.ndarray] = {}
     for i, name in enumerate(TABLE_COLUMNS):
         if i in INT_COLUMNS:
             columns[name] = table[:, i].astype(np.int64)

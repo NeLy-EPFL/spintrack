@@ -110,8 +110,7 @@ class Renderer:
             self.dust_gain *= (1.0 - 0.5 * spot).astype(np.float32)
 
     def set_center(self, center, half_angle: float | None = None) -> None:
-        """Point the ball at `center`, rebuilding everything that depends on where it
-        is.
+        """Point the ball at `center`, rebuilding what depends on where it is.
 
         Costs about 0.1 s at 3x supersampling, so scenes call it only on the frames
         where the ball has actually moved.
@@ -198,9 +197,7 @@ class Renderer:
     def render(
         self, R_prev: np.ndarray, R: np.ndarray, index: int, n_frames: int
     ) -> np.ndarray:
-        """uint8 frame for orientation `R`, with motion blur from `R_prev` if
-        configured.
-        """
+        """A uint8 frame for orientation `R`, motion-blurred from `R_prev` if set."""
         sensor = self.sensor
         if sensor.exposure > 0 and sensor.exposure_steps > 1:
             w = matrix_to_rotvec(R @ R_prev.T)

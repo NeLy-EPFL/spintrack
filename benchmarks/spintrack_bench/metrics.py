@@ -53,8 +53,9 @@ def frame_errors_deg(est: np.ndarray, truth: np.ndarray) -> np.ndarray:
 
 
 def accumulated_error_deg(est: np.ndarray, truth: np.ndarray) -> np.ndarray:
-    """Orientation error (deg) after composing all increments; missing frames add
-    nothing.
+    """Orientation error (deg) after composing all increments.
+
+    Missing frames add nothing.
     """
     R_est = np.eye(3)
     R_true = np.eye(3)

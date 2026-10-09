@@ -1,6 +1,4 @@
-"""Static illumination is separated from the ball's texture instead of entering the
-map.
-"""
+"""Static illumination is kept apart from the ball's texture, out of the map."""
 
 import numpy as np
 import pytest

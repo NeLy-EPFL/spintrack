@@ -82,8 +82,9 @@ class Scene:
         self.center_px = (float(cx), float(cy))
 
     def trail_points(self) -> tuple[np.ndarray, np.ndarray]:
-        """Where the animal's past contact points sit now: (n, 2) pixels, oldest
-        first, and which of them the camera can see.
+        """Where the animal's past contact points sit now, and which the camera sees.
+
+        (n, 2) pixels, oldest first.
 
         The animal stays put while the ball turns under it, so the surface point it
         touched at frame `i` is now `R_cam @ R_cam(i).T @ up`: the animal's path,
@@ -102,8 +103,11 @@ class Scene:
         return pts, seen
 
     def axes(self) -> dict[str, list | tuple[float, float] | None]:
-        """The tips of the ball's axes from its center (None before a tracked frame),
-        where the animal stands, and the tips of its axes from there."""
+        """The ball's axis tips, where the animal stands, and the animal's axis tips.
+
+        The ball's are from its center (None before a tracked frame), the animal's from
+        where it stands.
+        """
         tracker, R, up = self.tracker, self.R_cam, self.up_cam
         lab = tracker.cam_to_lab
         return {

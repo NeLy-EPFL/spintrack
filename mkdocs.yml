@@ -1,0 +1,108 @@
+site_name: spintrack
+site_description: Track the rotation of a spherical treadmill (trackball) from video
+site_url: https://nely-epfl.github.io/spintrack/
+repo_url: https://github.com/NeLy-EPFL/spintrack
+repo_name: NeLy-EPFL/spintrack
+# The docs build from main, so "edit this page" opens the file there.
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  # Follows the system's light or dark setting, with a toggle in the header; the
+  # same palette and features as the deeperfly and octacam docs.
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+extra:
+  version:
+    # Draws the version selector from the `versions.json` mike writes at the site
+    # root. `stable` is an alias on whatever main last published.
+    provider: mike
+    default: stable
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [python]
+          inventories:
+            - https://numpy.org/doc/stable/objects.inv
+          options:
+            docstring_style: google
+            show_source: true
+            separate_signature: true
+            show_signature_annotations: true
+            relative_crossrefs: true
+            scoped_crossrefs: true
+
+# The same extensions as the deeperfly and octacam docs.
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  # `--8<-- "README.md:citing"` pastes the README's marked sections into the page,
+  # so the citation is written once. Paths are relative to the repository root.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# Broken internal links, anchors and nav entries fail the --strict build.
+validation:
+  links:
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - Guide:
+      - User guide: guide.md
+      - Coming from FicTrac: fictrac.md
+      - How it works: algorithm.md
+      - Benchmark: benchmark.md
+  - Configuration: configuration.md
+  - Output: output.md
+  - CLI reference: cli.md
+  - API: api.md
+  - Citing and credits: citing.md

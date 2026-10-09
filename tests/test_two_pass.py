@@ -42,9 +42,11 @@ def track(images, primed=None):
 
 
 def test_prime_from_carries_the_map_exactly():
-    """The hand-over is in memory, so nothing is resampled or rounded on the way; only
-    the weights are capped, so that the second pass's frames overwrite a stale cell as
-    fast as a lightly seen one."""
+    """The hand-over is in memory: nothing is resampled or rounded on the way.
+
+    Only the weights are capped, so that the second pass's frames overwrite a stale cell
+    as fast as a lightly seen one.
+    """
     images, _, _ = sequence(20)
     first, _, _ = track(images)
     second = Tracker(config(), *SIZE, PARAMS)
@@ -60,8 +62,10 @@ def test_prime_from_carries_the_map_exactly():
 
 
 def test_first_frame_against_a_handed_over_map_reports_no_rotation():
-    """Where the first frame lands on the stale map is an initial orientation, not a
-    rotation: the record of frame 0 has no frame before it to have turned from."""
+    """Where the first frame lands on the stale map is an orientation, not a rotation.
+
+    The record of frame 0 has no frame before it to have turned from.
+    """
     images, _, _ = sequence(20)
     first, _, _ = track(images)
     second = Tracker(config(), *SIZE, PARAMS)
@@ -118,19 +122,17 @@ def test_cli_two_pass_runs_the_video_twice(tmp_path):
     cfg.save(tmp_path / "config.toml")
     out = tmp_path / "out"
     argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--two-pass"]
-    assert main([*argv, "--save-map", "--no-preview"]) == 0
+    assert main([*argv, "--save-map", "--no-live"]) == 0
     assert pl.read_parquet(out / "tracks.parquet").height == n
     assert (out / "map.npz").exists()
     assert "two-pass" in (out / "summary.json").read_text()
 
 
 def test_two_pass_needs_a_recording(tmp_path, caplog):
-    """A live camera cannot be read twice, so the flag is refused rather than
-    ignored.
-    """
+    """A live camera cannot be read twice, so the flag is refused, not ignored."""
     ball_config((W, H), CENTER, HALF).save(tmp_path / "config.toml")
     argv = ["run", "0", "--config", str(tmp_path / "config.toml"), "--two-pass"]
-    assert main(argv) == 2
+    assert main(argv) == 1
     assert "--two-pass" in caplog.text
 
 
@@ -171,9 +173,11 @@ def test_planned_window_ignores_the_animal_and_leaves_with_the_ball():
 
 
 def test_second_pass_places_the_window_from_the_first_pass_looks():
-    """Pass 2 knows where the ball went: its window leaves with the ball instead of
-    after the online confirmation, and the opening of the move costs less rotation
-    error."""
+    """Pass 2 knows where the ball went, and its window leaves with the ball.
+
+    It leaves instead of after the online confirmation, and the opening of the move
+    costs less rotation error.
+    """
     from spintrack.refit import ScriptedWatch
 
     move, start, over = 25.0, 220, 150

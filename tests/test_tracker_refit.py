@@ -62,9 +62,7 @@ def test_refit_carries_the_map():
 
 
 def test_refit_is_a_change_of_coordinates():
-    """The map and the ball's orientation in the camera survive a window move
-    exactly.
-    """
+    """The map and the ball's camera orientation survive a window move exactly."""
     tracker = Tracker(config(), *SIZE, TrackParams(center_watch=False))
     images, texture, rng = sequence(20)
     costs = [tracker.process_frame(image).step.cost for image, _ in images]
@@ -88,9 +86,7 @@ def test_refit_is_a_change_of_coordinates():
 
 
 def test_watch_follows_a_moving_ball():
-    """With the watch off the ball's movement becomes rotation; with it on, it does
-    not.
-    """
+    """The ball's movement becomes rotation with the watch off, not with it on."""
     move, start, over = 25.0, 220, 150
 
     def drift(i):
@@ -184,8 +180,10 @@ def test_watch_finds_a_resting_ball_that_jumped_out_of_reach():
 
 
 def test_a_re_fitted_frame_keeps_its_observation():
-    """The frame whose window moved is still an observation; dropping it left the debug
-    video's window panel blank over the whole episode."""
+    """The frame whose window moved is still an observation.
+
+    Dropping it left the debug video's window panel blank over the whole episode.
+    """
     move, start, over = 25.0, 220, 150
 
     def drift(i):

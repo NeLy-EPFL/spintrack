@@ -41,8 +41,9 @@ SQUARE_CORNERS: dict[str, np.ndarray] = {
 def square_pose(
     corners_xy, camera: Camera, plane: str
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Pose `(R, t)` of the square with `camera_point = R @ animal_point + t`, the
-    animal point in FicTrac's frame.
+    """Pose `(R, t)` of the square: `camera_point = R @ animal_point + t`.
+
+    The animal point is in FicTrac's frame.
 
     `plane` is `"xy"`, `"yz"` or `"xz"`.
     Initialized with a PnP solve (SQPnP) on normalized coordinates (so any camera model
@@ -86,7 +87,10 @@ def square_pose(
 
 
 def camera_to_lab_from_square(corners_xy, camera: Camera, plane: str) -> np.ndarray:
-    """Rotation matrix `R` with `v_lab = R @ v_camera` in spintrack's animal frame, the
-    matrix of `camera.rotation`, from a square's corners as `square_pose` takes them."""
+    """The matrix of `camera.rotation` from a square's corners.
+
+    `R` with `v_lab = R @ v_camera` in spintrack's animal frame; the corners as
+    `square_pose` takes them.
+    """
     R, _ = square_pose(corners_xy, camera, plane)
     return FICTRAC_TO_ANIMAL @ R.T

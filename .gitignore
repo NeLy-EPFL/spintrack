@@ -12,3 +12,4 @@ __pycache__/
 fictrac-*.log
 # spintrack outputs next to the example videos
 /examples/**/*_spintrack/
+/site/

@@ -109,9 +109,11 @@ def test_vfov_is_not_identifiable_on_a_near_orthographic_view(tmp_path):
 
 
 def test_a_video_alone_needs_only_the_camera_azimuth(tmp_path, caplog):
-    """A video cannot tell the animal's front from its back, so a run asks for the
-    azimuth, before any slow work; given it, the ball and the vfov come from the
-    recording, and the config the run writes says all three."""
+    """A run asks for the azimuth first; the ball and the vfov come from the recording.
+
+    A video cannot tell the animal's front from its back, so the azimuth is asked for
+    before any slow work. The config the run writes says all three.
+    """
     import logging
 
     from spintrack.cli import main
@@ -119,11 +121,11 @@ def test_a_video_alone_needs_only_the_camera_azimuth(tmp_path, caplog):
     size, half = (320, 240), 0.15
     video = write_video(tmp_path / "ball.mp4", size, CENTER, half, 40)
     with caplog.at_level(logging.ERROR, logger="spintrack"):
-        assert main([str(video), "--no-preview"]) == 2
+        assert main(["run", str(video), "--no-live"]) == 1
     assert "camera.azimuth_deg=180" in caplog.records[-1].getMessage()
     assert not (tmp_path / "ball_spintrack").exists()
-    argv = [str(video), "camera.azimuth_deg=180", "--max-frames", "5", "--no-preview"]
-    assert main(argv) == 0
+    argv = ["run", str(video), "--set", "camera.azimuth_deg=180", "--max-frames", "5"]
+    assert main([*argv, "--no-live"]) == 0
     out = tmp_path / "ball_spintrack"
     cfg = Config.load(out / "config.toml")
     assert cfg.video == str(video) and cfg.ball.rim and cfg.camera.vfov_deg
@@ -177,8 +179,10 @@ def test_the_camera_is_placed_where_the_animal_stands(monkeypatch, position):
 
 
 def test_walking_off_forward_suggests_the_azimuth():
-    """A camera behind the animal, configured at its right: forward walking reads as
-    walking to the left, and the check points back to behind."""
+    """A camera behind the animal, configured at its right, is caught.
+
+    Forward walking reads as walking to the left, and the check points back to behind.
+    """
     from spintrack.calibrate.sliders import camera_to_lab_from_angles
     from spintrack.quality import walking_check
 
@@ -191,9 +195,11 @@ def test_walking_off_forward_suggests_the_azimuth():
 
 
 def test_a_shallow_wide_minimum_is_taken_for_a_narrow_lens(tmp_path, monkeypatch):
-    """A cost that leans to a wide lens without a clear minimum is not evidence of
-    one (a lab rig's 2 deg lens leaned to 26 deg and read 18% low): the narrow end is
-    assumed, and the fit says how much smaller the rotations would read there."""
+    """A cost leaning to a wide lens without a clear minimum is not evidence of one.
+
+    A lab rig's 2 deg lens leaned to 26 deg and read 18% low. The narrow end is assumed,
+    and the fit says how much smaller the rotations would read there.
+    """
     from spintrack import autofit
 
     size, half = (160, 120), 0.2

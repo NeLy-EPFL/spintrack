@@ -6,7 +6,7 @@
 spintrack run examples/sample/config.toml --debug-video
 ```
 
-writes `tracks.parquet`, `summary.json`, `log.txt`, `config.toml` and `debug.mp4` into `examples/sample/sample_spintrack/` (git-ignored). Add `--overwrite` to run it again.
+writes `tracks.parquet`, `summary.json`, `log.txt`, `config.toml` and `debug.mp4` into `examples/sample/sample_spintrack/` (git-ignored). Add `--force` to run it again.
 
 ## The config
 

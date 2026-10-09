@@ -9,8 +9,8 @@ description = "Track the 3D rotation of a spherical treadmill (trackball) from v
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.14"
-authors = [{ name = "Thomas Lam", email = "thomas.lam@epfl.ch" }]
+requires-python = ">=3.14,<3.15"
+authors = [{ name = "Thomas Ka Chung Lam", email = "thomas.lam@epfl.ch" }]
 keywords = ["trackball", "spherical treadmill", "fictive path", "drosophila", "tracking"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,20 +22,22 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "av>=13",
-    # fastapi and uvicorn serve the preview page of `spintrack run` and `spintrack gui`
-    # (spintrack.web), on localhost; uvicorn is imported only when a page is served.
-    "fastapi>=0.115",
-    "numpy>=1.24",
-    "opencv-python-headless>=4.8",
+    "av>=19.0",
+    # fastapi and uvicorn serve the live view of `spintrack run` and the page of
+    # `spintrack gui` (spintrack.web); uvicorn is imported only when a page is served.
+    "fastapi>=0.143",
+    "numpy>=2.5",
+    "opencv-python-headless>=5.0",
     # pillow, torch, torchvision and transformers run SAM 3 (spintrack.segment).
-    "pillow>=11",
-    "polars>=2",
-    "pydantic>=2",
-    "torch>=2.9",
-    "torchvision>=0.24",
-    "transformers>=5",
-    "uvicorn>=0.30",
+    "pillow>=12.3",
+    "polars>=2.0",
+    "pydantic>=2.14",
+    "torch>=2.14",
+    "torchvision>=0.29",
+    "transformers>=5.19",
+    # The `spintrack` command line (spintrack.cli), imported only when it runs.
+    "typer>=0.27",
+    "uvicorn[standard]>=0.54",
 ]
 
 [project.optional-dependencies]
@@ -45,8 +47,9 @@ serial = ["pyserial>=3.5"]
 spintrack = "spintrack.cli:main"
 
 [project.urls]
-Repository = "https://github.com/NeLy-EPFL/spintrack"
-Documentation = "https://github.com/NeLy-EPFL/spintrack/tree/main/docs"
+Homepage = "https://github.com/NeLy-EPFL/spintrack"
+Documentation = "https://nely-epfl.github.io/spintrack/"
+Issues = "https://github.com/NeLy-EPFL/spintrack/issues"
 Changelog = "https://github.com/NeLy-EPFL/spintrack/blob/main/CHANGELOG.md"
 
 [tool.maturin]
@@ -59,6 +62,7 @@ exclude = [
     "benchmarks/data/**",
     "benchmarks/results/**",
     "dist/**",
+    "docs/**",
     "notes/**",
     "plans/**",
     "target/**",
@@ -76,19 +80,52 @@ cache-keys = [
 [dependency-groups]
 dev = [
     "httpx2>=2.13",  # FastAPI's TestClient, for the page's tests
-    "pytest>=8.0",
-    "ruff>=0.6",
+    "pyrefly>=1.3",
+    "pyserial>=3.5",  # the `serial` extra, for its tests and the type check
+    "pytest>=9.1",
+    "ruff>=0.16",
 ]
 bench = [
-    "tabulate>=0.9",
+    "tabulate>=0.10",
+]
+docs = [
+    # MkDocs 2.0 (in pre-release) drops the plugin system mkdocstrings runs on.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.7",
+    "mkdocstrings[python]>=1.0",
+    # Versioned docs: one built site per version on gh-pages, behind Material's
+    # version selector. See .github/workflows/docs.yml.
+    "mike>=2.2",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q"
+# A warning the suite does not assert on is a bug in the code or in the test.
+filterwarnings = ["error"]
 
 [tool.ruff]
 line-length = 88
 src = ["python", "tests", "benchmarks"]
 
 [tool.ruff.lint]
-extend-select = ["E501", "I"]
+extend-select = ["E501", "I", "UP", "B", "D"]
+# Docstring coverage is not enforced yet; the D2xx/D4xx formatting rules are.
+ignore = ["D1"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**.py" = ["D100", "D103"]
+
+[tool.pyrefly]
+project-includes = ["python"]
+python-version = "3.14"
+# maturin's editable install puts python/ on the venv's import path, where pyrefly
+# would take it for an installed package and leave it unchecked; name the venv's
+# packages instead of asking the interpreter for its path (on Windows, the venv's
+# is .venv/Lib/site-packages).
+skip-interpreter-query = true
+search-path = ["python"]
+site-package-path = [".venv/lib/python3.14/site-packages"]

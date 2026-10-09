@@ -1,5 +1,7 @@
-"""Record sinks: the `Recorder` protocol, and the live ones (UDP/TCP sockets, serial
-port, terminal); `spintrack.io.parquet.ParquetWriter` is the file one.
+"""Record sinks: the `Recorder` protocol, and the live ones.
+
+The live ones are UDP/TCP sockets, a serial port and the terminal;
+`spintrack.io.parquet.ParquetWriter` is the file one.
 
 The live sinks send each record as FicTrac's 25-field line in FicTrac's frame
 (`spintrack.io.records.to_fictrac`, `format_row`), so that existing FicTrac clients read

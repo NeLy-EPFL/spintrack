@@ -103,7 +103,7 @@ The file is written when the run ends, also when it ends in an error or is stopp
 
 ## Differences from FicTrac's output
 
-Path integration is a line-for-line port of FicTrac's (given FicTrac's columns 6-8, it reproduces its columns 15-21, mirrored), and the frame, sequence and delta-timestamp columns mean the same. What differs:
+Path integration uses FicTrac's scheme (given FicTrac's columns 6-8, it reproduces its columns 15-21, mirrored, to rounding), and the frame, sequence and delta-timestamp columns mean the same. What differs:
 
 - **The lab frame** is z up, FicTrac's z down: columns 7-8 and 13-14 have the opposite sign, and the path is FicTrac's mirrored (columns 16, 17, 18 and 21: y, heading and direction to the left, sideways motion positive to the left). The streams (`--udp`, `--tcp`, `--serial`, `--print`) send FicTrac's signs, so FicTrac's clients work unchanged; `spintrack.io.records.to_fictrac` converts a record either way.
 

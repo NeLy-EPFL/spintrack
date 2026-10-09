@@ -54,8 +54,9 @@ def apply_overrides(cfg: Config, params: TrackParams, overrides: dict) -> None:
 def run_spintrack(
     dataset: Path, overrides: dict | None = None
 ) -> tuple[np.ndarray, dict]:
-    """Track `dataset/video.mp4`; return (est_cam (N,3) with NaN for dropped frames,
-    timing).
+    """Track `dataset/video.mp4`.
+
+    Returns `(est_cam, timing)`, `est_cam` (N, 3) with NaN for dropped frames.
     """
     dataset = Path(dataset)
     cfg = Config.load(spintrack_config(dataset))

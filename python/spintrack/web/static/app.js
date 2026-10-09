@@ -1,4 +1,4 @@
-// The page of `spintrack run` (a preview of the run) and of `spintrack gui` (the same
+// The page of `spintrack run` (the live view of the run) and of `spintrack gui` (the same
 // view, with controls): it polls the server's state and draws the frame with the ball,
 // the trail and the axes over it, the tracking window, the path, the map and traces.
 

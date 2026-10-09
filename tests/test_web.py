@@ -57,17 +57,17 @@ def test_the_page_captures_images_only_while_watched():
     view.close()
 
 
-def test_run_prints_the_preview_link_and_stops_serving(tmp_path, caplog):
-    argv = [str(SAMPLE), "--max-frames", "5", "--out", str(tmp_path / "out")]
+def test_run_prints_the_live_view_link_and_stops_serving(tmp_path, caplog):
+    argv = ["run", str(SAMPLE), "--max-frames", "5", "--out", str(tmp_path / "out")]
     with caplog.at_level(logging.INFO, logger="spintrack"):
         assert main(argv) == 0
     (line,) = [
-        r.getMessage() for r in caplog.records if r.getMessage().startswith("preview")
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("live view")
     ]
     assert "token=" in line and "ssh -L" in line
     # The log.txt is the run's, without the link.
     lines = (tmp_path / "out" / "log.txt").read_text().splitlines()
-    assert not any(line.startswith("preview:") for line in lines)
+    assert not any(line.startswith("live view:") for line in lines)
 
 
 @pytest.fixture

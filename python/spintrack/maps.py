@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -94,14 +95,14 @@ def save_map(path: str | Path, mean: np.ndarray, weight: np.ndarray, **meta) -> 
     path = Path(path)
     if path.suffix.lower() != ".npz":
         path = path.with_suffix(".npz")
-    np.savez_compressed(
-        path,
-        mean=np.asarray(mean, dtype=np.float32),
-        weight=np.asarray(weight, dtype=np.float32),
-        format_version=FORMAT_VERSION,
-        projection=projection_of(np.shape(mean)),
+    arrays: dict[str, Any] = {
+        "mean": np.asarray(mean, dtype=np.float32),
+        "weight": np.asarray(weight, dtype=np.float32),
+        "format_version": FORMAT_VERSION,
+        "projection": projection_of(np.shape(mean)),
         **{k: np.asarray(v) for k, v in meta.items()},
-    )
+    }
+    np.savez_compressed(path, **arrays)
     return path
 
 
@@ -265,8 +266,10 @@ def _tile_directions(face: int, forward, right, up) -> np.ndarray:
 
 
 def cube_directions(face: int) -> dict[str, np.ndarray]:
-    """Unit vector of every texel of the stored equi-angular cube, one `(face, face, 3)`
-    array per face."""
+    """Unit vector of every texel of the stored equi-angular cube.
+
+    One `(face, face, 3)` array per face.
+    """
     return {name: _tile_directions(face, *frame) for name, frame in _FACES.items()}
 
 
@@ -280,8 +283,10 @@ def _directions(shape: tuple[int, int]) -> np.ndarray:
 
 @lru_cache(maxsize=8)
 def _render_plan(shape: tuple[int, int], layout: str, face: int | None):
-    """Where a picture of a map shaped `shape` reads the map: the bilinear taps of every
-    output pixel, and for the cube net the `(row, col)` tile each block of them fills.
+    """Where a picture of a map shaped `shape` reads the map.
+
+    The bilinear taps of every output pixel, and for the cube net the `(row, col)` tile
+    each block of them fills.
 
     Cached because it depends on the grid and the layout, not on the map, and the debug
     video draws the map on every frame.
@@ -290,6 +295,7 @@ def _render_plan(shape: tuple[int, int], layout: str, face: int | None):
         h = round(np.sqrt(shape[0] * shape[1] / 2.0))
         dirs, tiles = _directions((h, 2 * h)), None
     else:
+        assert face is not None  # the cube net's tiles need their size
         tiles = tuple(_NET_TILES)
         dirs = np.stack([_tile_directions(face, *_NET_TILES[rc]) for rc in tiles])
     flat, share = _tap_cells(shape, dirs)
@@ -332,6 +338,7 @@ def render_map(
         value = np.einsum("k...,k...->...", share, mean.reshape(-1)[flat])
         seen = np.all(weight.reshape(-1)[flat] >= w_min, axis=0)
         if tiles is not None:
+            assert face is not None  # tiles come with the cube layout, sized above
             # The used tiles into the 4x3 net; the six unused ones stay unseen.
             rows, cols = NET_SHAPE
             net_value = np.zeros((rows * face, cols * face), np.float32)

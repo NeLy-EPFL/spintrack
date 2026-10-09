@@ -82,9 +82,7 @@ def test_map_directions_agree_with_the_solver():
 
 
 def test_cube_faces_meet_at_their_seams():
-    """The net is an unfolded dice: neighboring faces have to line up along their
-    edge.
-    """
+    """The net is an unfolded dice: neighboring faces line up along their edge."""
     n = 32
     faces = cube_directions(n)
     texel = 0.5 * np.pi / n  # angular size of a face-center texel
@@ -106,9 +104,7 @@ def test_cube_and_equal_area_shapes_are_told_apart():
 
 
 def test_resample_survives_a_change_of_projection():
-    """A map saved before the cube existed, or a FicTrac template, has to keep
-    loading.
-    """
+    """A map saved before the cube existed, or a FicTrac template, still loads."""
     dirs = map_directions((90, 180))
     mean = (dirs[..., 0] * dirs[..., 1] + 0.5 * dirs[..., 2]).astype(np.float32)
     weight = np.full(mean.shape, 5.0, dtype=np.float32)
@@ -133,9 +129,7 @@ def test_a_cube_map_renders_on_either_grid():
 
 
 def test_net_tiles_join_at_their_seams_and_face_the_camera():
-    """The drawn net is one continuous surface, seen from outside, centered on the
-    camera.
-    """
+    """The drawn net is one continuous surface, seen from outside, camera-centered."""
     from spintrack.maps import _NET_TILES, NET_LABELS, _tile_directions
 
     n = 32

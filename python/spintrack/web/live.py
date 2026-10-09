@@ -13,6 +13,7 @@ import logging
 import threading
 import time
 from collections import deque
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -20,6 +21,9 @@ import numpy as np
 from spintrack import __version__
 from spintrack.maps import NET_LABELS, NET_SHAPE
 from spintrack.scene import Scene
+
+if TYPE_CHECKING:
+    from spintrack.pipeline import RunStats
 
 log = logging.getLogger("spintrack")
 
@@ -41,8 +45,10 @@ def _round(points, digits: int = 1) -> list:
 
 
 def _shrink(image: np.ndarray) -> np.ndarray:
-    """`image` halved until it is at most `MAX_WIDTH` wide; the page draws it over the
-    source's size, so this moves no point."""
+    """`image` halved until it is at most `MAX_WIDTH` wide.
+
+    The page draws it over the source's size, so this moves no point.
+    """
     factor = 1
     while image.shape[1] / factor > MAX_WIDTH:
         factor *= 2
@@ -82,15 +88,16 @@ class LiveView:
         self._log_seq = 0
         self._handler = _LogLines(self)
         log.addHandler(self._handler)
-        self._video = {"name": None, "index": 0, "count": 1}
-        self._state, self._message, self._summary = "starting", "", None
+        self._video: dict[str, object] = {"name": None, "index": 0, "count": 1}
+        self._state, self._message = "starting", ""
+        self._summary: str | None = None
         self._run = 0
         self._detach()
 
     def _detach(self) -> None:
         """Forget the tracker and everything kept of it."""
         self._scene: Scene | None = None
-        self._stats = None
+        self._stats: RunStats | None = None
         self._source = {}
         self._series = np.full((SERIES, len(FIELDS)), np.nan)
         self._n = 0  # numbers taken in; row `i % SERIES` holds number i
@@ -259,8 +266,11 @@ class LiveView:
         return cached[1], "image/jpeg" if kind == "frame" else "image/png"
 
     def snapshot(self, since: int = -1, log_since: int = -1) -> dict:
-        """The state for the page: per-frame numbers after `since`, log lines after
-        `log_since`, and the rest whole."""
+        """The state for the page.
+
+        Per-frame numbers after `since`, log lines after `log_since`, and the rest
+        whole.
+        """
         with self._lock:
             out = {
                 "mode": self.mode,
@@ -287,7 +297,8 @@ class LiveView:
         return out
 
     def _tracking(self, since: int) -> dict:
-        stats, n = self._stats, self._n
+        stats, n, scene = self._stats, self._n, self._scene
+        assert stats is not None and scene is not None  # `attach` sets both
         elapsed = max((self._t1 or self._clock()) - self._t0, 1e-9)
         first = max(since + 1, n - SERIES, 0)
         rows = self._series[np.arange(first, n) % SERIES]
@@ -295,7 +306,7 @@ class LiveView:
             name: [None if np.isnan(v) else v for v in rows[:, i].tolist()]
             for i, name in enumerate(FIELDS)
         }
-        path = self._scene.path_pts
+        path = scene.path_pts
         step = max(1, len(path) // PATH_POINTS)
         thinned = path[::step]
         if len(path) and (len(thinned) == 0 or step > 1):

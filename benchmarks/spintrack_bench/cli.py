@@ -166,9 +166,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_agree(args) -> int:
-    """Run spintrack on real recordings and compare with the FicTrac `.dat` next to
-    them.
-    """
+    """Track real recordings and compare with the FicTrac `.dat` beside each."""
     import polars as pl
 
     from spintrack.io.records import read_dat

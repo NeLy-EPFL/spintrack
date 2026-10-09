@@ -38,8 +38,9 @@ def camera_to_lab_from_angles(
 
 
 def angles_from_camera_to_lab(R: np.ndarray) -> tuple[float, float, float]:
-    """The elevation, azimuth and twist (degrees) that `camera_to_lab_from_angles` turns
-    into `R`, for any rotation whose optical axis is not vertical.
+    """The angles (degrees) that `camera_to_lab_from_angles` turns into `R`.
+
+    Elevation, azimuth and twist, for any rotation whose optical axis is not vertical.
 
     The angles then describe where the optical axis points, which is where the camera
     sits only when it looks at the ball's center.
@@ -59,4 +60,5 @@ def rotation_from_fictrac(c2a_r) -> tuple[float, float, float]:
     from spintrack.geometry import matrix_to_rotvec
 
     R = FICTRAC_TO_ANIMAL @ rotvec_to_matrix(np.asarray(c2a_r, dtype=np.float64))
-    return tuple(float(v) for v in matrix_to_rotvec(R))
+    x, y, z = (float(v) for v in matrix_to_rotvec(R))
+    return x, y, z

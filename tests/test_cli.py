@@ -1,5 +1,6 @@
 """The command line: a synthetic ball with known rotation, and the committed clip."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def test_cli_run_measures_a_known_rotation(tmp_path):
     cfg = ball_config((W, H), CENTER, HALF, video=str(tmp_path / "ball.mp4"))
     cfg.save(tmp_path / "config.toml")
     out = tmp_path / "out"
-    argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--no-preview"]
+    argv = ["run", str(tmp_path / "config.toml"), "--out", str(out), "--no-live"]
     assert main(argv) == 0
     dat = pl.read_parquet(out / "tracks.parquet", columns=list(COLUMNS)).to_numpy()
     assert dat.shape == (n, len(COLUMNS))
@@ -68,7 +69,7 @@ def test_cli_run_measures_a_known_rotation(tmp_path):
 
 
 def test_overrides_change_the_config_and_name_a_wrong_key(tmp_path, caplog):
-    """KEY=VALUE arguments go over the config; a typo is an error with a suggestion."""
+    """`--set` goes over the config; a typo is an error with a suggestion."""
     path = tmp_path / "config.toml"
     path.write_text(
         'video = "ball.mp4"\n\n[camera]\nvfov_deg = 40\nrotation = [0, 1, 0]\n'
@@ -83,14 +84,14 @@ def test_overrides_change_the_config_and_name_a_wrong_key(tmp_path, caplog):
     cfg, _ = open_config(path, overrides=["output.name=2024", "ball.rim=none"])
     assert cfg.output.name == "2024" and cfg.ball.rim == []
     with caplog.at_level(logging.ERROR, logger="spintrack"):
-        argv = [str(tmp_path / "ball.mp4"), "tracking.windw_px=80", "--no-preview"]
-        assert main(argv) == 2
+        argv = ["run", str(tmp_path / "ball.mp4"), "--set", "tracking.windw_px=80"]
+        assert main([*argv, "--no-live"]) == 1
     assert "did you mean tracking.window_px?" in caplog.records[-1].getMessage()
 
 
 def run_sample(out, *extra):
     argv = ["run", str(SAMPLE), "--max-frames", "40", "--out", str(out), *extra]
-    return main([*argv, "--no-preview"])
+    return main([*argv, "--no-live"])
 
 
 def test_run_names_its_outputs_and_keeps_them(tmp_path):
@@ -108,18 +109,18 @@ def test_run_names_its_outputs_and_keeps_them(tmp_path):
     assert lines[-1].startswith("wrote tracks.parquet")
     # A second run refuses to replace them, unless asked to.
     before = (tmp_path / "tracks.parquet").stat().st_mtime_ns
-    assert run_sample(tmp_path) == 2
+    assert run_sample(tmp_path) == 1
     assert (tmp_path / "tracks.parquet").stat().st_mtime_ns == before
-    assert run_sample(tmp_path, "--overwrite") == 0
+    assert run_sample(tmp_path, "--force") == 0
 
 
 def test_run_writes_the_config_it_ran(tmp_path):
     """config.toml holds the command line's changes, and running it repeats the run."""
-    assert run_sample(tmp_path / "a", "camera.position_deg=30,180,0") == 0
+    assert run_sample(tmp_path / "a", "--set", "camera.position_deg=30,180,0") == 0
     written = Config.load(tmp_path / "a" / "config.toml")
     assert written.camera.position_deg == (30.0, 180.0, 0.0)
     assert written.video == str(SAMPLE.parent / "sample.mp4")
-    argv = ["--max-frames", "40", "--out", str(tmp_path / "b"), "--no-preview"]
+    argv = ["--max-frames", "40", "--out", str(tmp_path / "b"), "--no-live"]
     assert main(["run", str(tmp_path / "a" / "config.toml"), *argv]) == 0
     a, b = (pl.read_parquet(tmp_path / x / "tracks.parquet") for x in "ab")
     assert a.drop("wall_ms").equals(b.drop("wall_ms"))
@@ -129,9 +130,9 @@ def test_run_writes_a_folder_next_to_the_video(tmp_path):
     (tmp_path / "config.toml").write_text(SAMPLE.read_text())
     for name in ("sample.mp4", "clip.mp4"):
         (tmp_path / name).symlink_to(SAMPLE.parent / "sample.mp4")
-    # `spintrack VIDEO` is `spintrack run VIDEO`, here with the rig's config.
-    argv = ["-c", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-preview"]
-    assert main([str(tmp_path / "clip.mp4"), *argv]) == 0
+    # A video with the rig's config: the folder goes next to the video.
+    argv = ["-c", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-live"]
+    assert main(["run", str(tmp_path / "clip.mp4"), *argv]) == 0
     assert (tmp_path / "clip_spintrack" / "tracks.parquet").exists()
     # The folder's config names the video it ran, relative to the folder.
     written = (tmp_path / "clip_spintrack" / "config.toml").read_text()
@@ -139,7 +140,7 @@ def test_run_writes_a_folder_next_to_the_video(tmp_path):
     # A config names the video in `video`, and the folder after `output.name` if set.
     with (tmp_path / "config.toml").open("a") as f:
         f.write('\n[output]\nname = "trial"\n')
-    argv = ["run", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-preview"]
+    argv = ["run", str(tmp_path / "config.toml"), "--max-frames", "20", "--no-live"]
     assert main(argv) == 0
     assert pl.read_parquet(tmp_path / "trial_spintrack" / "tracks.parquet").height == 20
 
@@ -160,10 +161,32 @@ def test_errors_are_one_line(tmp_path, caplog):
         str(tmp_path / "missing.mp4"),
         "--config",
         str(SAMPLE),
-        "--no-preview",
+        "--no-live",
     ]
     with caplog.at_level(logging.ERROR, logger="spintrack"):
-        assert main([*argv, "--out", str(tmp_path)]) == 2
+        assert main([*argv, "--out", str(tmp_path)]) == 1
     (record,) = caplog.records
     assert record.getMessage().startswith("error: ") and not record.exc_info
     assert not any(tmp_path.iterdir())
+
+
+def test_a_video_needs_the_run_command(capsys):
+    """`spintrack VIDEO` is not a command: the error says to use `spintrack run`."""
+    assert main(["clip.mp4"]) == 2
+    assert "spintrack run clip.mp4" in capsys.readouterr().err
+
+
+def test_config_keys_go_through_set(capsys):
+    """A positional KEY=VALUE is refused, with the `--set` that means it."""
+    assert main(["run", "clip.mp4", "tracking.window_px=80"]) == 2
+    assert "--set tracking.window_px=80" in capsys.readouterr().err
+
+
+def test_doctor_reports_as_json(capsys, monkeypatch):
+    """The report has octacam doctor's shape; this installation has no error."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")  # leave the GPU to other work
+    assert main(["doctor", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["spintrack_version"] == spintrack.__version__
+    statuses = {f["status"] for s in report["sections"] for f in s["findings"]}
+    assert statuses <= {"ok", "info", "warn"}

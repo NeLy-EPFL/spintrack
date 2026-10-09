@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
+from numpy.typing import ArrayLike
 
 log = logging.getLogger("spintrack")
 
@@ -100,8 +101,8 @@ class BallDetection:
     n_frames: int
     ok: bool
     # The measured rim in polar form about `(cx, cy)`, one entry per accepted ray.
-    rim_theta: np.ndarray = None
-    rim_radius: np.ndarray = None
+    rim_theta: np.ndarray | None = None
+    rim_radius: np.ndarray | None = None
     # The segmentation model's score when a model proposed the ball, else None.
     model_score: float | None = None
     # The model's mask the ball was found from (bool, the image's shape), else None.
@@ -119,17 +120,18 @@ class BallDetection:
         optical axis a pinhole camera images a sphere as an ellipse, which the circle
         misses. Each point is the median of the accepted rays in its angular bin.
         """
-        if self.rim_theta is None or len(self.rim_theta) < 3:
+        rim_theta, rim_radius = self.rim_theta, self.rim_radius
+        if rim_theta is None or rim_radius is None or len(rim_theta) < 3:
             return circle_points(self.cx, self.cy, self.r, n)
         edges = np.linspace(0.0, 2.0 * np.pi, n + 1)
-        which = np.clip(np.digitize(self.rim_theta % (2 * np.pi), edges) - 1, 0, n - 1)
+        which = np.clip(np.digitize(rim_theta % (2 * np.pi), edges) - 1, 0, n - 1)
         out: list[int] = []
         for k in range(n):
             in_bin = which == k
             if not in_bin.any():
                 continue
-            theta = float(np.median(self.rim_theta[in_bin]))
-            radius = float(np.median(self.rim_radius[in_bin]))
+            theta = float(np.median(rim_theta[in_bin]))
+            radius = float(np.median(rim_radius[in_bin]))
             out += [
                 round(self.cx + radius * np.cos(theta)),
                 round(self.cy + radius * np.sin(theta)),
@@ -164,7 +166,7 @@ def temporal_stats(
         mean += delta / len(kept)
         m2 += delta * (value - mean)
     n = len(kept)
-    if n == 0:
+    if n == 0 or m2 is None:
         raise DetectionError("no frames to detect the ball in")
     stack = np.stack(kept)
     k = round(quantile * (n - 1))
@@ -207,7 +209,7 @@ def foreground_mask(hi: np.ndarray, sd: np.ndarray) -> tuple[np.ndarray, float]:
     mask = mask.astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if count < 2:
         raise DetectionError("no foreground: the frames look empty")
     best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
@@ -220,7 +222,7 @@ def foreground_mask(hi: np.ndarray, sd: np.ndarray) -> tuple[np.ndarray, float]:
     return (labels == best).astype(np.uint8), max(spread, 1.0)
 
 
-def fit_circle(points: np.ndarray, weights: np.ndarray | None = None):
+def fit_circle(points: ArrayLike, weights: np.ndarray | None = None):
     """Algebraic (Kasa) circle fit; returns `(cx, cy, r)`."""
     points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     x, y = points[:, 0], points[:, 1]
@@ -478,7 +480,8 @@ def mask_circle(mask: np.ndarray, rng: np.random.Generator, n_iter: int = 400):
     if best is None:
         raise DetectionError("no circle fits the mask's outline")
     cx, cy, r = best
-    for _ in range(2):
+    near = pts
+    for _ in range(2):  # refit on the points near the last fit
         near = pts[np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r) < tol]
         cx, cy, r = fit_circle(near)
     return cx, cy, r, np.arctan2(near[:, 1] - cy, near[:, 0] - cx)
@@ -511,7 +514,7 @@ def ball_from_masks(image, masks, scores, *, n_frames: int = 1, seed: int = 0):
     image = np.asarray(image, dtype=np.float32)
     noise = max(1.4826 * float(np.median(np.abs(np.diff(image, axis=1)))), 1.0)
     best, reasons = None, []
-    for mask, score in zip(masks, scores):
+    for mask, score in zip(masks, scores, strict=True):
         try:
             mx, my, mr, mask_theta = mask_circle(
                 _fill_hull(mask), np.random.default_rng(seed)

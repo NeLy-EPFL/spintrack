@@ -88,7 +88,7 @@ def with_ball(records: np.ndarray, ball: np.ndarray | None) -> np.ndarray:
     return np.hstack([records, out])
 
 
-def format_row(values: Sequence[float]) -> str:
+def format_row(values: Sequence[float] | np.ndarray) -> str:
     """One line (no newline) from 25 numbers."""
     if len(values) != N_COLUMNS:
         raise ValueError(f"expected {N_COLUMNS} values, got {len(values)}")
