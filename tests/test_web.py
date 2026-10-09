@@ -74,7 +74,7 @@ def test_run_prints_the_live_view_link_and_stops_serving(tmp_path, caplog):
 def gui(tmp_path):
     config = tmp_path / "rig.toml"
     text = SAMPLE.read_text().replace(
-        '"sample.mp4"', f'"{SAMPLE.parent / "sample.mp4"}"'
+        '"sample.mp4"', f'"{(SAMPLE.parent / "sample.mp4").as_posix()}"'
     )
     config.write_text(text)
     session = GuiSession(str(config), None, [], config)

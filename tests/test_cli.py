@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import cv2
@@ -173,13 +174,13 @@ def test_errors_are_one_line(tmp_path, caplog):
 def test_a_video_needs_the_run_command(capsys):
     """`spintrack VIDEO` is not a command: the error says to use `spintrack run`."""
     assert main(["clip.mp4"]) == 2
-    assert "spintrack run clip.mp4" in capsys.readouterr().err
+    assert "spintrack run clip.mp4" in _plain(capsys.readouterr().err)
 
 
 def test_config_keys_go_through_set(capsys):
     """A positional KEY=VALUE is refused, with the `--set` that means it."""
     assert main(["run", "clip.mp4", "tracking.window_px=80"]) == 2
-    assert "--set tracking.window_px=80" in capsys.readouterr().err
+    assert "--set tracking.window_px=80" in _plain(capsys.readouterr().err)
 
 
 def test_doctor_reports_as_json(capsys, monkeypatch):
@@ -190,3 +191,9 @@ def test_doctor_reports_as_json(capsys, monkeypatch):
     assert report["spintrack_version"] == spintrack.__version__
     statuses = {f["status"] for s in report["sections"] for f in s["findings"]}
     assert statuses <= {"ok", "info", "warn"}
+
+
+def _plain(text: str) -> str:
+    """Usage-error text without the color, box and wrapping Rich adds on CI."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return " ".join(re.sub(r"[\u2500-\u257f]", " ", text).split())
