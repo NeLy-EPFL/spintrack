@@ -1,0 +1,1138 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Track the rotation of a spherical treadmill (trackball) from video">
+      
+      
+      
+        <link rel="canonical" href="https://nely-epfl.github.io/spintrack/0.1.0/guide/">
+      
+      
+        <link rel="prev" href="../quickstart/">
+      
+      
+        <link rel="next" href="../fictrac/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>User guide - spintrack</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#user-guide" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="spintrack" class="md-header__button md-logo" aria-label="spintrack" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            spintrack
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              User guide
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NeLy-EPFL/spintrack" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/spintrack
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="spintrack" class="md-nav__button md-logo" aria-label="spintrack" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    spintrack
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NeLy-EPFL/spintrack" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NeLy-EPFL/spintrack
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-live-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The live view
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#change-the-config-on-the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change the config on the command line
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#two-passes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two passes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-debug-video" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The debug video
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#live-cameras-and-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live cameras and streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fix-it-in-the-gui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fix it in the gui
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read-the-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read the summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fictrac/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coming from FicTrac
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../algorithm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../output/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../citing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Citing and credits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-live-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The live view
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#change-the-config-on-the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change the config on the command line
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#two-passes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two passes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-debug-video" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The debug video
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#live-cameras-and-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live cameras and streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fix-it-in-the-gui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fix it in the gui
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read-the-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read the summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="user-guide">User guide<a class="headerlink" href="#user-guide" title="Permanent link">&para;</a></h1>
+<p>From a recording to a tracked file, and how to tell whether to trust it. <code>spintrack run VIDEO</code> finds what it needs in the recording; when it gets something wrong, <code>spintrack gui VIDEO</code> fixes it while you watch, and saves a config that later runs start from. Coming from FicTrac, <a href="../fictrac/">fictrac.md</a> translates a <code>config.txt</code>; the sections on the camera position and on masking still apply.</p>
+<h2 id="run">Run<a class="headerlink" href="#run" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>spintrack<span class="w"> </span>run<span class="w"> </span>trial3.mp4<span class="w"> </span>--set<span class="w"> </span>camera.azimuth_deg<span class="o">=</span><span class="m">180</span><span class="w">             </span><span class="c1"># a camera behind the fly</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>spintrack<span class="w"> </span>run<span class="w"> </span>session/*.mp4<span class="w"> </span>-c<span class="w"> </span>rig.toml<span class="w">                           </span><span class="c1"># a rig's config, many videos</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>spintrack<span class="w"> </span>run<span class="w"> </span>trial3.mp4<span class="w"> </span>-c<span class="w"> </span>rig.toml<span class="w"> </span>--set<span class="w"> </span>tracking.window_px<span class="o">=</span><span class="m">80</span><span class="w">  </span><span class="c1"># one key changed for this run</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>spintrack<span class="w"> </span>run<span class="w"> </span>trial3_spintrack/config.toml<span class="w"> </span>--out<span class="w"> </span>redo<span class="w">             </span><span class="c1"># repeat a run</span>
+</code></pre></div>
+<p>Where the config (<code>-c</code>) leaves them out, a run finds in the recording:</p>
+<ul>
+<li><strong>the ball</strong>, with SAM 3 (<a href="../configuration/#how-the-ball-is-found">configuration</a>);</li>
+<li><strong>the field of view</strong>, by tracking 1000 frames under a range of candidates and keeping the one that fits best, which takes 10-20 s;</li>
+<li>and <strong>the camera's elevation and twist</strong>, from where the animal stands on the ball (<a href="../configuration/#the-camera-position">configuration</a>).</li>
+</ul>
+<p>The one thing a run cannot find is which side the camera films the animal from, its front or its back, so it asks for the azimuth: <code>--set camera.azimuth_deg=180</code> for a camera behind the animal, <code>0</code> in front, <code>90</code> at its right, <code>-90</code> at its left. FicTrac requires the same, as <code>c2a_r</code>. Put it in the rig's config to run many videos.</p>
+<p>The summary at the end says what was found and how, and the run's <code>config.toml</code> records it.</p>
+<p>Any video FFmpeg reads will do: color or gray, 8 or more bits, any container. Frames are tracked as luma (gray). An AVI is timed and sought by frame count, as it stores no presentation times: FFmpeg's guesses are out of order under B-frames, and its seeks by them can land hundreds of frames off.</p>
+<p>Each video gets one folder, <code>NAME_spintrack</code> next to it unless <code>--out</code> names another (for one video), where NAME is the config's <code>output.name</code> or the video's name. It holds <code>tracks.parquet</code>, <code>summary.json</code>, <code>log.txt</code> and <code>config.toml</code> (<a href="../output/">output.md</a>). That <code>config.toml</code> is the config as run, with the command line's changes and what the run found, so <code>spintrack run NAME_spintrack/config.toml --out OTHER</code>, with the run's <code>--two-pass</code> and <code>--max-frames</code> if it had them, tracks the same video the same way. A run will not replace an earlier run's files without <code>--force</code>. When one of several videos fails, the others still run and the exit status is 1. <code>--max-frames N</code> stops early. <code>--save-map</code> adds <code>map.npz</code>, which <code>tracking.initial_map=PATH</code> starts a later run from (as it does a FicTrac sphere-map PNG).</p>
+<h3 id="the-live-view">The live view<a class="headerlink" href="#the-live-view" title="Permanent link">&para;</a></h3>
+<p>A run prints a link, <code>live view: http://127.0.0.1:8300/?token=...</code>. Open it to watch the run: the frame with the ball's outline, the animal's trail over the ball and the ignored regions (and the axes, on request), the tracking window, the fictive path, the surface map, the last 10 s of forward, side and turning speed and of the solver's cost, and the summary at the end. Its Stop ends the run as Ctrl-C does, with the records so far written. The page costs the run nothing until it is opened, and little after: it captures at most 12 frames a second, and only while a page asks. On a remote machine, forward the port first, as the line says (<code>ssh -L 8300:localhost:8300 HOST</code>). <code>--no-live</code> serves nothing; <code>--port</code> picks the port (or the next free one after it), and <code>--host 0.0.0.0</code> serves the page to other machines directly, still behind the link's token.</p>
+<p>What to check, on the page or in the debug video:</p>
+<ul>
+<li>the outline stays on the ball's rim, including when the ball moves in its holder;</li>
+<li>the trail starts under the animal and rides with the texture rather than sliding across it;</li>
+<li>the map's faces show sharp texture, not smears;</li>
+<li>the lighting gain (the map's corner tile) shows the holder's shadow and smooth shading, never texture;</li>
+<li>the path moves only when the animal walks.</li>
+</ul>
+<h3 id="change-the-config-on-the-command-line">Change the config on the command line<a class="headerlink" href="#change-the-config-on-the-command-line" title="Permanent link">&para;</a></h3>
+<p><code>--set KEY=VALUE</code>, as often as needed, sets a config key for one run, over the config's: <code>--set tracking.window_px=80</code>, <code>--set camera.position_deg=0,180,0</code>, <code>--set output.debug_video=true</code>, <code>--set tracking.initial_map=map.npz</code>. A value is read as TOML, a list may drop its brackets, and <code>none</code> restores the default (<code>--set ball.rim=none</code> finds the ball again even when the config has one). Setting <code>camera.position_deg</code> replaces a config's <code>camera.rotation</code>, and the other way around. A misspelled key is an error that names the key it most resembles. Quote a value with brackets or spaces: <code>--set 'ball.rim=[[1, 2], [3, 4], [5, 6]]'</code>.</p>
+<h3 id="two-passes">Two passes<a class="headerlink" href="#two-passes" title="Permanent link">&para;</a></h3>
+<p><code>--two-pass</code> maps the ball in a throwaway first pass, then tracks again from that map. The second pass starts with the whole ball mapped and the lighting field converged, and if the ball moved in its holder, its window follows a trajectory planned from the whole first pass, without the online follower's delay. It doubles the run time and changes the per-frame error on synthetic truth by under 1%, so use it when the ball moves in its holder or the first seconds matter.</p>
+<h3 id="the-debug-video">The debug video<a class="headerlink" href="#the-debug-video" title="Permanent link">&para;</a></h3>
+<p><code>--debug-video</code> (or <code>--set output.debug_video=true</code>) writes <code>debug.mp4</code>: on the left the frame as the live view shows it, on the right the tracking window, the fictive path (scale bar in ball radii), the map unfolded as a dice around the face the camera sees, the lighting gain and the frame's numbers. Arrows show the ball's axes from its center, turning with it, and the animal's from where it stands on the ball: x forward, y left, z the ball's normal there. An axis along the line of sight is a ring, dotted when it points toward the camera and crossed when away. <code>output.debug_axes=false</code> leaves them out. When SAM 3 found the ball or placed the camera, an empty tile of the map's net ("segmentation") shows its masks over the first frame, with their scores: the ball's in yellow, as its outline, the animal's in magenta. They are found once, on the opening frames, so the tile does not change.</p>
+<h3 id="live-cameras-and-streaming">Live cameras and streaming<a class="headerlink" href="#live-cameras-and-streaming" title="Permanent link">&para;</a></h3>
+<p><code>spintrack run 0 -c config.toml</code> opens camera 0 through OpenCV; outputs go to <code>camera_spintrack</code> in the current directory, or to <code>NAME_spintrack</code> for an <code>output.name</code>. A live camera cannot be looked at before tracking starts, so the config must describe the ball, the field of view and the camera position: run or open a short recording of the rig first and pass the config it writes. <code>--two-pass</code> is refused. For cameras OpenCV cannot open (Basler, FLIR, ...), feed the vendor SDK's frames to the <code>Tracker</code> loop in the README.</p>
+<p>Records stream in FicTrac's line format (<code>FT,</code> and the 25 fields) with <code>--udp HOST:PORT</code>, <code>--tcp HOST:PORT</code>, <code>--serial PORT[:BAUD]</code> (install the <code>serial</code> extra) and <code>--print</code>. The config's <code>stream.udp</code> and <code>stream.serial</code> do what the flags do.</p>
+<h2 id="fix-it-in-the-gui">Fix it in the gui<a class="headerlink" href="#fix-it-in-the-gui" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>spintrack<span class="w"> </span>gui<span class="w"> </span>trial3.mp4<span class="w">                </span><span class="c1"># saves spintrack.toml next to the video</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>spintrack<span class="w"> </span>gui<span class="w"> </span>trial3.mp4<span class="w"> </span>-c<span class="w"> </span>rig.toml<span class="w">    </span><span class="c1"># starts from rig.toml and saves to it</span>
+</code></pre></div>
+<p>The gui opens the live view's page in a browser (with <code>--no-browser</code>, or without a display, it prints the link), finds what the config leaves out as a run does (without an azimuth, it asks which side the camera films from, and tracks as if from behind until told), and then tracks a clip of the video, 10 s from its start, over and over at its own speed. Every change restarts the clip, so its effect shows within seconds. The panel on the left changes:</p>
+<ul>
+<li><strong>Ball</strong>: drag the circle's center or edge, click points on the ball's edge, or have SAM 3 find it again.</li>
+<li><strong>Camera position</strong>: presets (behind, in front, at either side, above), sliders for the elevation, azimuth and twist, or the four corners of a calibration square, clicked in FicTrac's order, which names them in the animal's terms and so holds from any side (for the xy plane: front-left, front-right, back-right, back-left; the gui gives each plane's). Tick <em>axes</em> under the frame to check: from where the animal stands, which is where the trail starts, x (red) points forward, y (green) to the animal's left and z (blue) up.</li>
+<li><strong>Field of view</strong>: type it, or fit it again.</li>
+<li><strong>Ignored regions</strong>: click a polygon's corners over what moves but is not the ball (<a href="../configuration/#mask-the-animal">configuration</a>).</li>
+<li><strong>Tracking</strong>: the parameters of the config's <code>[tracking]</code>, each with its default a click away.</li>
+</ul>
+<p>Under the frame, pick the clip's start and length and the playback speed; Space pauses and <code>.</code> steps a paused clip by a frame. <strong>Save</strong> writes the config, to <code>-c</code>'s file or to <code>spintrack.toml</code> next to the video, keeping the comments at the file's top, and shows the command that uses it: <code>spintrack run VIDEO... -c spintrack.toml</code>. <strong>Track the whole video</strong> saves, then runs as <code>spintrack run</code> would, on the same page.</p>
+<h2 id="read-the-summary">Read the summary<a class="headerlink" href="#read-the-summary" title="Permanent link">&para;</a></h2>
+<p>Every run ends with a short block; <code>summary.json</code> holds the same and more (see <a href="../output/#the-summary">output.md</a>). On the example with no config:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>run quality: 1050 frames, 1050 tracked, 0 dropped
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>ball: detected at (400.5, 371.5) r 260.8 px by SAM 3 (score 0.75), rim confirms 86% of its outline
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>vfov: 3.31 deg (fitted; not identifiable, the cost is flat over 1-11 deg, over which the rotation scale changes by 6%)
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>camera position: azimuth 180 from camera.azimuth_deg; elevation 0, twist -0.6 deg from where the animal stands (it stands on the ball's outline, where the elevation does not show and level is assumed; SAM 3 score 0.87)
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>walking: net 3.9 ball radii, 7 deg right of forward
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>ball moved: no
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>radius: silhouette 258.3 px, config 260.1 px (-0.7%)
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>hard tracking: none
+</code></pre></div>
+<ul>
+<li><code>run quality</code>: frames read, tracked and dropped. A dropped frame has no row in <code>tracks.parquet</code>.</li>
+<li><code>ball</code>, <code>vfov</code>, <code>camera position</code>: what the run found in the recording, when the config did not say.</li>
+<li><code>walking</code>: where the animal's net walking points (<a href="../configuration/#the-camera-position">configuration</a>).</li>
+<li><code>ball moved</code>: <code>no</code>, or the frames over which the ball moved in its holder and how far, in pixels. The window followed; check those frames on the page or in the debug video.</li>
+<li><code>radius</code>: the silhouette's radius over the first frames against the config's, with a warning beyond 3%.</li>
+<li><code>hard tracking</code>: stretches where both the cost and the solver's iterations rose above the run's baseline. A few short ones in fast turns are normal; a long one means the model stopped fitting the ball.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<p><strong>"where the camera sits around the animal is unknown".</strong> Add <code>--set camera.azimuth_deg=180</code> for a camera behind the animal (<code>0</code> in front, <code>90</code> at its right, <code>-90</code> at its left), or put it in the rig's config.</p>
+<p><strong>"the ball is only N px in radius".</strong> Below 15 px of radius in the image, the reported rotation shrinks without any other sign, starting with the rotation about the optical axis (sideslip, for a camera behind the animal). Put more pixels on the ball.</p>
+<p><strong>No ball found.</strong> SAM 3 and the rim check refused every candidate. Open the gui, drag the circle onto the ball and save, then run with that config.</p>
+<p><strong>"its surface shows little texture to track".</strong> The ball's surface varies by less than 4 gray levels at the tracking window's scale (patterned balls show 10 or more), as plain white polystyrene does: whatever rotation is reported comes from the animal, shadows or noise. Such balls need a pattern, or another sensor (optical mice).</p>
+<p><strong>The field of view cannot be fitted.</strong> The cost leaned to a wide lens without a clear minimum, or the ball turned too little. Write <code>camera.vfov_deg</code> from the lens (the sensor height and the focal length give it), or from the rig's calibration.</p>
+<p><strong>The ball moved.</strong> The window follows a ball that sinks or jerks in its holder, so the movement is not read as rotation. If the follower stopped, the window would have left the ball, usually because the look climbed onto the animal: mask the legs, check the page or the debug video, and consider <code>--two-pass</code>. <code>tracks.parquet</code> has the ball's position on every frame, and <code>window_offset</code> estimates the orientation error the window's lag caused on each one (<a href="../output/#the-balls-position">output.md</a>).</p>
+<p><strong>The radius warning.</strong> The config's ball is more than 3% off the silhouette. The follower uses the measured radius, but the rotation scale comes from the config's: correct the ball in the gui, or run with <code>ball.rim=none</code> to detect it.</p>
+<p><strong>The walking line says the camera position is wrong.</strong> Unless the animal walked backward or sideways on purpose, set the azimuth the line suggests, <code>--set camera.position_deg=0,AZIMUTH,0</code>, or measure the rig in the gui.</p>
+<p><strong>Dropped frames.</strong> No solve passed the gates: the rotation exceeded <code>tracking.max_step_rad</code>, or too little of the window matched the map. Look at those frames for an unmasked animal, blur or a ball that left the window. <code>global_search = true</code> recovers by relocalizing, and <code>max_bad_frames</code> restarts tracking after that many losses in a row. The row after a gap spans the gap, as its <code>delta_ts</code> says.</p>
+<p><strong>"invalid config".</strong> The message lists each wrong key, from the file or from the command line, and what it expected.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../quickstart/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Quickstart">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Quickstart
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../fictrac/" class="md-footer__link md-footer__link--next" aria-label="Next: Coming from FicTrac">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Coming from FicTrac
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
